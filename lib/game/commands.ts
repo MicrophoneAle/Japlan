@@ -11,7 +11,12 @@ const COMMANDS: [TripCommand, RegExp][] = [
   // Anyone's own answers: see them all, or go through the questions again.
   ["settings", /^(my )?(settings|preferences|prefs|profile)$/],
   ["resurvey", /^(resurvey|re-?survey|redo (my )?survey|survey again|retake (the )?survey)$/],
-  ["profile", /^(what do you know about me|what do you know about me so far|my profile|show (me )?my profile|who am i( to you)?)$/],
+  // "what do u know about me", "what can you tell me about myself", "what can
+  // you tell me based on my survey answers" (all live, 2026-09-19).
+  [
+    "profile",
+    /^(?:(?:hi|hey|yo|ok|okay|so|and)\s+)?(?:(?:what|wat|wht)\s+(?:do|did|can|does)\s+(?:you|u|ya)\s+(?:know|tell me|remember|have)\s+(?:about|on)\s+(?:me|myself)(?:\s.*)?|what can (?:you|u) tell me (?:about myself|based on my (?:survey|answers|survey answers))|my profile|show (?:me )?my profile|whats my profile|who am i(?: to you)?)$/,
+  ],
 ];
 
 // "japlan board time 7am" / "japlan board time 10:30".

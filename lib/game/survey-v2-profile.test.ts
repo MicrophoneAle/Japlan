@@ -3,6 +3,9 @@ import { hardNoWords, parseConstraints, readYesNo } from "./constraints";
 import { isStopCommand, entrySignal, obviousDisengage, OTHERS_IN_A_ROW } from "./engagement";
 import {
   compatAnswers,
+  hasPreferenceSignal,
+  prefsOf,
+  v2View,
   effectiveWeight,
   nudge,
   prefDimsFor,
@@ -224,5 +227,63 @@ describe("reply checks", () => {
     expect(checkReply("meet at hachiko square", facts)).toMatchObject({ ok: false, reason: "unknown_place:hachiko square" });
     expect(checkReply(" .. ", facts)).toMatchObject({ ok: false, reason: "empty" });
     expect(checkReply("your score is undefined", facts)).toMatchObject({ ok: false, reason: "malformed" });
+  });
+});
+
+describe("the first survey still counts", () => {
+  const first = {
+    pace: v("early_and_moving"),
+    budget: v("high"),
+    dietary: v("has_restriction"),
+    dietary_detail: v("no pork"),
+    mobility: v("no_limits"),
+    nightlife: v("yes"),
+    interest_picks: v("weird"),
+  } as SurveyAnswers;
+
+  it("reads its answers as weights, not as 'no preferences'", () => {
+    const w = prefsFromAnswers(first).weights;
+    expect(w.nightlife.c).toBe("medium");
+    expect(w.local_discovery).toEqual({ w: 0.8, c: "medium" });
+    expect(hasPreferenceSignal(prefsFromAnswers(first))).toBe(true);
+  });
+
+  it("lets its answers replace a stored low-confidence guess, and keeps what was learned", () => {
+    const stored = { version: 2, weights: { ...prefsFromAnswers({}).weights, food: { w: 0.9, c: "high" } } };
+    const merged = prefsOf(stored, first);
+    expect(merged.weights.nightlife.c).toBe("medium");
+    expect(merged.weights.food).toEqual({ w: 0.9, c: "high" });
+  });
+
+  it("describes pace, budget and constraints from it", () => {
+    const view = v2View(first);
+    expect(view.ab_pace?.value).toBe("a");
+    expect(view.budget_band?.value).toBe("100_200");
+    expect(view.hard_constraints?.value).toBe("no pork");
+    const text = personProfile({ name: "you", answers: first });
+    expect(text).toMatch(/^you lean/);
+    expect(text).toContain("You are fine spending $100-200 a day.");
+    expect(text).not.toMatch(/don't know your preferences/);
+  });
+});
+
+describe("the group profile only claims what was answered", () => {
+  it("does not say everyone is fine splitting up when one of four said so", () => {
+    const text = groupProfile(
+      [{ answers: { splitting: v("yes"), ab_pace: v("b") } as SurveyAnswers }, { answers: {} }, { answers: {} }, { answers: {} }],
+      { groupSize: 4 },
+    );
+    expect(text).not.toContain("Everyone is fine splitting up");
+    expect(text).toContain("1 of 4 said they're fine splitting up; 3 haven't said.");
+    expect(text).toContain("Mostly want slower days (1 of 4 answered).");
+  });
+
+  it("says everyone only when everyone answered", () => {
+    const yes = { answers: { splitting: v("yes") } as SurveyAnswers };
+    expect(groupProfile([yes, yes], { groupSize: 2 })).toContain("Everyone is fine splitting up.");
+  });
+
+  it("counts people who never answered in the group size", () => {
+    expect(groupProfile([{ answers: {} }], { groupSize: 3 })).toMatch(/^A group of 3\. Nobody has said what they're into yet\./);
   });
 });

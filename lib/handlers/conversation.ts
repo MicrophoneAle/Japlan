@@ -12,6 +12,9 @@ import {
 } from "@/lib/game/conversation";
 import {
   BOARD_IN_DM_LINE,
+  PROFILE_IN_DM_LINE,
+  profileLine,
+  profileUnfinishedLine,
   CONVERSATION_FALLBACK,
   CONVERSATION_PRIVACY_LINE,
   CONVERSATION_SYSTEM_PROMPT,
@@ -41,6 +44,8 @@ import {
   type ClaimFallthrough,
 } from "@/lib/handlers/claims";
 import { teamsWithMembers } from "@/lib/handlers/teams";
+import { lookupOwnProfile } from "@/lib/handlers/profiles";
+import { otherPersonAskedAbout } from "@/lib/game/profile";
 import type { LLMProvider, ToolContent, ToolTurn } from "@/lib/llm";
 import { GeminiProvider } from "@/lib/llm/gemini";
 import { react, sendDM, sendText } from "@/lib/linq/send";
@@ -196,6 +201,12 @@ export const CONVERSATION_TOOL_DEFS = [
     },
   },
   {
+    name: "get_my_profile",
+    description:
+      "What the bot knows about the SENDER only: their own survey answers and learned preferences, as a short summary. Call it before saying anything about what you know of them, and never say you know nothing about them without calling it. Never for anyone else. In a group chat, code sends it to their DM and replies for you; in a DM it returns the summary for you to answer from.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
     name: "react_to_message",
     description:
       "Tapback the message they just sent instead of (or in addition to) texting back. Use this for something funny, unhinged, or hype-worthy where a reaction hits harder than words. Not for every message, and not instead of answering a real question.",
@@ -321,6 +332,14 @@ export async function handleConversation(
   // "lb", "leader", "leaderboard", "standings", "scores": read straight from
   // the database and reply, same numbers get_standings would give the model,
   // without spending a model call on a request this unambiguous.
+  // Someone else's profile: DM privacy, decided in code before any model
+  // sees the question.
+  const other = otherPersonAskedAbout(miss.text, miss.people, miss.claimant.id);
+  if (other) {
+    console.info("[japlan.profile] step", { step: "other_person.refused", asker: miss.claimant.id, about: other.id });
+    await send(miss.chatId, CONVERSATION_PRIVACY_LINE);
+    return;
+  }
   if (isStandingsRequest(miss.text)) {
     await sendStandingsReply(miss);
     return;
@@ -705,6 +724,30 @@ async function executeConversationTool(
     }
     await (miss.send ?? sendText)(miss.chatId, reply);
     return { result: { ok: true }, sent: true };
+  }
+  if (name === "get_my_profile") {
+    // miss.claimant was resolved by (trip_id, phone) in loadTripContext.
+    const own = await lookupOwnProfile(miss.trip, miss.claimant.id);
+    const text = own && !own.finished && own.nextQuestion
+      ? profileUnfinishedLine(own.nextQuestion)
+      : profileLine(own?.text ?? null);
+    if (!miss.isDm) {
+      // DM-private: the content never goes to the model in a group, so it
+      // can never end up in a group reply.
+      await sendDM(miss.claimant.phone, text);
+      await (miss.send ?? sendText)(miss.chatId, PROFILE_IN_DM_LINE);
+      console.info("[japlan.conversation] profile", { chatId: miss.chatId, passedToModel: 0, sentTo: "dm" });
+      return { result: { ok: true, sent_to: "dm" }, sent: true };
+    }
+    console.info("[japlan.conversation] profile", { chatId: miss.chatId, passedToModel: (own?.text ?? "").length, finished: own?.finished ?? false });
+    return {
+      result: {
+        finished: own?.finished ?? false,
+        profile: own?.text ?? null,
+        next_question: own?.nextQuestion ?? null,
+      },
+      sent: false,
+    };
   }
   if (name === "react_to_message") {
     const emoji = typeof args.emoji === "string" ? args.emoji.trim() : "";

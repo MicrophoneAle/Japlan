@@ -14,7 +14,8 @@ import {
 } from "@/lib/game/prefs";
 import { groupProfile, personProfile } from "@/lib/game/profile";
 import { matchPerson } from "@/lib/game/split";
-import { answerValue, type SurveyAnswers } from "@/lib/game/survey";
+import { answerValue, isSidequestQuestion, type SurveyAnswers } from "@/lib/game/survey";
+import { FIRST_QUESTION_ID, QUESTIONS, SURVEY_V2_ORDER, type QuestionId } from "@/lib/game/survey-questions";
 import type { InterestKey } from "@/lib/game/templates";
 
 // Saving and updating what the bot knows about people: weights, the old
@@ -50,9 +51,11 @@ async function tripPeople(tripId: string): Promise<PersonRow[]> {
 // The group's aggregate profile, stored on the trip. Never names who has
 // which constraint.
 export async function refreshGroupProfile(trip: TripRow): Promise<string> {
-  const people = (await tripPeople(trip.id)).filter((p) => p.survey_json);
+  const everyone = await tripPeople(trip.id);
+  const people = everyone.filter((p) => p.survey_json);
   const text = groupProfile(
     people.map((p) => ({ answers: (p.survey_json ?? {}) as SurveyAnswers, prefs: prefsOf(p.prefs_json, (p.survey_json ?? {}) as SurveyAnswers) })),
+    { groupSize: everyone.length },
   );
   const { error } = await getServiceClient().from("trips").update({ group_profile_md: text }).eq("id", trip.id);
   if (error) throw error;
@@ -135,20 +138,69 @@ export async function statePreference(trip: TripRow, personId: string, dims: Pre
   return saved.profile;
 }
 
-// What the bot knows about someone, for "japlan what do you know about me".
-export async function profileFor(trip: TripRow, personId: string): Promise<string | null> {
-  const person = await freshPerson(personId);
-  if (!person) return null;
-  if (!person.survey_json) return person.profile_md ?? null;
-  const answers = person.survey_json as SurveyAnswers;
+export type OwnProfile = {
+  participantId: string;
+  // Survey done (either version), including the sidequest questions after it.
+  finished: boolean;
+  // Second-person summary ("you lean toward..."). null only when unfinished.
+  text: string | null;
+  // Unfinished: the question they are on (or the first one, if they never
+  // started or were mid-way through the first survey).
+  nextQuestion: string | null;
+};
+
+// What the bot knows about the person asking, for the profile command and
+// the get_my_profile tool. The participant id must come from (trip_id, phone)
+// resolution; the row is re-read and checked against the trip, and every
+// lookup logs which row it used and what that row held, because "i don't
+// know anything about you" to someone who filled the survey in is exactly
+// the failure a wrong row produces.
+export async function lookupOwnProfile(trip: TripRow, participantId: string): Promise<OwnProfile | null> {
+  const person = await freshPerson(participantId);
+  const answers = (person?.survey_json ?? {}) as SurveyAnswers;
+  const state = person?.survey_state ?? null;
+  const finished = state === "done" || isSidequestQuestion(state);
+  profileStep("lookup", {
+    tripId: trip.id,
+    participantId,
+    found: Boolean(person),
+    sameTrip: person?.trip_id === trip.id,
+    surveyState: state,
+    surveyKeys: Object.keys(answers).length,
+    hasPrefsJson: Boolean(person?.prefs_json),
+    hasProfileMd: Boolean(person?.profile_md),
+  });
+  if (!person || person.trip_id !== trip.id) return null;
+  if (!finished) {
+    // Never started, or partway through the first survey (whose questions
+    // are gone): the first question of the current one. Mid-way through the
+    // current survey: the question they are on.
+    let next: QuestionId = FIRST_QUESTION_ID;
+    if (state && SURVEY_V2_ORDER.includes(state as QuestionId)) next = state as QuestionId;
+    else {
+      const { error } = await getServiceClient()
+        .from("participants")
+        .update({ survey_state: FIRST_QUESTION_ID })
+        .eq("id", person.id);
+      if (error) throw error;
+    }
+    return { participantId, finished: false, text: null, nextQuestion: QUESTIONS[next].prompt };
+  }
   const prefs = prefsOf(person.prefs_json, answers);
   const partner = partnerOf(answers, person, await tripPeople(trip.id));
-  // Build this private summary from current data so name or copy updates are
-  // reflected immediately instead of returning a stale cached paragraph.
-  return personProfile({
+  // Built from current data (either survey's answers, current weights), not
+  // the stored paragraph, so it is never stale.
+  const text = personProfile({
     name: "you",
     answers: compatAnswers(answers, prefs, partner),
     prefs,
     partnerName: partner,
   });
+  profileStep("lookup.text", { participantId, chars: text.length });
+  return { participantId, finished: true, text, nextQuestion: null };
+}
+
+// Kept for callers that only want the text.
+export async function profileFor(trip: TripRow, personId: string): Promise<string | null> {
+  return (await lookupOwnProfile(trip, personId))?.text ?? null;
 }

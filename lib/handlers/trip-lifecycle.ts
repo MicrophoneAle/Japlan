@@ -15,13 +15,14 @@ import {
   onlyOrganizerLine,
   PROFILE_IN_DM_LINE,
   profileLine,
+  profileUnfinishedLine,
   resurveyStartLine,
   SETTINGS_IN_DM_LINE,
   settingsListLine,
   tripNotReadyLine,
 } from "@/lib/game/copy";
 import { settingsSummary } from "@/lib/game/settings";
-import { profileFor } from "./profiles";
+import { lookupOwnProfile } from "./profiles";
 import type { SurveyAnswers } from "@/lib/game/survey";
 import { FIRST_QUESTION_ID, QUESTIONS } from "@/lib/game/survey-questions";
 import { losersOf } from "@/lib/game/setup";
@@ -170,7 +171,11 @@ export async function handleTripCommand(opts: {
     return;
   }
   if (opts.command === "profile") {
-    const text = profileLine(await profileFor(trip, participant.id));
+    // participant came from (trip_id, phone): findParticipantOnTrip.
+    const own = await lookupOwnProfile(trip, participant.id);
+    const text = own && !own.finished && own.nextQuestion
+      ? profileUnfinishedLine(own.nextQuestion)
+      : profileLine(own?.text ?? null);
     if (opts.isDm) {
       await send(opts.chatId, text);
     } else {

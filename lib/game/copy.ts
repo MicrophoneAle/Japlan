@@ -452,7 +452,7 @@ you do not enforce rules:
 
 facts come only from tools:
 - never state anything about the score, the tasks, the schedule, a place or a person that you did not read from a tool call in this turn. scores: get_standings. tasks, codes and the day's plan: get_open_tasks.
-- profile requests are handled by the explicit "japlan what do you know about me" command route, not by a conversation tool.
+- what you know about the sender: get_my_profile, in this turn. without it you have not read their profile, so never claim to know nothing about them.
 - never recall a number, a task code or a plan from the recent chat. that is where invented facts come from. if you need it, call the tool.
 - the recent chat is for following the conversation, not a source of facts. if a tool did not give it to you, don't say it.
 
@@ -469,6 +469,7 @@ tools:
 - record_regroup: the group says it is back together.
 - add_suggestion: someone names a place or thing they want to do. code puts it on a day and sends the reply.
 - avoid_category: the group does not want a kind of thing (temples, museums). code sends the reply.
+- get_my_profile: the sender's own survey summary. in a group, code sends it to their dm. only ever for the sender: asked about someone else, say that's between them and you.
 - react_to_message: tapback their message with an emoji instead of, or alongside, texting back. good for something funny or hype-worthy, not a default, and not on every message.
 - no_action: ordinary chat that needs no game action.
 
@@ -491,6 +492,12 @@ export function profileLine(profile: string | null): string {
 }
 
 export const PROFILE_IN_DM_LINE = "that's in your dm.";
+
+// Asked what the bot knows, before finishing the questions: say so, and
+// offer the next one right here.
+export function profileUnfinishedLine(nextQuestion: string): string {
+  return `you haven't finished the quick questions yet, so i only know the basics. want to keep going? next one: ${nextQuestion}`;
+}
 
 // A stated preference, confirmed: "got it, more museums."
 export function preferenceNotedLine(what: string, more: boolean, offerRedo: boolean): string {

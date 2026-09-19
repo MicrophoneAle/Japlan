@@ -107,12 +107,11 @@ function groupPreferenceText(people: ParticipantRow[]): string {
   if (people.length === 1) {
     const person = people[0];
     const answers = (person.survey_json ?? {}) as SurveyAnswers;
-    return (
-      person.profile_md ??
-      (answers.ab_food_outdoors || answers.hard_constraints
-        ? personProfile({ name: "They", answers, prefs: prefsOf(person.prefs_json, answers) })
-        : preferenceText(answers))
-    );
+    // Written fresh from their answers (either survey), not the stored
+    // paragraph: a row written before the first survey was readable kept a
+    // "no lean yet" profile_md that every board then generated from.
+    const fresh = personProfile({ name: "They", answers, prefs: prefsOf(person.prefs_json, answers) });
+    return fresh || person.profile_md || preferenceText(answers);
   }
   return groupProfile(
     people.map((p) => {
