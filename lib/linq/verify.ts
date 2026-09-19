@@ -8,22 +8,31 @@ export type WebhookHeaders = {
   "webhook-signature"?: string | null;
 };
 
-export function verifyLinqSignature(
+export type SignatureCheck =
+  | { ok: true }
+  | { ok: false; reason: string };
+
+export function inspectLinqSignature(
   rawBody: string,
   headers: Headers | WebhookHeaders,
   secret = process.env.LINQ_WEBHOOK_SECRET,
-): boolean {
-  if (!secret) return false;
+): SignatureCheck {
+  if (!secret) return { ok: false, reason: "missing_secret" };
 
   const msgId = header(headers, "webhook-id");
   const timestamp = header(headers, "webhook-timestamp");
   const signature = header(headers, "webhook-signature");
-  if (!msgId || !timestamp || !signature) return false;
+  if (!msgId) return { ok: false, reason: "missing_webhook-id" };
+  if (!timestamp) return { ok: false, reason: "missing_webhook-timestamp" };
+  if (!signature) return { ok: false, reason: "missing_webhook-signature" };
 
   const ts = Number(timestamp);
-  if (!Number.isFinite(ts)) return false;
+  if (!Number.isFinite(ts)) return { ok: false, reason: "invalid_timestamp" };
   // TODO: plan/Linq docs reject timestamps older than 5 minutes; they do not specify future-dated timestamps.
-  if (Math.abs(Date.now() / 1000 - ts) > MAX_AGE_SECONDS) return false;
+  const ageSeconds = Date.now() / 1000 - ts;
+  if (Math.abs(ageSeconds) > MAX_AGE_SECONDS) {
+    return { ok: false, reason: `timestamp_skew ageSeconds=${ageSeconds.toFixed(1)}` };
+  }
 
   const secretStr = secret.startsWith("whsec_") ? secret.slice(6) : secret;
   const keyBytes = Buffer.from(secretStr, "base64");
@@ -32,7 +41,12 @@ export function verifyLinqSignature(
     .update(signedContent)
     .digest("base64");
 
-  return signature.split(" ").some((sig) => {
+  const parts = signature.split(" ");
+  if (!parts.some((sig) => sig.startsWith("v1,"))) {
+    return { ok: false, reason: "no_v1_signature" };
+  }
+
+  const matched = parts.some((sig) => {
     if (!sig.startsWith("v1,")) return false;
     try {
       return timingSafeEqual(
@@ -43,6 +57,17 @@ export function verifyLinqSignature(
       return false;
     }
   });
+
+  if (!matched) return { ok: false, reason: "signature_mismatch" };
+  return { ok: true };
+}
+
+export function verifyLinqSignature(
+  rawBody: string,
+  headers: Headers | WebhookHeaders,
+  secret = process.env.LINQ_WEBHOOK_SECRET,
+): boolean {
+  return inspectLinqSignature(rawBody, headers, secret).ok;
 }
 
 function header(

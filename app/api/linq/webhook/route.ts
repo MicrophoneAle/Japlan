@@ -2,7 +2,7 @@ import { after } from "next/server";
 import { getServiceClient } from "@/lib/db/client";
 import { dispatchLinqEvent } from "@/lib/handlers/dispatch";
 import { captureInboundWebhook } from "@/lib/linq/capture";
-import { verifyLinqSignature } from "@/lib/linq/verify";
+import { inspectLinqSignature } from "@/lib/linq/verify";
 
 type LinqWebhookEnvelope = {
   event_id?: string;
@@ -10,6 +10,12 @@ type LinqWebhookEnvelope = {
 };
 
 export async function POST(request: Request): Promise<Response> {
+  console.log("[japlan.webhook] invoked", {
+    method: request.method,
+    headerNames: [...request.headers.keys()],
+    bodyLength: request.headers.get("content-length"),
+  });
+
   const rawBody = await request.text();
 
   try {
@@ -18,8 +24,23 @@ export async function POST(request: Request): Promise<Response> {
     console.error("webhook capture failed", err);
   }
 
-  if (!verifyLinqSignature(rawBody, request.headers)) {
-    return new Response("unauthorized", { status: 401 });
+  const signature = inspectLinqSignature(rawBody, request.headers);
+  console.log("[japlan.webhook] signature", {
+    ok: signature.ok,
+    reason: signature.ok ? "pass" : signature.reason,
+  });
+  if (!signature.ok) {
+    const secret = process.env.LINQ_WEBHOOK_SECRET;
+    console.error("[japlan.webhook] signature rejected", {
+      reason: signature.reason,
+      secretSet: Boolean(secret),
+      secretLength: secret?.length ?? 0,
+      bodyLength: rawBody.length,
+      hasWebhookId: Boolean(request.headers.get("webhook-id")),
+      hasWebhookTimestamp: Boolean(request.headers.get("webhook-timestamp")),
+      hasWebhookSignature: Boolean(request.headers.get("webhook-signature")),
+    });
+    return new Response(null, { status: 200 });
   }
 
   let envelope: LinqWebhookEnvelope & Record<string, unknown>;
@@ -27,6 +48,7 @@ export async function POST(request: Request): Promise<Response> {
     envelope = JSON.parse(rawBody) as LinqWebhookEnvelope &
       Record<string, unknown>;
   } catch {
+    console.error("[japlan.webhook] invalid json", { bodyLength: rawBody.length });
     return new Response("invalid json", { status: 400 });
   }
 
@@ -35,6 +57,10 @@ export async function POST(request: Request): Promise<Response> {
   const linqEventId = envelope.event_id;
   const type = envelope.event_type;
   if (!linqEventId || !type) {
+    console.error("[japlan.webhook] missing event_id or event_type", {
+      hasEventId: Boolean(linqEventId),
+      hasType: Boolean(type),
+    });
     return new Response("missing event_id or event_type", { status: 400 });
   }
 
@@ -47,15 +73,49 @@ export async function POST(request: Request): Promise<Response> {
 
   if (error) {
     if (error.code === "23505") {
+      console.log("[japlan.webhook] events insert", {
+        result: "duplicate",
+        code: "23505",
+        eventId: linqEventId,
+        type,
+      });
       return new Response(null, { status: 200 });
     }
+    console.error("[japlan.webhook] events insert", {
+      result: "failed",
+      code: error.code,
+      message: error.message,
+      eventId: linqEventId,
+      type,
+    });
     return new Response("persist failed", { status: 500 });
   }
 
-  after(() => {
-    void dispatchLinqEvent(envelope).catch((err) => {
-      console.error("[japlan.dispatch]", err);
+  console.log("[japlan.webhook] events insert", {
+    result: "inserted",
+    eventId: linqEventId,
+    type,
+  });
+
+  console.log("[japlan.webhook] dispatch queued", {
+    eventId: linqEventId,
+    type,
+  });
+  after(async () => {
+    console.log("[japlan.webhook] dispatch started", {
+      eventId: linqEventId,
+      type,
     });
+    try {
+      await dispatchLinqEvent(envelope);
+    } catch (err) {
+      console.error("[japlan.dispatch]", err);
+    } finally {
+      console.log("[japlan.webhook] dispatch finished", {
+        eventId: linqEventId,
+        type,
+      });
+    }
   });
 
   return new Response(null, { status: 200 });

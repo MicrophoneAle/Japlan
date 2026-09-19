@@ -43,3 +43,5 @@ next-env.d.ts
 
 # webhook payload captures (dev only)
 .captures/
+
+.vercel
