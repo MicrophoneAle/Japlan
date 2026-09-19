@@ -15,7 +15,7 @@ import {
 import { groupProfile, personProfile } from "@/lib/game/profile";
 import { matchPerson } from "@/lib/game/split";
 import { answerValue, isSidequestQuestion, type SurveyAnswers } from "@/lib/game/survey";
-import { FIRST_QUESTION_ID, QUESTIONS, SURVEY_V2_ORDER, type QuestionId } from "@/lib/game/survey-questions";
+import { nextUnansweredQuestion } from "./bootstrap";
 import type { InterestKey } from "@/lib/game/templates";
 
 // Saving and updating what the bot knows about people: weights, the old
@@ -172,19 +172,7 @@ export async function lookupOwnProfile(trip: TripRow, participantId: string): Pr
   });
   if (!person || person.trip_id !== trip.id) return null;
   if (!finished) {
-    // Never started, or partway through the first survey (whose questions
-    // are gone): the first question of the current one. Mid-way through the
-    // current survey: the question they are on.
-    let next: QuestionId = FIRST_QUESTION_ID;
-    if (state && SURVEY_V2_ORDER.includes(state as QuestionId)) next = state as QuestionId;
-    else {
-      const { error } = await getServiceClient()
-        .from("participants")
-        .update({ survey_state: FIRST_QUESTION_ID })
-        .eq("id", person.id);
-      if (error) throw error;
-    }
-    return { participantId, finished: false, text: null, nextQuestion: QUESTIONS[next].prompt };
+    return { participantId, finished: false, text: null, nextQuestion: await nextUnansweredQuestion(person) };
   }
   const prefs = prefsOf(person.prefs_json, answers);
   const partner = partnerOf(answers, person, await tripPeople(trip.id));

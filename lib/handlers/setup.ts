@@ -31,7 +31,7 @@ import {
 } from "@/lib/game/setup";
 import { lookupCityTimezone } from "@/lib/game/city-timezones";
 import { formatBoardTime, parseBoardTime } from "@/lib/game/board-schedule";
-import { isSidequestQuestion, startSurvey } from "@/lib/game/survey";
+import { isSidequestQuestion, startSurvey, type SurveyAnswers } from "@/lib/game/survey";
 import { QUESTIONS, type QuestionId } from "@/lib/game/survey-questions";
 import {
   isValidTimeZone,
@@ -41,7 +41,7 @@ import {
 import type { LLMProvider } from "@/lib/llm";
 import { extractTripDates, inferPlaceTimezone } from "@/lib/llm/gemini";
 import { resolveNearArea } from "@/lib/places/foursquare";
-import { getTripById, maybeActivateTrip, persistSurveyProgress } from "./bootstrap";
+import { getTripById, maybeActivateTrip, persistSurveyProgress, sidequestPromptIfNew } from "./bootstrap";
 
 export type SetupDeps = { provider?: LLMProvider; now?: Date };
 
@@ -359,7 +359,25 @@ export async function answerSetup(opts: {
   // Solo: the trip chat is this DM, so "we're live" rides in this reply.
   const live = await maybeActivateTrip((await getTripById(trip.id)) ?? updated, {
     announce: !trip.is_solo,
+    // Their own board rides in this reply, not a second DM.
+    quietFor: opts.organizer.id,
   });
   if (surveyPrompt) return setupNowAboutYouLine(finished, surveyPrompt);
-  return trip.is_solo && live ? `${finished} ${live}` : finished;
+  const head = trip.is_solo && live ? `${finished} ${live}` : finished;
+  // Setup was the last thing missing and they finished their survey earlier:
+  // their board and the sidequest question now, in this same message.
+  if (!live) return head;
+  const { boardForNewlyReady } = await import("./board-request");
+  const fresh = (await getTripById(trip.id)) ?? updated;
+  const organizer = await findParticipantById(opts.organizer.id);
+  const answers = (organizer?.survey_json ?? {}) as SurveyAnswers;
+  const board = await boardForNewlyReady(fresh, opts.organizer.id, deps.now ?? new Date());
+  const sidequests = organizer ? await sidequestPromptIfNew(organizer.id, answers) : null;
+  return [head, board, sidequests].filter(Boolean).join("\n\n");
+}
+
+async function findParticipantById(id: string): Promise<ParticipantRow | null> {
+  const { data, error } = await getServiceClient().from("participants").select("*").eq("id", id).maybeSingle();
+  if (error) throw error;
+  return (data as ParticipantRow | null) ?? null;
 }

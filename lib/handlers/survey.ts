@@ -20,12 +20,13 @@ import {
 } from "@/lib/game/copy";
 import type { LLMProvider } from "@/lib/llm";
 import {
-  beginSidequestOnboarding,
-  countSurveysPending,
   findOpenSurveyByPhone,
+  getTripById,
   maybeActivateTrip,
   persistSurveyProgress,
+  sidequestPromptIfNew,
 } from "./bootstrap";
+import { boardForNewlyReady } from "./board-request";
 import { handleGroupClaim } from "./claims";
 import { handleConversation } from "./conversation";
 import { answerSetup, needsSetupResume, resumeSetup, setupPromptFor } from "./setup";
@@ -183,31 +184,38 @@ export async function handleSurveyDm(opts: {
       if (!trip.is_solo) await maybeActivateTrip(trip, { quietFor: participant.id });
       return;
     }
-    if (trip.is_solo) {
-      // Solo: this DM is also the trip chat, so "we're live" and the
-      // sidequest question join this reply.
-      const live = await maybeActivateTrip(trip, { announce: false, quietFor: participant.id });
-      if (live) {
-        const sidequests = await beginSidequestOnboarding(participant.id, answers);
-        await sendText(opts.chatId, `${SURVEY_DONE_DM} ${live} ${sidequests}`);
-        return;
-      }
-    }
-    const waitingOn = await countSurveysPending(trip.id);
+    // No destination or dates yet: nothing to make a board for. The organizer
+    // is asked their next setup question in the same message.
     const setupPending = missingRequiredSetup(trip as SetupFields).length > 0;
-    let reply = surveyDoneLine(waitingOn, setupPending);
-    if (isOrganizer && needsSetupResume(trip)) {
-      // The organizer owes setup answers: ask the next one in the same message.
-      reply = `${reply} ${await resumeSetup(trip)}`;
-    } else if (isOrganizer && isSetupQuestion(trip.setup_state)) {
-      reply = `${reply} ${setupPromptFor(trip, trip.setup_state)}`;
-    } else if (!trip.is_solo) {
-      // The last survey in starts the trip: everyone else gets the sidequest
-      // question by DM, this person gets it in this reply.
-      const live = await maybeActivateTrip(trip, { quietFor: participant.id });
-      if (live) reply = `${SURVEY_DONE_DM} ${await beginSidequestOnboarding(participant.id, answers)}`;
+    if (setupPending || (isOrganizer && (needsSetupResume(trip) || isSetupQuestion(trip.setup_state)))) {
+      let reply = surveyDoneLine(0, setupPending);
+      if (isOrganizer && needsSetupResume(trip)) {
+        reply = `${reply} ${await resumeSetup(trip)}`;
+      } else if (isOrganizer && isSetupQuestion(trip.setup_state)) {
+        reply = `${reply} ${setupPromptFor(trip, trip.setup_state)}`;
+      }
+      await sendText(opts.chatId, reply);
+      return;
     }
-    await sendText(opts.chatId, reply);
+    // Ready. The trip goes live on the first finished survey (announced in
+    // the group; a solo trip's chat is this DM, so it joins this reply), and
+    // this person's board is made now, for them alone, and folded into this
+    // one message with the sidequest question: the close, the board, the
+    // question. No board (generation failed): the old line, never nothing.
+    const live = await maybeActivateTrip(trip, { announce: !trip.is_solo, quietFor: participant.id });
+    const fresh = (await getTripById(trip.id)) ?? trip;
+    const active = fresh.state === "active";
+    const board = active ? await boardForNewlyReady(fresh, participant.id, new Date()) : null;
+    const sidequests = active ? await sidequestPromptIfNew(participant.id, answers) : null;
+    const head = board ? SURVEY_DONE_DM : surveyDoneLine(0, false);
+    const opening = trip.is_solo && live ? `${head} ${live}` : head;
+    surveyStep("completed.reply", {
+      participantId: participant.id,
+      activated: Boolean(live),
+      board: Boolean(board),
+      sidequests: Boolean(sidequests),
+    });
+    await sendText(opts.chatId, [opening, board, sidequests].filter(Boolean).join("\n\n"));
     return;
   }
 

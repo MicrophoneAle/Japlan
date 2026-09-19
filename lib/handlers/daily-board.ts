@@ -82,6 +82,8 @@ import { buildStandingsRows } from "@/lib/game/standings";
 import { teamsWithMembers } from "@/lib/handlers/teams";
 
 import { TRIP_COLS } from "@/lib/db/columns";
+import { missingRequiredSetup, type SetupFields } from "@/lib/game/setup";
+import { recordTasksChanged } from "./stats";
 import { boardDueNow, tripDayForDate } from "@/lib/game/board-schedule";
 
 // Matches tasks_owner_code_key: codes are unique per owner per day, not per trip.
@@ -878,6 +880,9 @@ export async function buildBoardForDate(
       onConflict: TASK_CODE_CONFLICT,
     });
     if (error) throw error;
+    // Unclaimed tasks were removed first and claimed collisions filtered out,
+    // so every row here is new: each one is an itinerary item.
+    await recordTasksChanged(trip.id, rows, 1);
   }
   // Anchors keep the time of day they were planned into.
   const SLOT_TIME: Record<DaySlot, string> = { morning: "10:00", afternoon: "14:30", evening: "19:00" };
@@ -1124,6 +1129,9 @@ export async function deleteUnclaimedTasksForDay(tripId: string, day: number): P
   if (drop.length === 0) return;
   const { error } = await getServiceClient().from("tasks").delete().in("id", drop);
   if (error) throw error;
+  // A regenerated day replaces these: they come off the count, the new ones
+  // go on, so regeneration never inflates it.
+  await recordTasksChanged(tripId, tasks.filter((t) => drop.includes(t.id)), -1);
 }
 
 function boardLog(step: string, fields: Record<string, unknown>) {
@@ -1581,6 +1589,7 @@ export async function refillPersonalTasksIfNeeded(opts: {
     onConflict: TASK_CODE_CONFLICT,
   });
   if (error) throw error;
+  await recordTasksChanged(opts.trip.id, rows, 1);
   if (opts.deliver === false) return rows;
   const text = formatPersonalBoard({
     day,
@@ -1611,16 +1620,50 @@ export async function runDailyBoards(opts: {
   force?: boolean;
 }): Promise<{ ran: string[]; skipped: string[] }> {
   const now = opts.now ?? new Date();
+  // Surveying trips too: at board time one that has a finished survey goes
+  // live (a person gets a board once THEY are ready, whoever else is still
+  // answering); one where nobody has finished tells the group once, and
+  // nudges the people answering. Before, the cron skipped them silently.
   let query = getServiceClient()
     .from("trips")
     .select(TRIP_COLS)
-    .eq("state", "active");
+    .in("state", ["active", "surveying"]);
   if (opts.tripId) query = query.eq("id", opts.tripId);
   const { data, error } = await query;
   if (error) throw error;
-  const trips = (data ?? []) as TripRow[];
+  const listed = (data ?? []) as TripRow[];
   const ran: string[] = [];
   const skipped: string[] = [];
+  const { maybeActivateTrip, getTripById } = await import("./bootstrap");
+  const { announceWaitingOnce, nudgeUnfinished } = await import("./survey-nudges");
+  const trips: TripRow[] = [];
+  for (const trip of listed) {
+    if (trip.state !== "surveying") {
+      trips.push(trip);
+      continue;
+    }
+    const due = boardDueNow(trip, now);
+    if (!opts.force && !due.due) {
+      skipped.push(trip.id);
+      continue;
+    }
+    try {
+      if (await maybeActivateTrip(trip)) {
+        boardLog("tick.activated", { tripId: trip.id });
+        trips.push((await getTripById(trip.id)) ?? { ...trip, state: "active" });
+        continue;
+      }
+      // Nobody has finished (or setup is incomplete, which maybeActivateTrip
+      // logs): no board to make yet.
+      if (missingRequiredSetup(trip as SetupFields).length === 0) {
+        await announceWaitingOnce(trip);
+        if (due.due) await nudgeUnfinished(trip, due.date);
+      }
+    } catch (err) {
+      console.error("[japlan.board] surveying tick failed", { tripId: trip.id, error: err instanceof Error ? err.message : String(err) });
+    }
+    skipped.push(trip.id);
+  }
   for (const trip of trips) {
     if (!trip.destination) {
       console.error("[japlan.generate] skip; trip.destination is empty", {
@@ -1647,6 +1690,9 @@ export async function runDailyBoards(opts: {
     try {
       const outcome = await tickBoard(trip, due.date, due.day, now);
       (outcome === "skipped" ? skipped : ran).push(trip.id);
+      // Board time for people still answering: their next question instead
+      // of a board, once a day.
+      await nudgeUnfinished(trip, due.date);
     } catch (err) {
       // One trip failing must not stop the rest of the tick.
       console.error("[japlan.board] tick failed", {
@@ -1779,6 +1825,8 @@ export async function redoMyDay(opts: {
   }
   const { error } = await getServiceClient().from("tasks").delete().in("id", replace.map((t) => t.id));
   if (error) throw error;
+  // A reroll replaces, it does not add: the replaced tasks come off the count.
+  await recordTasksChanged(opts.trip.id, replace, -1);
   let rows: Omit<TaskRow, "id">[] = [];
   try {
     rows = await refillPersonalTasksIfNeeded({
@@ -1800,6 +1848,7 @@ export async function redoMyDay(opts: {
     // Put the old board back rather than leave them with nothing.
     const restore = await getServiceClient().from("tasks").insert(replace);
     if (restore.error) console.error("[japlan.board] redo restore failed", restore.error);
+    else await recordTasksChanged(opts.trip.id, replace, 1);
     boardLog("redo.failed", { tripId: opts.trip.id, day, participantId: opts.claimant.id, restored: replace.length });
     return { kind: "failed", day };
   }

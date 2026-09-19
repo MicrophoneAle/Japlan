@@ -20,6 +20,11 @@ const h = vi.hoisted(() => ({
   dates: vi.fn(),
 }));
 
+// No network in tests: board generation asks for the day's weather.
+vi.mock("@/lib/game/weather", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/game/weather")>()),
+  fetchDayWeather: vi.fn(async () => ({ temperatureC: 20, precipitationChance: 0, summary: "clear", indoorPreferred: false })),
+}));
 vi.mock("@/lib/db/client", () => ({ getServiceClient: () => h.db }));
 vi.mock("@/lib/linq/send", () => ({
   sendText: vi.fn(async (chatId: string, text: string) => {
@@ -182,9 +187,10 @@ describe("organizer setup", () => {
     expect(lastTo(MIKE_DM)).toMatch(/setup's paused rq\. still need where and when/);
 
     await finishSurvey(SAM, SAM_DM);
-    expect(lastTo(SAM_DM)).toContain("waiting on 1 more person and the trip setup");
+    // Nobody else holds Sam up; only the missing destination and dates do.
+    expect(lastTo(SAM_DM)).toContain("waiting on the trip setup");
     await finishSurvey(MIKE, MIKE_DM);
-    expect(openTrip()!.state).toBe("surveying"); // every survey done, still blocked
+    expect(openTrip()!.state).toBe("surveying"); // surveys done, setup still blocks
     // Asked again on his next message, in the same reply as the survey end.
     expect(lastTo(MIKE_DM)).toMatch(/ok where we headed\?/);
     expect(openTrip()!.setup_state).toBe("destination");
@@ -198,6 +204,15 @@ describe("organizer setup", () => {
     expect(lastTo(GROUP)).toBe(
       "we're live 🔥 every morning your tasks land in your dms, and a code like A1 claims one. first board drops oct 17 at 8am.",
     );
+    // Both were ready and waiting on setup: each gets day 1 now, marked as
+    // provisional, with the sidequest question, in ONE message each. Mike's
+    // rides in his setup reply.
+    for (const dm of [SAM_DM, MIKE_DM]) {
+      expect(lastTo(dm)).toMatch(/Day 1, might still change/);
+      expect(lastTo(dm)).toMatch(/btw i'm turning on sidequests/);
+    }
+    expect(allTo(MIKE_DM).filter((t) => /Day 1/.test(t))).toHaveLength(1);
+    expect(allTo(SAM_DM).filter((t) => /Day 1/.test(t))).toHaveLength(1);
   });
 
   it("asks again on the organizer's next message, not on a timer", async () => {

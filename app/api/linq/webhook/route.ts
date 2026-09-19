@@ -1,6 +1,7 @@
 import { after } from "next/server";
 import { getServiceClient } from "@/lib/db/client";
 import { dispatchLinqEvent } from "@/lib/handlers/dispatch";
+import { sweepStalledEvents } from "@/lib/handlers/event-sweep";
 import { captureInboundWebhook } from "@/lib/linq/capture";
 import { inspectLinqSignature } from "@/lib/linq/verify";
 
@@ -127,7 +128,12 @@ export async function POST(request: Request): Promise<Response> {
           eventId: linqEventId,
           type,
         });
-      });
+      })
+      // After this event is handled: re-dispatch any recent message whose
+      // dispatch never finished, and log older ones as dropped. At most once
+      // a minute per instance.
+      .then(() => sweepStalledEvents())
+      .catch((err: unknown) => console.error("[japlan.webhook] sweep failed", err));
   });
 
   return new Response(null, { status: 200 });

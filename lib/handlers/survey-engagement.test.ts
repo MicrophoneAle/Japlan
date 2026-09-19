@@ -22,6 +22,11 @@ const h = vi.hoisted(() => ({
   relevance: vi.fn(),
 }));
 
+// No network in tests: board generation asks for the day's weather.
+vi.mock("@/lib/game/weather", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/game/weather")>()),
+  fetchDayWeather: vi.fn(async () => ({ temperatureC: 20, precipitationChance: 0, summary: "clear", indoorPreferred: false })),
+}));
 vi.mock("@/lib/db/client", () => ({ getServiceClient: () => h.db }));
 vi.mock("@/lib/linq/send", () => {
   const out = (chatId: string, text: string) => {
@@ -222,10 +227,11 @@ describe("the survey accepts anything", () => {
     expect(maya.survey_state).toBe("sidequest_level");
     expect((maya.prefs_json as { version: number }).version).toBe(2);
     expect(maya.profile_md).toContain("shellfish allergy (cross-contamination matters)");
-    // The last one done starts the trip; their reply carries the sidequest question.
+    // Finishing starts the trip; Maya's reply is the close, her board, then
+    // the sidequest question. Sam, already done, gets the same in one DM.
     expect(trip().state).toBe("active");
-    expect(lastIn(DM.maya)).toMatch(/btw i'm turning on sidequests\. how unhinged am i allowed to get\?/);
-    expect(lastIn(DM.sam)).toMatch(/^btw i'm turning on sidequests/);
+    expect(lastIn(DM.maya)).toMatch(/^done\. you're less mysterious than you think\.\n\nDay 1[\s\S]+\n\nbtw i'm turning on sidequests\. how unhinged am i allowed to get\?/);
+    expect(lastIn(DM.sam)).toMatch(/^Day 1[\s\S]+\n\nbtw i'm turning on sidequests/);
     // The group profile unions constraints and names nobody.
     expect(trip().group_profile_md).toContain("shellfish allergy (cross-contamination matters)");
     expect(trip().group_profile_md).toContain("no heights");

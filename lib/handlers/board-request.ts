@@ -306,3 +306,74 @@ export async function answerBoardRequest(
   const text = boardText(day, myRows, await dayAnchorsForBoard(trip, day));
   await reply(isFuture ? provisionalBoard(text) : text, { board: true });
 }
+
+// Someone just became ready (finished the survey): their board for today, or
+// for day 1 if the trip has not started (marked "might still change"), made
+// now and returned for the reply they are already getting. Per person:
+//  - the day's board exists: their own tasks on it, or a top-up for them
+//    alone if they joined after it was made;
+//  - it does not: the day is made through the cron's pipeline (which only
+//    covers people who are ready) and nothing is sent to anyone else. The
+//    cron later delivers it to the others at board time and skips this
+//    person, who is logged in board_requests.
+// null when there is no day to make (no dates, trip over) or generation
+// failed; the caller falls back to its usual line.
+export async function boardForNewlyReady(
+  trip: import("@/lib/db/types").TripRow,
+  participantId: string,
+  now: Date,
+): Promise<string | null> {
+  if (!trip.start_date || !trip.end_date || missingRequiredSetup(trip as SetupFields).length > 0) return null;
+  const today = localDateString(now, trip.timezone || "UTC");
+  if (today > trip.end_date) return null;
+  const date = today < trip.start_date ? trip.start_date : today;
+  const day = tripDayForDate(trip.start_date, date);
+  try {
+    const people = await getServiceClient()
+      .from("participants")
+      .select("id, trip_id, phone, display_name, score, survey_json, survey_state, sidequests_muted, consented_at")
+      .eq("trip_id", trip.id);
+    if (people.error) throw people.error;
+    const me = ((people.data ?? []) as import("@/lib/db/types").ParticipantRow[]).find((p) => p.id === participantId);
+    if (!me || !constraintsKnown(me) || isUnderAge((me.survey_json ?? {}) as SurveyAnswers)) return null;
+
+    let board = await getBoard(trip.id, day);
+    if (board?.status === "generating") board = await waitWhileGenerating(trip.id, day);
+    let rows: Pick<TaskRow, "code" | "title" | "base_points" | "slot" | "neighborhood" | "participant_id" | "team_id">[];
+    if (board) {
+      const existing = tasksClaimableBy(await tasksForDay(trip.id, day), participantId, []);
+      rows = existing.length
+        ? existing
+        : await refillPersonalTasksIfNeeded({ trip, claimant: me, people: [], remainingOpenPersonal: 0, deliver: false, date, now });
+      boardStep("ready.board", { path: existing.length ? "served_existing" : "regenerated", tripId: trip.id, day, participantId, count: rows.length });
+    } else {
+      const lock = await lockNewBoard(trip.id, day, date, { provisional: date > today, requestedBy: participantId });
+      if (!lock) {
+        board = await waitWhileGenerating(trip.id, day);
+        rows = tasksClaimableBy(await tasksForDay(trip.id, day), participantId, []);
+      } else {
+        try {
+          const built = await buildBoardForDate(trip, { date, now });
+          await updateBoard(lock.id, { status: "ready", provisional: date > today });
+          rows = tasksClaimableBy(
+            built.rows.map((row, i) => ({ ...row, id: `new-${i}` })),
+            participantId,
+            [],
+          );
+        } catch (err) {
+          await getServiceClient().from("boards").delete().eq("id", lock.id);
+          throw err;
+        }
+      }
+      boardStep("ready.board", { path: "regenerated", tripId: trip.id, day, participantId, count: rows.length, madeDay: true });
+    }
+    if (rows.length === 0) return null;
+    // The cron skips people who already got this day's board.
+    await logRequest(trip.id, participantId, today, day, "generate");
+    const text = boardText(day, rows, await dayAnchorsForBoard(trip, day));
+    return date > today ? provisionalBoard(text) : text;
+  } catch (err) {
+    boardStep("ready.board.failed", { tripId: trip.id, day, participantId, error: err instanceof Error ? err.message : String(err) });
+    return null;
+  }
+}

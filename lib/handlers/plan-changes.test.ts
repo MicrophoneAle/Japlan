@@ -14,6 +14,11 @@ const h = vi.hoisted(() => ({
   calls: [] as { name: string; args: Record<string, unknown> }[],
 }));
 
+// No network in tests: board generation asks for the day's weather.
+vi.mock("@/lib/game/weather", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/game/weather")>()),
+  fetchDayWeather: vi.fn(async () => ({ temperatureC: 20, precipitationChance: 0, summary: "clear", indoorPreferred: false })),
+}));
 vi.mock("@/lib/db/client", () => ({ getServiceClient: () => h.db }));
 vi.mock("@/lib/linq/send", () => ({
   sendText: vi.fn(async (chatId: string, text: string) => {

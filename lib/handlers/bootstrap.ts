@@ -1,8 +1,7 @@
 import { getServiceClient } from "@/lib/db/client";
 import type { ParticipantRow, TripRow } from "@/lib/db/types";
-import { QUESTIONS } from "@/lib/game/survey-questions";
+import { FIRST_QUESTION_ID, QUESTIONS, SURVEY_V2_ORDER, type QuestionId } from "@/lib/game/survey-questions";
 import {
-  allParticipantsComplete,
   answerValue,
   buildIntroGroupPost,
   displayNameFromFirstName,
@@ -332,6 +331,32 @@ export async function countSurveysPending(tripId: string): Promise<number> {
 // one reply rather than sending two messages.
 // Sidequests' own mini-onboarding, at trip start: the next thing this
 // person's DM asks. Returns the question, for a reply that is already going.
+// Finished the survey (either version), or answering the sidequest questions
+// that follow it: ready for boards.
+export function surveyFinished(state: string | null | undefined): boolean {
+  return state === "done" || isSidequestQuestion(state);
+}
+
+// The sidequest question, unless they answered it before (a resurvey).
+export async function sidequestPromptIfNew(participantId: string, answers: SurveyAnswers): Promise<string | null> {
+  if (answerValue(answers, "sidequest_level")) return null;
+  return beginSidequestOnboarding(participantId, answers);
+}
+
+// The question someone still answering is on. Never started, or partway
+// through the first survey (whose questions are gone): moved to the first
+// question of the current one, so their next reply answers it.
+export async function nextUnansweredQuestion(person: Pick<ParticipantRow, "id" | "survey_state">): Promise<string> {
+  const state = person.survey_state;
+  if (state && SURVEY_V2_ORDER.includes(state as QuestionId)) return QUESTIONS[state as QuestionId].prompt;
+  const { error } = await getServiceClient()
+    .from("participants")
+    .update({ survey_state: FIRST_QUESTION_ID })
+    .eq("id", person.id);
+  if (error) throw error;
+  return QUESTIONS[FIRST_QUESTION_ID].prompt;
+}
+
 export async function beginSidequestOnboarding(participantId: string, answers: SurveyAnswers): Promise<string> {
   const step = startSidequestOnboarding(answers);
   await persistSurveyProgress({ participantId, awaiting: step.state.awaiting, answers: step.state.answers });
@@ -347,7 +372,10 @@ export async function maybeActivateTrip(
   const trip = (await getTripById(stale.id)) ?? stale;
   if (trip.state === "active" || trip.state === "complete") return null;
   const people = await listParticipants(trip.id);
-  if (!allParticipantsComplete(people.map((p) => p.survey_state))) return null;
+  // Live on the first finished survey: one slow person does not hold the
+  // group hostage. Everyone else gets their board when they finish.
+  const ready = people.filter((p) => surveyFinished(p.survey_state));
+  if (ready.length === 0) return null;
   if (!setupReadyToActivate(trip as SetupFields)) {
     logStep("activate.blocked", {
       tripId: trip.id,
@@ -377,16 +405,22 @@ export async function maybeActivateTrip(
     .eq("id", trip.id)
     .neq("state", "active");
   if (error) throw error;
-  // Trip start: everyone else is asked how unhinged sidequests may get.
-  for (const person of people) {
+  // Trip start: everyone else who is already ready gets their board and the
+  // sidequest question, in one DM. People still answering get theirs when
+  // they finish (the survey handler); quietFor is replying already.
+  const { boardForNewlyReady } = await import("./board-request");
+  const live = (await getTripById(trip.id)) ?? { ...trip, state: "active" };
+  for (const person of ready) {
     if (person.id === opts.quietFor) continue;
     const answers = (person.survey_json ?? {}) as SurveyAnswers;
     if (answerValue(answers, "age_bracket") === "under_18") continue;
     try {
-      const prompt = await beginSidequestOnboarding(person.id, answers);
-      await sendDM(person.phone, prompt);
+      const board = await boardForNewlyReady(live, person.id, new Date());
+      const sidequests = await sidequestPromptIfNew(person.id, answers);
+      const text = [board, sidequests].filter(Boolean).join("\n\n");
+      if (text) await sendDM(person.phone, text);
     } catch (err) {
-      console.error("[japlan.bootstrap] sidequest onboarding DM failed", { participantId: person.id, err });
+      console.error("[japlan.bootstrap] ready DM failed", { participantId: person.id, err });
     }
   }
   return line;

@@ -16,6 +16,11 @@ const h = vi.hoisted(() => ({
   modelCalls: 0,
 }));
 
+// No network in tests: board generation asks for the day's weather.
+vi.mock("@/lib/game/weather", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/game/weather")>()),
+  fetchDayWeather: vi.fn(async () => ({ temperatureC: 20, precipitationChance: 0, summary: "clear", indoorPreferred: false })),
+}));
 vi.mock("@/lib/db/client", () => ({ getServiceClient: () => h.db }));
 vi.mock("@/lib/linq/send", () => ({
   sendText: vi.fn(async (chatId: string, text: string) => {
@@ -134,9 +139,11 @@ describe("solo setup and survey", () => {
     expect(surveyText).not.toMatch(/group splits|travelled with|as a couple|here to win/);
     expect(surveyText).not.toMatch(/PLACEHOLDER|reply skip to skip/i);
     expect(trip().state).toBe("active");
-    // One closing message: the close, "we're live", and the sidequest question.
+    // One closing message: the close and "we're live", then their day 1
+    // board (the trip has not started, so marked as provisional), then the
+    // sidequest question last, so their next reply answers it.
     expect(last()).toMatch(
-      /^done\. you're less mysterious than you think\. we're live 🔥 every morning your tasks land in your dms, and a code like A1 claims one\. first board drops oct 17 at 8am\. btw i'm turning on sidequests\./,
+      /^done\. you're less mysterious than you think\. we're live 🔥 every morning your tasks land in your dms, and a code like A1 claims one\. first board drops oct 17 at 8am\.\n\nDay 1, might still change[\s\S]+\n\nbtw i'm turning on sidequests\./,
     );
     const surveyAsked = h.sent.slice(surveyStart).length;
     // At most eight questions, then the close.

@@ -48,6 +48,7 @@ import { endOfLocalDayContaining, localDateString } from "@/lib/game/time";
 import { prefDimsFor } from "@/lib/game/prefs";
 import { learnFrom } from "./profiles";
 import { isBoardRequest, isRedoRequest } from "@/lib/game/board-schedule";
+import { bumpStats, recordClaimAwarded } from "@/lib/handlers/stats";
 import {
   FREEFORM_PHOTO_BONUS_MAX,
   FREEFORM_SOURCE,
@@ -744,10 +745,13 @@ async function applyAwards(opts: {
       incoming: row.points,
       cap,
     });
-    const resolution =
+    const resolution: Record<string, unknown> =
       typeof opts.resolution === "object" && opts.resolution !== null
         ? { ...(opts.resolution as Record<string, unknown>), capped: capped.capped }
         : { capped: capped.capped };
+    // The bonus this claim's photo earned, on the row, so the stats (and
+    // anyone reading a dispute) can see it.
+    if (opts.photoBonus > 0 && resolution.photo_bonus === undefined) resolution.photo_bonus = opts.photoBonus;
     await insertClaim({
       task_id: opts.task.id,
       participant_id: row.participantId,
@@ -760,6 +764,13 @@ async function applyAwards(opts: {
       capped: capped.capped,
       photo_claimed_at: opts.photoClaimedAt ?? null,
       primary_claim: row.participantId === opts.claimant.id,
+    });
+    await recordClaimAwarded({
+      tripId: opts.trip.id,
+      participantId: row.participantId,
+      task: opts.task,
+      evidenceUrl: opts.evidenceUrl,
+      resolution,
     });
     if (row.participantId === opts.claimant.id) opts.onClaimWritten?.();
     if (capped.awarded_points > 0) {
@@ -1511,6 +1522,12 @@ export async function applyLatePhotoBonus(opts: {
           .eq("status", "awarded"),
     );
     if (error) throw error;
+    // The claim now carries a photo (if it did not already) and, when it
+    // paid, a bonus: the same facts the row now stores.
+    await bumpStats(opts.trip.id, participantId, {
+      photos_submitted: (memberClaim as ClaimRow | null)?.evidence_url ? 0 : 1,
+      photo_bonuses_earned: capped.awarded_points > 0 ? 1 : 0,
+    });
     if (capped.awarded_points > 0) {
       const total = await bumpScore(participantId, capped.awarded_points);
       if (participantId === opts.claimant.id) claimantTotal = total;

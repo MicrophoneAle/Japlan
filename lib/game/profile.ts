@@ -231,3 +231,12 @@ export function otherPersonAskedAbout(
   }
   return null;
 }
+
+// Someone's strongest interest in a few words ("late nights out"), or null
+// when nothing is known beyond a guess. For Wrapped's "favorite".
+export function topInterestWords(prefs: Prefs): string | null {
+  const ranked = PREF_DIMS.map((d) => ({ d, eff: effectiveWeight(prefs.weights[d]), c: prefs.weights[d].c }))
+    .filter((r) => r.c !== "low" && r.eff >= 0.6)
+    .sort((a, b) => b.eff - a.eff);
+  return ranked[0] ? DIM_WORDS[ranked[0].d] : null;
+}

@@ -22,6 +22,16 @@ const DEFAULTS: Record<string, () => Row> = {
   boards: () => ({ status: "generating", provisional: false, requested_by: null, delivered_at: null, updated_at: new Date().toISOString() }),
 };
 
+const STAT_COUNTERS = [
+  "itinerary_items_total",
+  "tasks_completed",
+  "photos_submitted",
+  "photo_bonuses_earned",
+  "sidequests_claimed",
+  "freeform_claims",
+  "distance_km",
+];
+
 function key(row: Row, cols: string[]): string {
   return JSON.stringify(cols.map((c) => row[c] ?? null));
 }
@@ -99,6 +109,32 @@ export class FakeSupabase {
       if (!row) return { data: null, error: null };
       row.score = Number(row.score ?? 0) + Number(args.p_delta);
       return { data: row.score, error: null };
+    }
+    if (name === "bump_participant_stats") {
+      // Mirrors the SQL function: create the row at zero, add the deltas
+      // (never below zero), add the day and place to their sets, and derive
+      // the two distinct counts from them. Synchronous, so atomic here.
+      const rows = this.table("participant_stats");
+      let row = rows.find((r) => r.trip_id === args.p_trip_id && r.participant_id === args.p_participant_id);
+      if (!row) {
+        row = {
+          trip_id: args.p_trip_id,
+          participant_id: args.p_participant_id,
+          ...Object.fromEntries(STAT_COUNTERS.map((k) => [k, 0])),
+          activity_days: [],
+          place_keys: [],
+        };
+        rows.push(row);
+      }
+      const deltas = (args.p_deltas ?? {}) as Record<string, number>;
+      for (const k of STAT_COUNTERS) row[k] = Math.max(0, Number(row[k] ?? 0) + Number(deltas[k] ?? 0));
+      const days = row.activity_days as number[];
+      const places = row.place_keys as string[];
+      if (args.p_day !== null && args.p_day !== undefined && !days.includes(args.p_day as number)) days.push(args.p_day as number);
+      if (args.p_place && !places.includes(args.p_place as string)) places.push(args.p_place as string);
+      row.days_with_activity = days.length;
+      row.places_visited = places.length;
+      return { data: { ...row }, error: null };
     }
     return { data: null, error: { code: "PGRST202", message: `no function ${name}` } };
   }

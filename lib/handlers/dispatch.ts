@@ -441,6 +441,10 @@ export async function dispatchLinqEvent(envelope: LinqEnvelope): Promise<void> {
       message: error.message,
       stack: error.stack ?? null,
     });
+    // It failed but it ran (an addressed message already got "that's on me"):
+    // marked, so the stalled-event sweep retries only dispatches that never
+    // finished at all.
+    await markProcessed(envelope.event_id).catch(() => {});
   } finally {
     dispatchStep("dispatchLinqEvent.exit", {
       type: envelope.event_type ?? null,
