@@ -143,15 +143,16 @@ describe("solo setup and survey", () => {
 });
 
 describe("asking for the day's plan", () => {
-  it("answers before any board exists, with no model and no error", async () => {
+  it("shows day 1 before the trip starts instead of refusing", async () => {
     await soloThroughSetup();
     for (let i = 0; i < 25 && trip().state !== "active"; i++) await say("skip");
-    const callsBefore = h.modelCalls;
+    trip().destination_profile_json = TOKYO_HAND_PROFILE;
 
-    // The trip (oct 17-20) has not started: say when it does.
+    // The trip (oct 17-20) has not started: "the plans" means its first day.
     await say("Please give me the first day plans");
-    expect(last()).toBe("the trip starts oct 17. first board lands oct 17 at 8am.");
-    expect(h.modelCalls).toBe(callsBefore);
+    expect(last()).toMatch(/^Day 1\n/);
+    expect(last()).toMatch(/provisional/);
+    expect(last()).not.toMatch(/starts|scheduled|timezone/);
     expect(h.sent.some((m) => /something broke/.test(m.text))).toBe(false);
   });
 

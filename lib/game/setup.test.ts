@@ -85,7 +85,9 @@ describe("dates", () => {
       end: "2026-10-20",
     });
     expect(checkDateRange("2026-10-20", "2026-10-17", today)).toEqual({ ok: false, reason: "backwards" });
-    expect(checkDateRange("2026-10-01", "2026-11-30", today)).toEqual({ ok: false, reason: "too_long" });
+    // Long trips are fine (day letters cycle past Z); only a likely typo is asked about.
+    expect(checkDateRange("2026-10-01", "2026-11-30", today).ok).toBe(true);
+    expect(checkDateRange("2026-10-01", "2027-01-15", today)).toEqual({ ok: false, reason: "too_long" });
     expect(checkDateRange("2026-08-01", "2026-08-05", today)).toEqual({ ok: false, reason: "in_the_past" });
     expect(checkDateRange("2026-02-30", "2026-03-02", today)).toEqual({ ok: false, reason: "invalid" });
     expect(checkDateRange("march 14", "march 19", today)).toEqual({ ok: false, reason: "invalid" });

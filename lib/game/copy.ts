@@ -64,7 +64,7 @@ export function datesRetryLine(
     case "backwards":
       return `that ends before it starts. try again, like "oct 17-20".`;
     case "too_long":
-      return "that's longer than 26 days, more than i can run. try a shorter range.";
+      return "that's over three months, which looks like a typo. send the dates again?";
     case "in_the_past":
       return "those dates are already over. try again.";
     default:
@@ -83,14 +83,10 @@ export function setupNowAboutYouLine(finished: string, surveyPrompt: string): st
   return `${finished} ${surveyPrompt}`;
 }
 
-// Asking for the board / a day's plan. A request that finds no board makes
-// one; these lines cover the cases where it cannot.
-export function boardClearedLine(next: string | null): string {
-  return next ? `you've cleared today's board. the next one lands ${next}.` : "you've cleared today's board.";
-}
-
+// Asking for a day's board. Any day of the trip can be shown or made on
+// request; these are the few real reasons one cannot, in the person's terms.
 export function boardRefillLine(board: string): string {
-  return `you cleared today's board, so here's a refill.\n${board}`;
+  return `you cleared that board, so here's more.\n${board}`;
 }
 
 export const PROVISIONAL_NOTE =
@@ -102,36 +98,38 @@ export function provisionalBoard(board: string): string {
 
 export const BOARD_IN_DM_LINE = "your board's in your dm.";
 
-export const TRIP_NOT_ACTIVE_BOARD_LINE =
-  "no board yet. it starts once setup and the surveys are done.";
-
-export function tripNotStartedLine(start: string, when: string | null): string {
-  return when
-    ? `the trip starts ${start}. first board lands ${when}.`
-    : `the trip starts ${start}, so there's no board before then.`;
+// REAL: the day is outside the trip.
+export function dayNotInTripLine(start: string, end: string): string {
+  return `that day isn't part of this trip. it runs ${start} to ${end}.`;
 }
 
-export function tripEndedForDayLine(end: string): string {
-  return `the trip ends ${end}, so there's no board for that day.`;
+// REAL: nothing new is made for a day that's over (it could be claimed
+// without having been done).
+export function pastDayNoBoardLine(label: string, cleared: boolean): string {
+  return cleared
+    ? `${label} is over, and you cleared your part of it.`
+    : `${label} is over, so there's no board to make for it now.`;
 }
 
-export const PAST_DAY_NO_BOARD_LINE = "that day's already gone, and no board was made for it.";
-
-export function boardRequestLimitLine(next: string | null): string {
-  return next
-    ? `you've already had one board made today. the next one lands ${next}.`
-    : "you've already had one board made today.";
+// REAL (anti-abuse): endless regeneration of one day.
+export function refillLimitLine(label: string, count: number): string {
+  return `that's ${count} refills for ${label} already, which is plenty for one day. the next day's board is yours whenever.`;
 }
 
-export const BOARD_BEING_MADE_LINE = "that board's being made right now. ask again in a minute.";
-
-export const BOARD_MAKE_FAILED_LINE = "couldn't make that board just now. ask again in a minute.";
-
-export function noTasksForYouLine(label: string, next: string | null): string {
-  return next
-    ? `${label}'s board has nothing on it for you. the next one lands ${next}.`
-    : `${label}'s board has nothing on it for you.`;
+// REAL, for the asker only: their tasks need their allergies and limits.
+export function finishYourSurveyLine(): string {
+  return "your tasks come once you've answered your questions in the dm, so none clash with your allergies or limits.";
 }
+
+// REAL: a board needs a place and dates.
+export function waitingOnSetupLine(organizer: string | null): string {
+  return organizer
+    ? `boards need a destination and dates first, and ${organizer} is setting those.`
+    : `boards need a destination and dates first: "japlan setup".`;
+}
+
+// Our failure, said as ours.
+export const BOARD_MAKE_FAILED_LINE = "couldn't make that board just now, that's on me. ask again in a minute.";
 
 // "japlan board time 7am"
 export function boardTimeSetLine(time: string): string {
@@ -291,24 +289,19 @@ export function photoAlreadyBonusedLine(code: string, next: string): string {
   return `${code} already has its photo bonus. ${next}`;
 }
 
+// Our failure, said as ours: someone in the group chat could not be added
+// to the trip (joining is automatic, so this only happens if that broke).
 export function notOnTripLine(): string {
-  return `you're not on this trip yet, so i can't score that. whoever set up japlan can add you.`;
+  return `couldn't add you to this trip just now, that's on me. send that again in a minute.`;
 }
 
+// Our failure: the trip for this chat could not be set up.
 export function tripNotReadyLine(): string {
-  return `still setting this trip up. send that again in a minute.`;
-}
-
-export function dmClaimInGroupLine(next: string): string {
-  return `you're all set. claims go in the group chat. ${next}`;
+  return `still setting this trip up, that's on me. send that again in a minute.`;
 }
 
 export function dmUnknownPersonLine(): string {
   return `i only know people from a trip group chat. add me to yours and say japlan.`;
-}
-
-export function conversationCapLine(next: string): string {
-  return `i've said plenty this hour. ${next}`;
 }
 
 export const DISPATCH_ERROR_LINE =
@@ -345,10 +338,6 @@ export function freeformPeerLine(opts: {
   code: string;
 }): string {
   return `${opts.name} says they ${opts.title}. ${opts.code}. 👍 if that happened.`;
-}
-
-export function freeformAlreadyUsedLine(next: string): string {
-  return `already used today's freeform. ${next}`;
 }
 
 export function freeformRejectedLine(next: string): string {

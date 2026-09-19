@@ -24,7 +24,6 @@ import { evaluateAddress, findTaskCode } from "@/lib/game/addressing";
 import {
   alreadyClaimedLine,
   claimConfirmedLine,
-  freeformAlreadyUsedLine,
   freeformPeerLine,
   freeformRejectedLine,
   nextStepClause,
@@ -48,7 +47,6 @@ import { isBoardRequest } from "@/lib/game/board-schedule";
 import {
   FREEFORM_PHOTO_BONUS_MAX,
   FREEFORM_SOURCE,
-  hasFreeformClaimToday,
   isClaimantTapback,
   openPersonalTaskIds,
   parseFreeformExtraction,
@@ -173,6 +171,9 @@ export type ClaimHandlerDeps = {
   // Dispatch found an awarded claim still inside the photo bonus window, so a
   // bare photo from this sender is addressed.
   photoBonusOpen?: boolean;
+  // A DM from someone on a group trip: which trip chat the claim belongs to.
+  // Replies go to the DM; the claim confirmation also goes to the group.
+  tripChatId?: string;
 };
 
 export type ClaimFallthrough = {
@@ -638,6 +639,9 @@ async function applyAwards(opts: {
   photoClaimedAt?: string | null;
   // Fired once the claimant's primary row exists.
   onClaimWritten?: () => void;
+  // A claim made by DM: the confirmation goes to the group (the scoreboard)
+  // and to the DM (the answer to what they sent).
+  alsoConfirmTo?: string | null;
 }): Promise<void> {
   const memberIds = opts.task.team_id
     ? Array.from(
@@ -716,12 +720,13 @@ async function applyAwards(opts: {
   const name =
     opts.people.find((p) => p.id === opts.claimant.id)?.display_name ??
     opts.claimant.display_name;
-  await claimAwait(
+  const confirmTo = [confirmChatId, ...(opts.alsoConfirmTo && opts.alsoConfirmTo !== confirmChatId ? [opts.alsoConfirmTo] : [])];
+  for (const target of confirmTo) await claimAwait(
     "outbound.confirm",
-    { chatId: confirmChatId, code: opts.task.code },
+    { chatId: target, code: opts.task.code },
     () =>
       opts.send(
-        confirmChatId,
+        target,
         claimConfirmedLine({
           code: opts.task.code,
           name,
@@ -1025,6 +1030,7 @@ async function resolveKnownTask(opts: {
       trip: opts.trip,
       send: opts.send,
       photoClaimedAt,
+      alsoConfirmTo: opts.chatId !== opts.trip.linq_chat_id ? opts.chatId : null,
     });
   } catch (err) {
     if (isClaimConflict(err)) {
@@ -1051,18 +1057,10 @@ async function tryHandleFreeform(opts: {
   extraction?: FreeformExtraction | null;
   nextStep: string;
 }): Promise<boolean> {
+  // No one-freeform-a-day quota: PLAN has no such rule, and points are
+  // already bounded by the daily cap. Real refusals (unsafe, illegal, a repeat
+  // of something already done) are below.
   const day = currentTripDay(opts.trip, new Date());
-  if (
-    hasFreeformClaimToday({
-      tasks: opts.tasks,
-      claims: opts.claims,
-      participantId: opts.claimant.id,
-      day,
-    })
-  ) {
-    await opts.send(opts.trip.linq_chat_id, freeformAlreadyUsedLine(opts.nextStep));
-    return true;
-  }
 
   let extracted = opts.extraction ?? null;
   if (!extracted) {
@@ -1573,7 +1571,7 @@ async function handleGroupClaimInner(
   await Promise.resolve();
   claimStep("loadTripContext.call", { chatId });
 
-  const ctx = await loadTripContext(chatId);
+  const ctx = await loadTripContext(deps.tripChatId ?? chatId);
   if (!ctx) {
     claimStep("trip.context.miss", { chatId, tentative });
     if (!tentative) {

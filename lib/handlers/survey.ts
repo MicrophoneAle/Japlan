@@ -4,7 +4,6 @@ import { QUESTIONS, type QuestionId } from "@/lib/game/survey-questions";
 import { isSetupQuestion, missingRequiredSetup, type SetupFields } from "@/lib/game/setup";
 import {
   SURVEY_DONE_DM,
-  dmClaimInGroupLine,
   dmUnknownPersonLine,
   surveyDoneLine,
 } from "@/lib/game/copy";
@@ -15,7 +14,8 @@ import {
   maybeActivateTrip,
   persistSurveyProgress,
 } from "./bootstrap";
-import { nextStepForParticipant } from "./claims";
+import { handleGroupClaim } from "./claims";
+import { handleConversation } from "./conversation";
 import { answerSetup, needsSetupResume, resumeSetup, setupPromptFor } from "./setup";
 
 // Every DM is addressed, so every branch here sends exactly one message.
@@ -26,6 +26,8 @@ export async function handleSurveyDm(opts: {
   chatId: string;
   text: string;
   provider?: LLMProvider;
+  // The raw inbound message, for routing a done participant's DM to their trip.
+  data?: Record<string, unknown>;
 }): Promise<void> {
   console.log("[japlan.dispatch] step", {
     step: "survey.lookup.before",
@@ -69,14 +71,20 @@ export async function handleSurveyDm(opts: {
   }
 
   if (!state || state === "done") {
-    // Survey finished and solo mode is off: claims belong in the group.
+    // Survey done: this DM is a claim, a board request, or conversation about
+    // their trip. Handle it here rather than sending them to the group chat.
+    // Replies stay in this DM; a claim confirmation also posts to the group.
     console.log("[japlan.dispatch] step", {
-      step: "survey.already_done",
+      step: "survey.done.route_to_trip",
       chatId: opts.chatId,
       tripId: trip.id,
     });
-    const next = await nextStepForParticipant(trip, participant.id);
-    await sendText(opts.chatId, dmClaimInGroupLine(next));
+    if (!opts.data) {
+      await sendText(opts.chatId, dmUnknownPersonLine());
+      return;
+    }
+    const miss = await handleGroupClaim(opts.data, { tripChatId: trip.linq_chat_id });
+    if (miss) await handleConversation(miss);
     return;
   }
 

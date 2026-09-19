@@ -21,7 +21,7 @@ import {
 } from "./claims";
 import { findTaskCode } from "./addressing";
 import { HAND_WRITTEN_DAY1_TASKS } from "./hand-written-tasks";
-import { computePoints, applyDailyPointsCap, tierForPoints } from "./scoring";
+import { computePoints, applyDailyPointsCap, dayLetter, tierForPoints } from "./scoring";
 import {
   claimConfirmedLine,
   nextStepClause,
@@ -189,6 +189,18 @@ describe("task ownership", () => {
 
   it("lets anyone claim the shared board", () => {
     expect(canClaimTask(shared("t1"), "p9", [])).toBe(true);
+  });
+
+  it("prefers the latest day when letters cycle past day 26", () => {
+    expect(dayLetter(1)).toBe("A");
+    expect(dayLetter(26)).toBe("Z");
+    expect(dayLetter(27)).toBe("A");
+    const tasks = [
+      { ...personal("day1", "p1"), day: 1 },
+      { ...personal("day27", "p1"), day: 27 },
+    ];
+    const hit = findTaskByCodeFor(tasks, "A1", "p1", []);
+    expect(hit.kind === "task" && hit.task.id).toBe("day27");
   });
 
   it("resolves a repeated code to the claimant's own task", () => {

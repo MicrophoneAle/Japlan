@@ -121,13 +121,47 @@ const WEEKDAY_RE = "(sun|mon|tue|tues|wed|thu|thur|thurs|fri|sat)(?:day|nesday|r
 
 export type BoardDay = { date: string; label: string };
 
-// Which day a board request means. No day words: today.
-//   "tomorrow", "day 3", "friday", "the day after tomorrow", "today"
+const MONTH_NUM: Record<string, number> = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+};
+const MONTH_WORD = "(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\.?";
+
+// "oct 19" / "19 oct" / "october 19th": the year that lands inside or after
+// the trip start (a trip in late december asking for "jan 2" means next year).
+function monthDayDate(text: string, anchor: string): string | null {
+  const m =
+    text.match(new RegExp(`\\b${MONTH_WORD}\\s*(\\d{1,2})(?:st|nd|rd|th)?\\b`)) ??
+    text.match(new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s*(?:of\\s+)?${MONTH_WORD}`));
+  if (!m) return null;
+  const monthFirst = isNaN(Number(m[1]));
+  const month = MONTH_NUM[(monthFirst ? m[1] : m[2]).slice(0, 3)];
+  const day = Number(monthFirst ? m[2] : m[1]);
+  if (!month || day < 1 || day > 31) return null;
+  const year = Number(anchor.slice(0, 4));
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const sameYear = `${year}-${pad(month)}-${pad(day)}`;
+  // Half a year before the anchor means the following year.
+  return daysBetweenIso(sameYear, anchor) > 180 ? `${year + 1}-${pad(month)}-${pad(day)}` : sameYear;
+}
+
+// Which day a board request means:
+//   "day 3", "friday", "oct 19", "the last day", "first day", "tomorrow"
+// No day words: today, or day 1 when the trip has not started yet (asking
+// for "the plans" before the trip means its first day, not a refusal).
 export function parseBoardDay(
   text: string,
-  opts: { today: string; startDate: string | null },
+  opts: { today: string; startDate: string | null; endDate?: string | null },
 ): BoardDay {
   const t = text.toLowerCase();
+  if (/\b(last|final)\s+day\b/.test(t) && opts.endDate) {
+    return { date: opts.endDate, label: "the last day" };
+  }
+  if (/\bfirst\s+day\b/.test(t) && opts.startDate) {
+    return { date: opts.startDate, label: "day 1" };
+  }
+  const monthDay = monthDayDate(t, opts.startDate ?? opts.today);
+  if (monthDay) return { date: monthDay, label: shortDate(monthDay) };
   if (/\bday after tomorrow\b/.test(t)) {
     return { date: addDaysIso(opts.today, 2), label: "the day after tomorrow" };
   }
@@ -146,6 +180,9 @@ export function parseBoardDay(
     const ahead = (target - current + 7) % 7; // today if it is that weekday
     return { date: addDaysIso(opts.today, ahead), label: ahead === 0 ? "today" : WEEKDAYS[target] };
   }
+  if (opts.startDate && opts.today < opts.startDate) {
+    return { date: opts.startDate, label: "day 1" };
+  }
   return { date: opts.today, label: "today" };
 }
 
@@ -156,9 +193,9 @@ export function parseBoardDay(
 export function isBoardRequest(text: string): boolean {
   const t = text.toLowerCase().replace(/\bjaplan\b[,:]?/g, " ").replace(/\s+/g, " ").trim();
   if (/\b(did|done|finished|completed|claimed|got)\b/.test(t)) return false;
-  // Just a day: "tomorrow", "day 3", "friday", "today?"
+  // Just a day: "tomorrow", "day 3", "friday", "oct 19", "the last day"
   const dayOnly = new RegExp(
-    `^(?:(?:what about|and|how about|for)\\s+)?(?:today|tonight|tomorrow|tmrw|the day after tomorrow|day\\s*\\d{1,2}|${WEEKDAY_RE})[?.!]*$`,
+    `^(?:(?:what about|and|how about|for|show me)\\s+)?(?:today|tonight|tomorrow|tmrw|the day after tomorrow|day\\s*\\d{1,2}|${WEEKDAY_RE}|(?:the\\s+)?(?:first|last|final)\\s+day|${MONTH_WORD}\\s*\\d{1,2}(?:st|nd|rd|th)?|\\d{1,2}(?:st|nd|rd|th)?\\s*${MONTH_WORD})[?.!]*$`,
   );
   if (dayOnly.test(t)) return true;
   if (/\bwhat am i (?:doing|up to)\b/.test(t)) return true;

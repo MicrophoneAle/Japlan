@@ -396,6 +396,15 @@ export async function generateValidatedBoard(opts: {
 const PARTICIPANT_COLS =
   "id, trip_id, phone, display_name, score, survey_json, survey_state, sidequests_muted, consented_at";
 
+// Whose tasks can be generated: anyone whose allergies and limits we know.
+// Someone mid-survey (a late joiner, say) is left off rather than given tasks
+// that might clash with answers they have not given yet. Null survey_state is
+// a participant from before surveys existed, treated as known.
+export function constraintsKnown(person: Pick<ParticipantRow, "survey_state">): boolean {
+  const state = person.survey_state;
+  return !state || state === "done";
+}
+
 async function tripPeople(tripId: string): Promise<ParticipantRow[]> {
   const res = await getServiceClient()
     .from("participants")
@@ -460,10 +469,18 @@ export async function buildBoardForDate(
   const weather = await weatherFor(profile, opts.date, timezone);
   const day = tripDayOn(trip, opts.date, now);
   const claimedOnDay = await claimedTasksOnDay(trip.id, day);
+  const eligible = people.filter(constraintsKnown);
+  if (eligible.length < people.length) {
+    console.info("[japlan.generate] skipped people with unknown constraints", {
+      tripId: trip.id,
+      day,
+      skipped: people.length - eligible.length,
+    });
+  }
 
   const { tasks, usedFallback } = await generateValidatedBoard({
     trip,
-    people,
+    people: eligible,
     profile,
     weather,
     now,
@@ -668,6 +685,30 @@ export async function deliverExistingBoard(trip: TripRow, day: number, date: str
   const lapsed = await sweepLapsedPeerClaims(trip.id, now);
   const profile = await cachedProfileOf(trip);
   const weather = await weatherFor(profile, date, trip.timezone || "UTC");
+  // Anyone who finished their survey after this board was made has no tasks
+  // on it yet: add theirs now, so they are not skipped for the day.
+  const dayTasks = await tasksForDay(trip.id, day);
+  const owners = new Set(dayTasks.map((t) => t.participant_id).filter(Boolean));
+  // Team or shared tasks already reach everyone; top-ups are for personal boards.
+  const personalOnly = dayTasks.every((t) => t.participant_id);
+  for (const person of personalOnly ? people : []) {
+    if (seen.has(person.id) || owners.has(person.id) || !constraintsKnown(person)) continue;
+    const topUp = await refillPersonalTasksIfNeeded({
+      trip,
+      claimant: person,
+      people,
+      remainingOpenPersonal: 0,
+      deliver: false,
+      date,
+    });
+    console.info("[japlan.board] step", {
+      step: "delivery.top_up",
+      tripId: trip.id,
+      day,
+      participantId: person.id,
+      count: topUp.length,
+    });
+  }
   const rows = (await tasksForDay(trip.id, day)).map(({ id: _id, ...row }) => {
     void _id;
     return row;
@@ -996,6 +1037,9 @@ export async function refillPersonalTasksIfNeeded(opts: {
   // false: return the rows instead of DMing them, so an on-demand reply can
   // carry the refill in its one message.
   deliver?: boolean;
+  // Which trip-local date to add tasks to. Default today. Used for someone
+  // who joined after that day's board was made.
+  date?: string;
 }): Promise<Omit<TaskRow, "id">[]> {
   if (opts.remainingOpenPersonal > 0) return [];
 
@@ -1019,8 +1063,8 @@ export async function refillPersonalTasksIfNeeded(opts: {
 
   const now = new Date();
   const timezone = opts.trip.timezone || "UTC";
-  const today = localDateString(now, timezone);
-  const day = currentTripDay(opts.trip, now);
+  const today = opts.date ?? localDateString(now, timezone);
+  const day = opts.date ? tripDayOn(opts.trip, opts.date, now) : currentTripDay(opts.trip, now);
   let weather: DayWeather = {
     temperatureC: null,
     precipitationChance: null,

@@ -14,6 +14,7 @@ import { getLinqClient } from "@/lib/linq/client";
 import {
   displayNameFromChatJson,
   humansFromHandles,
+  isBotHandle,
   looksLikePhone,
   membersFromChatJson,
   type HandleLike,
@@ -291,6 +292,29 @@ async function startSetupDm(
   }
 }
 
+// A group member who was not in the chat at bootstrap (or was added later):
+// add them and start their survey by DM. No-op if they are already on the trip.
+async function joinLateParticipant(
+  trip: TripRow,
+  phone: string,
+  displayName: string | null,
+): Promise<void> {
+  if (isBotHandle(phone)) return;
+  if (await findParticipantOnTrip(trip.id, phone)) return;
+  const name = displayName?.trim() && !looksLikePhone(displayName) ? displayName.trim() : phone;
+  const { error } = await getServiceClient()
+    .from("participants")
+    .upsert([{ trip_id: trip.id, phone, display_name: name }], {
+      onConflict: "trip_id,phone",
+      ignoreDuplicates: true,
+    });
+  if (error) throw error;
+  const joined = await findParticipantOnTrip(trip.id, phone);
+  if (!joined) return;
+  logStep("participant.late_join", { tripId: trip.id, participantId: joined.id });
+  await startSurveyDm(joined);
+}
+
 export async function countSurveysPending(tripId: string): Promise<number> {
   const people = await listParticipants(tripId);
   return people.filter((p) => p.survey_state !== "done").length;
@@ -341,6 +365,7 @@ export async function bootstrapGroupIfNeeded(
     // Sender of the triggering message. Linq never reports who added the bot,
     // so the first person to message the group becomes the organizer.
     senderPhone?: string | null;
+    senderName?: string | null;
     // "japlan new trip": allowed to start a trip in a chat whose last trip ended.
     explicitNewTrip?: boolean;
   } = { isGroup: true },
@@ -361,6 +386,11 @@ export async function bootstrapGroupIfNeeded(
         chatId,
         state: existing.state,
       });
+      // Someone added to the group after setup joins the trip the first time
+      // they speak, instead of being told they are not on it.
+      if (opts.senderPhone) {
+        await joinLateParticipant(existing, opts.senderPhone, opts.senderName ?? null);
+      }
       return existing;
     }
 

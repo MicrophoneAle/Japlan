@@ -202,8 +202,11 @@ export function findTaskByCodeFor<T extends OwnedTask & { code: string }>(
   if (matches.length === 0) return { kind: "unknown" };
   const rank = (task: T): number =>
     task.participant_id ? 0 : task.team_id ? 1 : 2;
+  // Day letters cycle past day 26, so the same code can exist on day 1 and
+  // day 27: the most recent day wins.
+  const dayOf = (task: T): number => (task as { day?: number }).day ?? 0;
   const mine = tasksClaimableBy(matches, claimantId, claimantTeamIds).sort(
-    (a, b) => rank(a) - rank(b),
+    (a, b) => rank(a) - rank(b) || dayOf(b) - dayOf(a),
   );
   if (mine[0]) return { kind: "task", task: mine[0] };
   if (matches.some((task) => task.team_id && expiredTeamIds.includes(task.team_id))) {

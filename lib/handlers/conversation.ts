@@ -4,7 +4,6 @@ import { evaluateAddress } from "@/lib/game/addressing";
 import {
   CONVERSATION_HISTORY_LIMIT,
   CONVERSATION_MAX_TOOL_ITERS,
-  conversationalCapReached,
   foreignSurveySecrets,
   getOffTopicCount,
   isOnTopicExchange,
@@ -22,7 +21,6 @@ import {
   CONVERSATION_FALLBACK,
   CONVERSATION_PRIVACY_LINE,
   CONVERSATION_SYSTEM_PROMPT,
-  conversationCapLine,
   conversationRedirect,
 } from "@/lib/game/copy";
 import type { FreeformExtraction } from "@/lib/game/freeform";
@@ -242,15 +240,9 @@ export async function handleConversation(
     await answerBoardRequest(miss, now);
     return;
   }
-  if (conversationalCapReached(miss.chatId, now)) {
-    console.info("[japlan.conversation] hourly cap", {
-      chatId: miss.chatId,
-      at: new Date(now).toISOString(),
-    });
-    // Addressed means answered: a fixed line, no model call, not counted.
-    await send(miss.chatId, conversationCapLine(miss.nextStep));
-    return;
-  }
+  // No hourly reply cap: it refused people who had addressed the bot, which
+  // is exactly who should get an answer. Chattiness is handled by the
+  // off-topic escalation below, which shortens replies instead of refusing.
 
   const provider = deps.provider ?? miss.provider ?? new GeminiProvider();
   const open = openTasksFor(claimableTasks(miss), miss.claims);

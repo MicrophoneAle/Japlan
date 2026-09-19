@@ -47,11 +47,14 @@ export const BAND_CEILING = TIER_BANDS.Challenging.max;
 export const MEDIUM_CEILING = TIER_BANDS.Medium.max;
 export const DEFAULT_DAILY_POINTS_CAP = 120;
 
+// Day 1 is A. Past day 26 the letters cycle (day 27 is A again), so a long
+// trip is never refused for running out of letters; code lookup prefers the
+// most recent day that uses a code (findTaskByCodeFor).
 export function dayLetter(day: number): string {
-  if (day < 1 || day > 26) {
+  if (!Number.isInteger(day) || day < 1) {
     throw new Error(`day ${day} has no letter`);
   }
-  return String.fromCharCode(64 + day);
+  return String.fromCharCode(65 + ((day - 1) % 26));
 }
 
 export function tripLengthDays(

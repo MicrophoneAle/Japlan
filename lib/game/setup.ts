@@ -203,7 +203,9 @@ export function parseLooseDates(text: string, today: string): ParsedDates | null
   return null;
 }
 
-export const MAX_TRIP_DAYS = 26; // day letters run A-Z
+// Not a capability limit (day letters cycle past Z): a range this long is
+// almost always a mistyped year, so it is asked about rather than stored.
+export const MAX_TRIP_DAYS = 90;
 
 export type DateRangeCheck =
   | { ok: true; start: string; end: string }

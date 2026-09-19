@@ -149,9 +149,13 @@ async function onMessageReceivedInner(
 
   const isGroup = isGroupChat(data);
   if (isGroup) {
-    const bootstrapSender = senderFromData(data)?.handle ?? null;
+    const bootstrapSender = senderFromData(data);
     await dispatchAwait("bootstrap_group", { chatId }, () =>
-      bootstrapGroupIfNeeded(chatId, { isGroup, senderPhone: bootstrapSender }),
+      bootstrapGroupIfNeeded(chatId, {
+        isGroup,
+        senderPhone: bootstrapSender?.handle ?? null,
+        senderName: bootstrapSender?.display_name ?? null,
+      }),
     );
   }
 
@@ -331,7 +335,7 @@ async function onMessageReceivedInner(
     soloRoute,
     soloTripState: soloTrip?.state ?? null,
   });
-  await handleSurveyDm({ phone, chatId, text });
+  await handleSurveyDm({ phone, chatId, text, data: data as Record<string, unknown> });
   dispatchStep("survey_dm.after", { chatId });
 }
 

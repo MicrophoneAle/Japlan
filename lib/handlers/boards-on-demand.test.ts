@@ -8,8 +8,10 @@ import { FakeSupabase } from "@/lib/test/fake-supabase";
 
 const MIKE = "+15550000001";
 const SAM = "+15550000002";
+const ANA = "+15550000003";
 const GROUP = "chat-group";
-const DM = { [MIKE]: "dm-mike", [SAM]: "dm-sam" } as Record<string, string>;
+const DM = { [MIKE]: "dm-mike", [SAM]: "dm-sam", [ANA]: "dm-ana" } as Record<string, string>;
+const NAMES: Record<string, string> = { [MIKE]: "Mike", [SAM]: "Sam", [ANA]: "Ana" };
 
 const h = vi.hoisted(() => ({
   db: null as unknown as FakeSupabase,
@@ -69,7 +71,8 @@ vi.mock("@/lib/llm/gemini", async (importOriginal) => {
 import { dispatchLinqEvent } from "./dispatch";
 import { runDailyBoards } from "./daily-board";
 import { TOKYO_HAND_PROFILE } from "@/lib/game/tokyo-profile";
-import { PROVISIONAL_NOTE } from "@/lib/game/copy";
+import { PROVISIONAL_NOTE, finishYourSurveyLine } from "@/lib/game/copy";
+import { REFILLS_PER_DAY } from "./board-request";
 
 let n = 0;
 async function say(from: string, chatId: string, text: string) {
@@ -81,7 +84,7 @@ async function say(from: string, chatId: string, text: string) {
       id: `msg-${n}`,
       chat_id: chatId,
       chat: { id: chatId, is_group: chatId === GROUP },
-      sender_handle: { handle: from, is_me: false, display_name: from === MIKE ? "Mike" : "Sam" },
+      sender_handle: { handle: from, is_me: false, display_name: NAMES[from] },
       parts: [{ type: "text", value: text }],
     },
   });
@@ -171,38 +174,69 @@ describe("asking for a board makes one", () => {
     expect(board(2)).toMatchObject({ status: "ready", provisional: true });
   });
 
-  it("allows one on-demand generation per person per day", async () => {
+  it("lets you look ahead at every day of the trip", async () => {
     seedTrip({});
-    await say(MIKE, DM[MIKE], "japlan plans");
-    await say(MIKE, DM[MIKE], "japlan day 3");
-    expect(last(DM[MIKE])).toBe(
-      "you've already had one board made today. the next one lands tomorrow at 8am.",
-    );
-    expect(board(3)).toBeUndefined();
+    for (const ask of ["japlan plans", "japlan tomorrow", "japlan day 3", "japlan the last day"]) {
+      await say(MIKE, DM[MIKE], ask);
+      expect(last(DM[MIKE]), ask).toMatch(/^Day \d\n/);
+    }
+    expect([1, 2, 3, 5].map((d) => Boolean(board(d)))).toEqual([true, true, true, true]);
+    expect(board(3)).toMatchObject({ provisional: true });
+    expect(h.sent.some((m) => /already had|limit|plenty/.test(m.text))).toBe(false);
   });
 
-  it("says when the trip starts for a day before it", async () => {
+  it("reads a calendar date and names like first and last day", async () => {
+    seedTrip({});
+    await say(MIKE, DM[MIKE], "japlan sep 21");
+    expect(last(DM[MIKE])).toMatch(/^Day 3\n/);
+    await say(MIKE, DM[MIKE], "japlan first day");
+    expect(last(DM[MIKE])).toMatch(/^Day 1\n/);
+  });
+
+  it("shows day 1 when asked before the trip starts", async () => {
     seedTrip({ start: "2026-09-25", end: "2026-09-28" });
     await say(MIKE, DM[MIKE], "japlan plans");
-    expect(last(DM[MIKE])).toBe("the trip starts sep 25. first board lands sep 25 at 8am.");
-    expect(h.db.table("boards")).toHaveLength(0);
+    expect(last(DM[MIKE])).toMatch(/^Day 1\n/);
+    expect(last(DM[MIKE])).toContain(PROVISIONAL_NOTE);
+    expect(board(1)).toMatchObject({ provisional: true });
   });
 
-  it("says the trip is over for a day after it", async () => {
+  it("only refuses a day that is not part of the trip, in the person's terms", async () => {
     seedTrip({});
     await say(MIKE, DM[MIKE], "japlan day 9");
-    expect(last(DM[MIKE])).toBe("the trip ends sep 23, so there's no board for that day.");
+    expect(last(DM[MIKE])).toBe("that day isn't part of this trip. it runs sep 19 to sep 23.");
   });
 
-  it("offers a refill when today's board is cleared", async () => {
+  it("does not make a board for a day that is over", async () => {
+    seedTrip({});
+    at("2026-09-21T12:00:00");
+    await say(MIKE, DM[MIKE], "japlan day 1");
+    expect(last(DM[MIKE])).toBe("day 1 is over, so there's no board to make for it now.");
+    expect(board(1)).toBeUndefined();
+  });
+
+  it("refills a cleared day, and only limits endless refills of that same day", async () => {
     seedTrip({});
     await say(MIKE, DM[MIKE], "japlan plans");
-    for (const task of tasksOn(1)) {
-      h.db.seed("claims", [{ task_id: task.id, participant_id: "p-mike", status: "awarded", awarded_points: 5 }]);
+    const clearDay1 = () => {
+      for (const task of tasksOn(1)) {
+        if (h.db.table("claims").some((c) => c.task_id === task.id)) continue;
+        h.db.seed("claims", [{ task_id: task.id, participant_id: "p-mike", status: "awarded", awarded_points: 5 }]);
+      }
+    };
+    for (let i = 1; i <= REFILLS_PER_DAY; i++) {
+      clearDay1();
+      await say(MIKE, DM[MIKE], "japlan plans");
+      expect(last(DM[MIKE]), `refill ${i}`).toMatch(/^you cleared that board, so here's more\.\nDay 1/);
     }
-    h.db.tables.board_requests = []; // a new local day's slot
+    clearDay1();
     await say(MIKE, DM[MIKE], "japlan plans");
-    expect(last(DM[MIKE])).toMatch(/^you cleared today's board, so here's a refill\.\nDay 1/);
+    expect(last(DM[MIKE])).toBe(
+      `that's ${REFILLS_PER_DAY} refills for today already, which is plenty for one day. the next day's board is yours whenever.`,
+    );
+    // Other days are never limited by it.
+    await say(MIKE, DM[MIKE], "japlan tomorrow");
+    expect(last(DM[MIKE])).toMatch(/^Day 2\n/);
   });
 });
 
@@ -232,6 +266,47 @@ describe("in a group", () => {
     await say(MIKE, GROUP, "japlan plans");
     expect(to(DM[SAM])).toHaveLength(1); // not left waiting for tomorrow's tick
     expect(board(1)?.delivered_at).toBeTruthy();
+  });
+
+  it("adds someone new to the chat instead of telling them they aren't on the trip", async () => {
+    seedTrip({ solo: false });
+    await say(ANA, GROUP, "japlan plans");
+    const ana = h.db.table("participants").find((p) => p.phone === ANA);
+    expect(ana).toMatchObject({ display_name: "Ana" });
+    expect(to(DM[ANA]).length).toBeGreaterThan(0); // their survey started
+    expect(h.sent.some((m) => /not on this trip|aren't on/.test(m.text))).toBe(false);
+
+    // Until they answer, their own tasks can't be checked against their
+    // allergies, so they are asked to finish; everyone else's board is made.
+    await say(ANA, GROUP, "japlan plans");
+    expect(last(GROUP)).toBe(finishYourSurveyLine());
+    await say(MIKE, GROUP, "japlan plans");
+    expect(last(DM[MIKE])).toMatch(/^Day 1\n/);
+    expect(tasksOn(1).some((t) => t.participant_id === ana!.id)).toBe(false);
+    expect(tasksOn(1).some((t) => t.participant_id === "p-mike")).toBe(true);
+  });
+
+  it("accepts a claim sent by DM on a group trip and confirms it in both places", async () => {
+    seedTrip({ solo: false });
+    h.db.seed("tasks", [
+      {
+        id: "t-honor", trip_id: "trip-1", participant_id: "p-mike", team_id: null, code: "A1",
+        title: "say hi to a shopkeeper", tier: "Light", axes_json: {}, base_points: 8,
+        photo_bonus_max: 0, verification: "honor", day: 1,
+      },
+    ]);
+    await say(MIKE, DM[MIKE], "A1");
+    expect(h.db.table("claims")).toHaveLength(1);
+    expect(last(GROUP)).toMatch(/Mike/);
+    expect(to(DM[MIKE]).length).toBeGreaterThan(0);
+    expect(h.sent.some((m) => /claim it in the group/.test(m.text))).toBe(false);
+  });
+
+  it("answers every addressed message, with no hourly cap", async () => {
+    seedTrip({ solo: false });
+    for (let i = 0; i < 8; i++) await say(MIKE, GROUP, `japlan quick question ${i}`);
+    expect(to(GROUP)).toHaveLength(8);
+    expect(h.sent.some((m) => /slow down|a lot of questions|hour/.test(m.text))).toBe(false);
   });
 });
 

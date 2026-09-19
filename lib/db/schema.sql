@@ -202,16 +202,20 @@ create table boards (
   unique (trip_id, day)
 );
 
--- One on-demand board generation per person per trip-local day.
+-- Log of boards and refills people asked for. Refills of the same day are
+-- rate-limited in code; asking for different days never is.
 create table board_requests (
   id uuid primary key default gen_random_uuid(),
   trip_id uuid not null references trips (id) on delete cascade,
   participant_id uuid not null references participants (id) on delete cascade,
   requested_on date not null,
   day integer not null,
-  created_at timestamptz not null default now(),
-  unique (trip_id, participant_id, requested_on)
+  kind text not null default 'generate',
+  created_at timestamptz not null default now()
 );
+
+create index board_requests_by_person_day
+  on board_requests (trip_id, participant_id, day, kind);
 
 create table events (
   id uuid primary key default gen_random_uuid(),

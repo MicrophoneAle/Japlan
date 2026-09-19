@@ -129,6 +129,22 @@ describe("which day a request means", () => {
     expect(parseBoardDay("the day after tomorrow", opts).date).toBe("2026-09-21");
     expect(tripDayForDate("2026-09-19", "2026-09-21")).toBe(3);
   });
+
+  it("reads calendar dates, first and last day, and plans before the trip", () => {
+    const trip = { today: "2026-09-10", startDate: "2026-10-17", endDate: "2026-10-20" };
+    expect(parseBoardDay("japlan oct 19", trip).date).toBe("2026-10-19");
+    expect(parseBoardDay("japlan 19 october", trip).date).toBe("2026-10-19");
+    expect(parseBoardDay("japlan the last day", trip)).toEqual({ date: "2026-10-20", label: "the last day" });
+    expect(parseBoardDay("japlan first day", trip).date).toBe("2026-10-17");
+    // No day named, trip not started: its first day, not a refusal.
+    expect(parseBoardDay("japlan plans", trip)).toEqual({ date: "2026-10-17", label: "day 1" });
+    // A new year's trip asked about in december rolls into the next year.
+    expect(parseBoardDay("japlan jan 2", { today: "2026-12-20", startDate: "2026-12-30", endDate: "2027-01-03" }).date)
+      .toBe("2027-01-02");
+    for (const ask of ["japlan oct 19", "japlan the last day", "japlan first day"]) {
+      expect(isBoardRequest(ask), ask).toBe(true);
+    }
+  });
 });
 
 describe("board requests", () => {
