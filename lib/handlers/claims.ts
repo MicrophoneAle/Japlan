@@ -42,7 +42,7 @@ import {
 import { verificationForSolo } from "@/lib/game/solo";
 import type { SurveyAnswers } from "@/lib/game/survey";
 import { validateGeneratedTask } from "@/lib/game/validate";
-import { getTripByChatId } from "@/lib/handlers/bootstrap";
+import { findParticipantOnTrip, getTripByChatId } from "@/lib/handlers/bootstrap";
 import {
   currentTripDay,
   refillPersonalTasksIfNeeded,
@@ -67,7 +67,7 @@ const TASK_COLS =
 const PARTICIPANT_COLS =
   "id, trip_id, phone, display_name, score, survey_json, survey_state, sidequests_muted, consented_at";
 const CLAIM_COLS =
-  "id, task_id, participant_id, evidence_url, image_hash, status, awarded_points, resolved_by, resolution_json, capped";
+  "id, task_id, participant_id, evidence_url, image_hash, status, awarded_points, resolved_by, resolution_json, capped, created_at";
 
 const recentCodeMentions = new Map<string, { code: string; at: number }>();
 
@@ -164,10 +164,15 @@ async function teamMemberIds(teamId: string): Promise<string[]> {
 }
 
 async function tripHashes(tripId: string): Promise<string[]> {
-  const { data, error } = await getServiceClient()
+  const supabase = getServiceClient();
+  const tasksRes = await supabase.from("tasks").select("id").eq("trip_id", tripId);
+  if (tasksRes.error) throw tasksRes.error;
+  const taskIds = (tasksRes.data ?? []).map((row) => (row as { id: string }).id);
+  if (taskIds.length === 0) return [];
+  const { data, error } = await supabase
     .from("claims")
-    .select("image_hash, tasks!inner(trip_id)")
-    .eq("tasks.trip_id", tripId)
+    .select("image_hash")
+    .in("task_id", taskIds)
     .not("image_hash", "is", null);
   if (error) throw error;
   return (data ?? [])
@@ -196,16 +201,18 @@ async function bumpScore(participantId: string, delta: number): Promise<number> 
     .from("participants")
     .select("score")
     .eq("id", participantId)
-    .single();
+    .maybeSingle();
   if (error) throw error;
+  if (!data) throw new Error(`participant not found: ${participantId}`);
   const next = ((data as { score: number }).score ?? 0) + delta;
   const updated = await supabase
     .from("participants")
     .update({ score: next })
     .eq("id", participantId)
     .select("score")
-    .single();
+    .maybeSingle();
   if (updated.error) throw updated.error;
+  if (!updated.data) throw new Error(`participant score update failed: ${participantId}`);
   return (updated.data as { score: number }).score;
 }
 
@@ -240,8 +247,9 @@ export async function postDailyBoard(tripId: string, send: SendFn = sendText): P
     .from("trips")
     .select("id, linq_chat_id, name, state")
     .eq("id", tripId)
-    .single();
+    .maybeSingle();
   if (tripRes.error) throw tripRes.error;
+  if (!tripRes.data) throw new Error(`trip not found: ${tripId}`);
   const trip = tripRes.data as { id: string; linq_chat_id: string };
   const [tasksRes, peopleRes] = await Promise.all([
     supabase.from("tasks").select("code, title, base_points, day").eq("trip_id", tripId),
@@ -268,13 +276,21 @@ async function pointsAwardedOnDay(
   tripId: string,
   day: number,
 ): Promise<number> {
-  const { data, error } = await getServiceClient()
+  const supabase = getServiceClient();
+  const tasksRes = await supabase
+    .from("tasks")
+    .select("id")
+    .eq("trip_id", tripId)
+    .eq("day", day);
+  if (tasksRes.error) throw tasksRes.error;
+  const taskIds = (tasksRes.data ?? []).map((row) => (row as { id: string }).id);
+  if (taskIds.length === 0) return 0;
+  const { data, error } = await supabase
     .from("claims")
-    .select("awarded_points, tasks!inner(trip_id, day)")
+    .select("awarded_points")
     .eq("participant_id", participantId)
     .eq("status", "awarded")
-    .eq("tasks.trip_id", tripId)
-    .eq("tasks.day", day);
+    .in("task_id", taskIds);
   if (error) throw error;
   return (data ?? []).reduce(
     (sum, row) => sum + ((row as { awarded_points: number | null }).awarded_points ?? 0),
@@ -631,8 +647,9 @@ async function tryHandleFreeform(opts: {
       source: FREEFORM_SOURCE,
     })
     .select(TASK_COLS)
-    .single();
+    .maybeSingle();
   if (insertErr) throw insertErr;
+  if (!inserted) throw new Error("freeform task insert returned no row");
   const task = inserted as TaskRow;
 
   if (extracted.place_name) {
@@ -744,8 +761,14 @@ export async function handleGroupClaim(
 
   const ctx = await loadTripContext(chatId);
   if (!ctx) return;
-  const claimant = ctx.people.find((p) => p.phone === sender.handle);
-  if (!claimant) return;
+  const claimant = await findParticipantOnTrip(ctx.trip.id, sender.handle);
+  if (!claimant) {
+    console.warn("[japlan.claim] participant not on trip", {
+      tripId: ctx.trip.id,
+      phone: sender.handle,
+    });
+    return;
+  }
 
   const openTasks = ctx.tasks.filter((task) => isOpenTask(task.id, ctx.claims));
 
@@ -918,8 +941,9 @@ export async function handlePeerReaction(
     .from("tasks")
     .select(TASK_COLS)
     .eq("id", pending.task_id)
-    .single();
+    .maybeSingle();
   if (taskErr) throw taskErr;
+  if (!taskRow) return;
   const task = taskRow as TaskRow;
 
   const ctx = await loadTripContext(chatId);

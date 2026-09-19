@@ -7,10 +7,12 @@ import {
 import { startSurvey } from "@/lib/game/survey";
 import { sendText } from "@/lib/linq/send";
 import {
+  findParticipantOnTrip,
   getTripByChatId,
   maybeActivateTrip,
   persistSurveyProgress,
 } from "./bootstrap";
+import { looksLikePhone } from "@/lib/linq/payload";
 
 const TRIP_COLS =
   "id, linq_chat_id, name, destination, start_date, end_date, state, difficulty, stake_text, timezone, destination_profile_json, is_solo, daily_points_cap";
@@ -47,6 +49,7 @@ export function buildSoloTripInsert(chatId: string): {
 export function buildSoloParticipantInsert(
   tripId: string,
   phone: string,
+  displayName?: string | null,
 ): {
   trip_id: string;
   phone: string;
@@ -55,7 +58,7 @@ export function buildSoloParticipantInsert(
   return {
     trip_id: tripId,
     phone,
-    display_name: phone,
+    display_name: displayName?.trim() || phone,
   };
 }
 
@@ -67,7 +70,7 @@ async function ensureSoloTrip(chatId: string): Promise<TripRow> {
     .from("trips")
     .insert(buildSoloTripInsert(chatId))
     .select(TRIP_COLS)
-    .single();
+    .maybeSingle();
   if (error) {
     if (error.code === "23505") {
       const raced = await getTripByChatId(chatId);
@@ -75,26 +78,41 @@ async function ensureSoloTrip(chatId: string): Promise<TripRow> {
     }
     throw error;
   }
+  if (!data) throw new Error("solo trip insert returned no row");
   return asTrip(data);
 }
 
 async function ensureSoloParticipant(
   tripId: string,
   phone: string,
+  displayName?: string | null,
 ): Promise<ParticipantRow> {
-  const people = await listParticipants(tripId);
-  const already = people.find((p) => p.phone === phone);
-  if (already) return already;
+  const already = await findParticipantOnTrip(tripId, phone);
+  const name = displayName?.trim() || null;
+  if (already) {
+    if (
+      name &&
+      !looksLikePhone(name) &&
+      (looksLikePhone(already.display_name) || already.display_name === phone)
+    ) {
+      const { error } = await getServiceClient()
+        .from("participants")
+        .update({ display_name: name })
+        .eq("id", already.id);
+      if (error) throw error;
+      return { ...already, display_name: name };
+    }
+    return already;
+  }
 
   const { error } = await getServiceClient()
     .from("participants")
-    .upsert([buildSoloParticipantInsert(tripId, phone)], {
+    .upsert([buildSoloParticipantInsert(tripId, phone, displayName)], {
       onConflict: "trip_id,phone",
       ignoreDuplicates: true,
     });
   if (error) throw error;
-  const next = await listParticipants(tripId);
-  const created = next.find((p) => p.phone === phone);
+  const created = await findParticipantOnTrip(tripId, phone);
   if (!created) throw new Error("solo participant insert failed");
   return created;
 }
@@ -102,9 +120,14 @@ async function ensureSoloParticipant(
 export async function ensureSoloTripAndParticipant(opts: {
   chatId: string;
   phone: string;
+  displayName?: string | null;
 }): Promise<{ trip: TripRow; participant: ParticipantRow }> {
   const trip = await ensureSoloTrip(opts.chatId);
-  const participant = await ensureSoloParticipant(trip.id, opts.phone);
+  const participant = await ensureSoloParticipant(
+    trip.id,
+    opts.phone,
+    opts.displayName,
+  );
   return { trip, participant };
 }
 
@@ -128,6 +151,7 @@ async function startSoloSurvey(
 export async function bootstrapSoloIfNeeded(opts: {
   chatId: string;
   phone: string;
+  displayName?: string | null;
 }): Promise<TripRow> {
   const { trip, participant } = await ensureSoloTripAndParticipant(opts);
   const people = await listParticipants(trip.id);
@@ -157,12 +181,17 @@ export async function bootstrapSoloIfNeeded(opts: {
 export async function skipSoloSurvey(opts: {
   chatId: string;
   phone: string;
+  displayName?: string | null;
 }): Promise<TripRow> {
   const { trip, participant } = await ensureSoloTripAndParticipant(opts);
+  const answers = defaultSoloSurveyAnswers();
+  if (opts.displayName?.trim()) {
+    answers.first_name = { value: opts.displayName.trim() };
+  }
   await persistSurveyProgress({
     participantId: participant.id,
     awaiting: "done",
-    answers: defaultSoloSurveyAnswers(),
+    answers,
   });
 
   const latest = (await getTripByChatId(opts.chatId)) ?? trip;

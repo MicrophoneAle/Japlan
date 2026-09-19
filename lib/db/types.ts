@@ -14,6 +14,7 @@ export type TripRow = {
   destination_profile_json?: unknown | null;
   is_solo?: boolean;
   daily_points_cap?: number;
+  created_at?: string;
 };
 
 export type TaskRow = {
@@ -32,6 +33,7 @@ export type TaskRow = {
   expires_at: string | null;
   neighborhood: string | null;
   source?: string;
+  created_at?: string;
 };
 
 export type ClaimRow = {
@@ -45,6 +47,7 @@ export type ClaimRow = {
   resolved_by: string | null;
   resolution_json: unknown;
   capped?: boolean;
+  created_at?: string;
 };
 
 export type PlaceRow = {
@@ -72,4 +75,5 @@ export type ParticipantRow = {
   survey_state: string | null;
   sidequests_muted: boolean;
   consented_at: string | null;
+  created_at?: string;
 };

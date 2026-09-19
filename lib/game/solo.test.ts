@@ -24,6 +24,10 @@ describe("solo bootstrap payload", () => {
     });
     const people = [buildSoloParticipantInsert("trip-1", "+15551212")];
     expect(people).toHaveLength(1);
+    expect(people[0]?.display_name).toBe("+15551212");
+    expect(
+      buildSoloParticipantInsert("trip-1", "+15551212", "Michael").display_name,
+    ).toBe("Michael");
     expect(soloParticipantCount(people.map((p) => p.phone))).toBe(1);
   });
 });

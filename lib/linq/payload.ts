@@ -11,6 +11,7 @@ export type LinqEnvelope = {
 export type HandleLike = {
   handle: string;
   is_me?: boolean | null;
+  display_name?: string | null;
 };
 
 export type MediaPart = {
@@ -66,12 +67,40 @@ export function mediaFromParts(parts: unknown): MediaPart[] {
   return out;
 }
 
+export function looksLikePhone(value: string): boolean {
+  return /^\+?\d[\d\s().-]{6,}$/.test(value.trim());
+}
+
+export function displayNameFromHandleObject(
+  value: Record<string, unknown>,
+): string | null {
+  const keys = [
+    "display_name",
+    "displayName",
+    "nickname",
+    "first_name",
+    "given_name",
+    "name",
+  ];
+  for (const key of keys) {
+    const raw = value[key];
+    if (typeof raw === "string" && raw.trim() && !looksLikePhone(raw)) {
+      return raw.trim();
+    }
+  }
+  if (isRecord(value.contact)) {
+    return displayNameFromHandleObject(value.contact);
+  }
+  return null;
+}
+
 export function handleFromUnknown(value: unknown): HandleLike | null {
   if (!isRecord(value)) return null;
   if (typeof value.handle !== "string" || value.handle.length === 0) return null;
   return {
     handle: value.handle,
     is_me: value.is_me === true ? true : value.is_me === false ? false : null,
+    display_name: displayNameFromHandleObject(value),
   };
 }
 
@@ -111,6 +140,7 @@ function coerceMember(value: unknown): HandleLike | null {
     return {
       handle: value.phone.trim(),
       is_me: value.is_me === true ? true : value.is_me === false ? false : null,
+      display_name: displayNameFromHandleObject(value),
     };
   }
   return null;

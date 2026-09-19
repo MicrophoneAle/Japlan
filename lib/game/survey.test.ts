@@ -4,6 +4,7 @@ import {
   allParticipantsComplete,
   applyReply,
   buildSetupCompleteGroupPost,
+  displayNameFromFirstName,
   includeQuestion,
   isSkip,
   startSurvey,
@@ -35,14 +36,24 @@ function answerUntil(
   return { step, seen };
 }
 
+describe("first name for standings", () => {
+  it("uses the first token of the survey answer", () => {
+    expect(displayNameFromFirstName("Michael Chen", "+19055550100")).toBe(
+      "Michael",
+    );
+    expect(displayNameFromFirstName("  ", "+19055550100")).toBe("+19055550100");
+  });
+});
+
 describe("survey skip and branching", () => {
   it("always accepts skip", () => {
     expect(isSkip("skip")).toBe(true);
     expect(isSkip(" SKIP ")).toBe(true);
     const started = startSurvey();
     const skipped = applyReply(started.state, "skip");
-    expect(skipped.state.answers.age_bracket).toEqual({ skipped: true });
-    expect(skipped.state.awaiting).toBe("dietary");
+    expect(started.state.awaiting).toBe("first_name");
+    expect(skipped.state.answers.first_name).toEqual({ skipped: true });
+    expect(skipped.state.awaiting).toBe("age_bracket");
   });
 
   it("asks dietary_strictness only when there is a restriction", () => {

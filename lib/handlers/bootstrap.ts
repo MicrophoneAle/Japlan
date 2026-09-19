@@ -3,8 +3,10 @@ import type { ParticipantRow, TripRow } from "@/lib/db/types";
 import { QUESTIONS } from "@/lib/game/survey-questions";
 import {
   allParticipantsComplete,
+  answerValue,
   buildIntroGroupPost,
   buildSetupCompleteGroupPost,
+  displayNameFromFirstName,
   startSurvey,
   type SurveyAnswers,
   type SurveyAwaiting,
@@ -13,6 +15,7 @@ import { getLinqClient } from "@/lib/linq/client";
 import {
   displayNameFromChatJson,
   humansFromHandles,
+  looksLikePhone,
   membersFromChatJson,
   type HandleLike,
 } from "@/lib/linq/payload";
@@ -97,7 +100,7 @@ async function insertTrip(
       timezone: null,
     })
     .select(TRIP_COLS)
-    .single();
+    .maybeSingle();
 
   if (error) {
     if (error.code === "23505") {
@@ -106,6 +109,7 @@ async function insertTrip(
     }
     throw error;
   }
+  if (!data) throw new Error("trip insert returned no row");
   return { trip: asTrip(data), created: true };
 }
 
@@ -120,11 +124,27 @@ async function upsertHumans(
     humans.map((handle) => ({
       trip_id: tripId,
       phone: handle.handle,
-      display_name: handle.handle,
+      display_name: handle.display_name?.trim() || handle.handle,
     })),
     { onConflict: "trip_id,phone", ignoreDuplicates: true },
   );
   if (error) throw error;
+
+  const people = await listParticipants(tripId);
+  for (const handle of humans) {
+    const name = handle.display_name?.trim();
+    if (!name || looksLikePhone(name)) continue;
+    const person = people.find((row) => row.phone === handle.handle);
+    if (!person) continue;
+    if (!looksLikePhone(person.display_name) && person.display_name !== handle.handle) {
+      continue;
+    }
+    const { error: nameErr } = await getServiceClient()
+      .from("participants")
+      .update({ display_name: name })
+      .eq("id", person.id);
+    if (nameErr) throw nameErr;
+  }
   return listParticipants(tripId);
 }
 
@@ -363,10 +383,41 @@ export async function bootstrapGroupIfNeeded(
   }
 }
 
+export async function findParticipantOnTrip(
+  tripId: string,
+  phone: string,
+): Promise<ParticipantRow | null> {
+  const { data, error } = await getServiceClient()
+    .from("participants")
+    .select(PARTICIPANT_COLS)
+    .eq("trip_id", tripId)
+    .eq("phone", phone)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? (data as ParticipantRow) : null;
+}
+
+export function pickOpenSurveyMatch<T extends { survey_state: string | null }>(
+  rows: T[],
+): T | null {
+  const open = rows.find(
+    (row) => row.survey_state && row.survey_state !== "done",
+  );
+  return open ?? rows[0] ?? null;
+}
+
 export async function findOpenSurveyByPhone(
   phone: string,
   chatId?: string,
 ): Promise<{ trip: TripRow; participant: ParticipantRow } | null> {
+  if (chatId) {
+    const trip = await getTripByChatId(chatId);
+    if (trip) {
+      const participant = await findParticipantOnTrip(trip.id, phone);
+      return participant ? { trip, participant } : null;
+    }
+  }
+
   const { data, error } = await getServiceClient()
     .from("participants")
     .select(`${PARTICIPANT_COLS}, trips (${TRIP_COLS})`)
@@ -378,17 +429,10 @@ export async function findOpenSurveyByPhone(
   const mapped = rows.flatMap((row) => {
     const trip = Array.isArray(row.trips) ? row.trips[0] : row.trips;
     if (!trip) return [];
-    return [{ trip, participant: row }];
+    return [{ trip, participant: row, survey_state: row.survey_state }];
   });
-  if (chatId) {
-    const forChat = mapped.find((row) => row.trip.linq_chat_id === chatId);
-    if (forChat) return forChat;
-  }
-  const open = mapped.find(
-    (row) =>
-      row.participant.survey_state && row.participant.survey_state !== "done",
-  );
-  return open ?? mapped[0] ?? null;
+  const picked = pickOpenSurveyMatch(mapped);
+  return picked ? { trip: picked.trip, participant: picked.participant } : null;
 }
 
 export async function persistSurveyProgress(opts: {
@@ -396,12 +440,21 @@ export async function persistSurveyProgress(opts: {
   awaiting: SurveyAwaiting;
   answers: SurveyAnswers;
 }): Promise<void> {
+  const first = answerValue(opts.answers, "first_name");
+  const patch: {
+    survey_state: SurveyAwaiting;
+    survey_json: SurveyAnswers;
+    display_name?: string;
+  } = {
+    survey_state: opts.awaiting,
+    survey_json: opts.answers,
+  };
+  if (first && !looksLikePhone(first)) {
+    patch.display_name = displayNameFromFirstName(first, first);
+  }
   const { error } = await getServiceClient()
     .from("participants")
-    .update({
-      survey_state: opts.awaiting,
-      survey_json: opts.answers,
-    })
+    .update(patch)
     .eq("id", opts.participantId);
   if (error) throw error;
 }

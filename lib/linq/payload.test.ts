@@ -34,7 +34,36 @@ describe("sender_handle", () => {
       senderFromData({
         sender_handle: { handle: "+19055550100", is_me: false },
       }),
-    ).toEqual({ handle: "+19055550100", is_me: false });
+    ).toEqual({ handle: "+19055550100", is_me: false, display_name: null });
+  });
+
+  it("reads a contact display name when it is not a phone number", () => {
+    expect(
+      senderFromData({
+        sender_handle: {
+          handle: "+19055550100",
+          is_me: false,
+          display_name: "Michael",
+        },
+      }),
+    ).toEqual({
+      handle: "+19055550100",
+      is_me: false,
+      display_name: "Michael",
+    });
+    expect(
+      senderFromData({
+        sender_handle: {
+          handle: "+19055550100",
+          is_me: false,
+          display_name: "+19055550100",
+        },
+      }),
+    ).toEqual({
+      handle: "+19055550100",
+      is_me: false,
+      display_name: null,
+    });
   });
 
   it("treats is_me true as the bot's own event", () => {
@@ -100,8 +129,8 @@ describe("membersFromChatJson", () => {
     });
     expect(result.sourcePath).toBe("handles");
     expect(result.parsed).toEqual([
-      { handle: "+19055550100", is_me: false },
-      { handle: "+19055550199", is_me: true },
+      { handle: "+19055550100", is_me: false, display_name: null },
+      { handle: "+19055550199", is_me: true, display_name: null },
     ]);
   });
 

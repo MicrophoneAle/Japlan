@@ -86,6 +86,7 @@ export function soloParticipantCount(phones: string[]): number {
 
 export function defaultSoloSurveyAnswers(): SurveyAnswers {
   return {
+    first_name: { skipped: true },
     age_bracket: { value: "25-34" },
     dietary: { value: "none" },
     mobility: { skipped: true },

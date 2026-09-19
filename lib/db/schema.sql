@@ -1,7 +1,7 @@
 -- Japlan Postgres schema, taken from the Data model section of docs/PLAN.md.
 --
 -- TODO: plan does not specify id types; using uuid + gen_random_uuid() (Supabase default).
--- TODO: plan does not specify created_at/updated_at except ratings.created_at; not added elsewhere.
+-- created_at is on every game table except teams (which already has formed_at).
 -- TODO: plan does not specify FK delete/update behaviour; using the Postgres default (NO ACTION).
 -- TODO: events.trip_id is nullable because inbound webhooks can arrive before a trip row exists.
 -- TODO: a `channel` field is required later for RCS/WhatsApp, but is not in the Data model; omitted.
@@ -21,7 +21,8 @@ create table trips (
   timezone text,
   destination_profile_json jsonb,
   is_solo boolean not null default false,
-  daily_points_cap integer not null default 120
+  daily_points_cap integer not null default 120,
+  created_at timestamptz not null default now()
 );
 
 create table participants (
@@ -34,6 +35,7 @@ create table participants (
   survey_state text,
   sidequests_muted boolean not null default false,
   consented_at timestamptz,
+  created_at timestamptz not null default now(),
   unique (trip_id, phone)
 );
 
@@ -52,7 +54,8 @@ create table teams (
 create table team_members (
   id uuid primary key default gen_random_uuid(),
   team_id uuid not null references teams (id),
-  participant_id uuid not null references participants (id)
+  participant_id uuid not null references participants (id),
+  created_at timestamptz not null default now()
 );
 
 create table places (
@@ -69,6 +72,7 @@ create table places (
   hours_json jsonb,
   price_band integer,
   score numeric,
+  created_at timestamptz not null default now(),
   unique (trip_id, fsq_place_id)
 );
 
@@ -78,7 +82,8 @@ create table itinerary (
   day integer not null,
   anchor_order integer not null,
   place_id uuid not null references places (id),
-  planned_time timestamptz
+  planned_time timestamptz,
+  created_at timestamptz not null default now()
 );
 
 create table tasks (
@@ -97,6 +102,7 @@ create table tasks (
   expires_at timestamptz,
   neighborhood text,
   source text not null default 'generated',
+  created_at timestamptz not null default now(),
   -- Shared board tasks may have both assignee columns null (first write wins).
   -- Split-team tasks set team_id; personal tasks set participant_id. Never both.
   constraint tasks_at_most_one_assignee check (
@@ -117,7 +123,8 @@ create table claims (
   awarded_points integer,
   resolved_by text,
   resolution_json jsonb,
-  capped boolean not null default false
+  capped boolean not null default false,
+  created_at timestamptz not null default now()
 );
 
 create unique index claims_task_participant_key on claims (task_id, participant_id);
@@ -129,7 +136,8 @@ create table events (
   linq_event_id text not null unique,
   type text not null,
   payload jsonb not null,
-  processed_at timestamptz
+  processed_at timestamptz,
+  created_at timestamptz not null default now()
 );
 
 create table ratings (

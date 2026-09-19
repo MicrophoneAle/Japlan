@@ -61,7 +61,9 @@ async function onMessageReceived(data: unknown): Promise<void> {
   const text = textFromParts(data.parts);
   const media = mediaFromParts(data.parts);
   const isDm = isDirectChat(data);
-  const phone = senderFromData(data)?.handle ?? null;
+  const sender = senderFromData(data);
+  const phone = sender?.handle ?? null;
+  const senderName = sender?.display_name ?? null;
   const recentCode = chatId && phone ? recentCodeFor(chatId, phone) : null;
   const codeInText = extractTaskCode(text);
   if (chatId && phone && codeInText) {
@@ -118,11 +120,11 @@ async function onMessageReceived(data: unknown): Promise<void> {
       soloTripState: soloTrip?.state ?? null,
     });
     if (soloRoute === "solo_bootstrap") {
-      await bootstrapSoloIfNeeded({ chatId, phone });
+      await bootstrapSoloIfNeeded({ chatId, phone, displayName: senderName });
       return;
     }
     if (soloRoute === "solo_skip") {
-      await skipSoloSurvey({ chatId, phone });
+      await skipSoloSurvey({ chatId, phone, displayName: senderName });
       return;
     }
     if (soloRoute === "solo_claim") {

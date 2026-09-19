@@ -38,6 +38,15 @@ export function isSkip(text: string): boolean {
   return text.trim().toLowerCase() === "skip";
 }
 
+export function displayNameFromFirstName(
+  value: string | undefined,
+  fallback: string,
+): string {
+  const name = value?.trim();
+  if (!name) return fallback;
+  return name.split(/\s+/)[0] ?? fallback;
+}
+
 export function answerValue(
   answers: SurveyAnswers,
   id: QuestionId,

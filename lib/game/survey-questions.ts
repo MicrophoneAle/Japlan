@@ -1,4 +1,5 @@
 export type QuestionId =
+  | "first_name"
   | "age_bracket"
   | "dietary"
   | "dietary_strictness"
@@ -28,6 +29,12 @@ export type Question = {
 };
 
 export const QUESTIONS: Record<QuestionId, Question> = {
+  first_name: {
+    id: "first_name",
+    kind: "free_text",
+    prompt:
+      "PLACEHOLDER: What first name should I use for you in standings? Reply skip to skip.",
+  },
   age_bracket: {
     id: "age_bracket",
     kind: "choice",
@@ -203,6 +210,7 @@ export const QUESTIONS: Record<QuestionId, Question> = {
 };
 
 export const QUESTION_ORDER: QuestionId[] = [
+  "first_name",
   "age_bracket",
   "dietary",
   "dietary_strictness",
@@ -225,7 +233,7 @@ export const QUESTION_ORDER: QuestionId[] = [
   "social_couples",
 ];
 
-export const FIRST_QUESTION_ID: QuestionId = "age_bracket";
+export const FIRST_QUESTION_ID: QuestionId = "first_name";
 
 export const ORGANIZER_QUESTIONS_PLACEHOLDER = [
   "PLACEHOLDER (group-level, organizer only, not yet asked): destination and dates",
