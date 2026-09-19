@@ -11,6 +11,11 @@ const MAX_VISITS = 6;
 function now() { return new Date().toISOString(); }
 function key(candidate: CandidateActivity) { return candidate.name.trim().toLocaleLowerCase(); }
 function dashboardUrl(sessionId: string | null) { return sessionId ? `https://www.browserbase.com/sessions/${sessionId}` : null; }
+function errorMessage(error: unknown): string {
+  if (!(error instanceof Error)) return "Research failed";
+  const cause = error.cause;
+  return cause instanceof Error ? `${error.message}: ${cause.message}` : error.message;
+}
 
 export async function researchActivities(config: TripConfig): Promise<ResearchSnapshot> {
   if (researchMode() === "mock") return mockResearch(config);
@@ -51,7 +56,7 @@ export async function researchActivities(config: TripConfig): Promise<ResearchSn
           }
           actions.push({ at: now(), type: "extract", detail: `Extracted ${extract.data.activities.length} candidates`, url: result.url });
         } catch (error) {
-          actions.push({ at: now(), type: "error", detail: error instanceof Error ? error.message : "Research extraction failed", url: result.url });
+          actions.push({ at: now(), type: "error", detail: errorMessage(error), url: result.url });
         }
       }
     }
@@ -59,7 +64,7 @@ export async function researchActivities(config: TripConfig): Promise<ResearchSn
     if (unique.length < 3) throw new Error("research returned too few suitable, source-backed candidates");
     return { mode: "real", status: "researched", sessionId, dashboardUrl: dashboardUrl(sessionId), visitedUrls, actions, candidates: unique, error: null };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Research failed";
+    const message = errorMessage(error);
     actions.push({ at: now(), type: "error", detail: message, url: null });
     throw new Error(`itinerary research failed: ${message}`);
   } finally {
