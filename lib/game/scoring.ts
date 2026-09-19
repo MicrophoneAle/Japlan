@@ -121,6 +121,36 @@ export function pointsForBoard(
   return { points, tier };
 }
 
+const AXIS_KEYS = ["boldness", "physical", "time", "scarcity", "cultural", "aesthetics"] as const;
+
+function isAxes(value: unknown): value is Axes {
+  if (!value || typeof value !== "object") return false;
+  const a = value as Record<string, unknown>;
+  return AXIS_KEYS.every((key) => typeof a[key] === "number" && Number.isFinite(a[key]));
+}
+
+// A task's own worth, independent of which day it lands on: computePoints on
+// its stored axes, the same number pointsForBoard scaled by the day
+// multiplier before writing base_points. Null when axes_json is not a real
+// axes object (freeform tasks that predate it, or a bad row).
+export function rawTaskPoints(axesJson: unknown): number | null {
+  return isAxes(axesJson) ? computePoints(axesJson) : null;
+}
+
+// A screen effect on a claim is rare on purpose. Threshold, not tier: it is
+// meant to catch upper-medium and challenging tasks alike (roughly half of
+// what gets generated). Checked against rawTaskPoints, never base_points:
+// later days scale base_points up (the final day doubles it), so a threshold
+// on the scaled value would fire on almost everything by day five. If this
+// fires too often in practice, move the threshold rather than dropping the
+// feature.
+export const CLAIM_EFFECT_POINTS_THRESHOLD = 20;
+
+export function claimEarnsScreenEffect(axesJson: unknown): boolean {
+  const raw = rawTaskPoints(axesJson);
+  return raw !== null && raw >= CLAIM_EFFECT_POINTS_THRESHOLD;
+}
+
 export function pointsForFreeform(
   axes: Axes,
   opts: { day: number; tripDays: number | null } = { day: 1, tripDays: null },

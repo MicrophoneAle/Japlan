@@ -8,15 +8,15 @@ import { fakeHeic, patternJpeg } from "@/lib/test/images";
 
 const h = vi.hoisted(() => ({
   db: null as unknown as FakeSupabase,
-  sent: [] as { chatId: string; text: string }[],
+  sent: [] as { chatId: string; text: string; effect?: unknown }[],
   vision: vi.fn(),
   react: vi.fn(async () => {}),
 }));
 
 vi.mock("@/lib/db/client", () => ({ getServiceClient: () => h.db }));
 vi.mock("@/lib/linq/send", () => ({
-  sendText: vi.fn(async (chatId: string, text: string) => {
-    h.sent.push({ chatId, text });
+  sendText: vi.fn(async (chatId: string, text: string, opts?: { effect?: unknown }) => {
+    h.sent.push({ chatId, text, effect: opts?.effect });
     return { chatId, messageId: `out-${h.sent.length}` };
   }),
   sendDM: vi.fn(async (phone: string, text: string) => {
@@ -148,6 +148,7 @@ describe("photo with a code as the caption", () => {
     expect(h.vision).toHaveBeenCalledOnce();
     expect(h.vision.mock.calls[0][0].image.mime).toBe("image/heic");
     expect(h.sent.map((m) => m.text)).toEqual(["✅ A1 · Mike +8 +2 photo · 10"]);
+    expect(h.sent[0]?.effect).toBeUndefined();
   });
 
   it("still awards the code when the vision call times out", async () => {
@@ -186,6 +187,46 @@ describe("photo with a code as the caption", () => {
 
     expect(h.sent[0]?.text).toContain("that's your cap for today");
     expect(h.react).not.toHaveBeenCalled();
+    expect(h.sent[0]?.effect).toBeUndefined();
+  });
+});
+
+describe("screen effect on a high-value claim", () => {
+  const challengingTask = {
+    id: "task-a3",
+    trip_id: "trip-1",
+    participant_id: "p-mike",
+    team_id: null,
+    code: "A3",
+    title: "task A3",
+    tier: "Challenging",
+    // computePoints(4,4,4,4,4,4) = 27, past CLAIM_EFFECT_POINTS_THRESHOLD (20).
+    axes_json: { boldness: 4, physical: 4, time: 4, scarcity: 4, cultural: 4, aesthetics: 4 },
+    // A late-day multiplier could have inflated this well past the raw axes
+    // score; the effect must key off axes_json, never this stored value.
+    base_points: 40,
+    photo_bonus_max: 3,
+    verification: "honor",
+    day: 1,
+  };
+
+  it("attaches a screen effect when the claim's raw axes score clears the threshold", async () => {
+    h.db.seed("tasks", [challengingTask]);
+    await dispatchLinqEvent(message([text("A3")]));
+
+    expect(h.sent[0]?.text).toContain("✅ A3");
+    expect(h.sent[0]?.effect).toEqual({ type: "screen", name: "fireworks" });
+  });
+
+  it("never attaches the effect when the claim only hits the daily cap", async () => {
+    h.db.seed("tasks", [challengingTask]);
+    h.db.seed("claims", [
+      { task_id: "task-a2", participant_id: "p-mike", status: "awarded", awarded_points: 120 },
+    ]);
+    await dispatchLinqEvent(message([text("A3")]));
+
+    expect(h.sent[0]?.text).toContain("that's your cap for today");
+    expect(h.sent[0]?.effect).toBeUndefined();
   });
 });
 

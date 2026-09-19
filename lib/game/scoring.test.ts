@@ -2,9 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   applyDailyPointsCap,
   AXIS_WEIGHTS,
+  claimEarnsScreenEffect,
+  CLAIM_EFFECT_POINTS_THRESHOLD,
   computePoints,
+  dayValueMultiplier,
   pointsForBoard,
   pointsForFreeform,
+  rawTaskPoints,
   tierForPoints,
   type Axes,
 } from "./scoring";
@@ -96,5 +100,57 @@ describe("computePoints", () => {
     expect(points).toBe(24);
     expect(tier).toBe("Medium");
     expect(tier).not.toBe("Challenging");
+  });
+});
+
+describe("rawTaskPoints / claimEarnsScreenEffect", () => {
+  const axesAt = (base: number): Axes => ({
+    boldness: base, physical: base, time: base, scarcity: base, cultural: base, aesthetics: base,
+  });
+
+  it("reads the axes score directly, ignoring anything else on the row", () => {
+    expect(rawTaskPoints(axesAt(4))).toBe(computePoints(axesAt(4)));
+  });
+
+  it("returns null for a task with no real axes (freeform rows that predate it)", () => {
+    expect(rawTaskPoints({})).toBeNull();
+    expect(rawTaskPoints(null)).toBeNull();
+    expect(rawTaskPoints(undefined)).toBeNull();
+    expect(rawTaskPoints({ boldness: 3 })).toBeNull();
+    expect(rawTaskPoints({ boldness: "3", physical: 3, time: 3, scarcity: 3, cultural: 3, aesthetics: 3 })).toBeNull();
+  });
+
+  it("is unaffected by the day multiplier: the same axes score the same on day 1 and the final day", () => {
+    const axes = axesAt(4);
+    const raw = rawTaskPoints(axes);
+    // What actually gets stored as base_points on day 1 vs. the trip's last day.
+    const day1Stored = Math.round(computePoints(axes) * dayValueMultiplier(1, 5));
+    const finalDayStored = Math.round(computePoints(axes) * dayValueMultiplier(5, 5));
+    expect(finalDayStored).toBeGreaterThan(day1Stored);
+    expect(rawTaskPoints(axes)).toBe(raw); // does not move with the day
+  });
+
+  it("does not earn an effect just below the threshold", () => {
+    // Tune axes down until just under CLAIM_EFFECT_POINTS_THRESHOLD.
+    const axes = axesAt(2); // computePoints ~14
+    expect(rawTaskPoints(axes)).toBeLessThan(CLAIM_EFFECT_POINTS_THRESHOLD);
+    expect(claimEarnsScreenEffect(axes)).toBe(false);
+  });
+
+  it("earns an effect at and above the threshold", () => {
+    const axes = axesAt(4); // computePoints 27, well past 20
+    expect(rawTaskPoints(axes)).toBeGreaterThanOrEqual(CLAIM_EFFECT_POINTS_THRESHOLD);
+    expect(claimEarnsScreenEffect(axes)).toBe(true);
+  });
+
+  it("earns an effect exactly at the threshold (inclusive)", () => {
+    const axes = axesAt(3); // computePoints 20, exactly the threshold
+    expect(rawTaskPoints(axes)).toBe(CLAIM_EFFECT_POINTS_THRESHOLD);
+    expect(claimEarnsScreenEffect(axes)).toBe(true);
+  });
+
+  it("never earns an effect from a row with no real axes, even if base_points looks high", () => {
+    expect(claimEarnsScreenEffect({})).toBe(false);
+    expect(claimEarnsScreenEffect(null)).toBe(false);
   });
 });

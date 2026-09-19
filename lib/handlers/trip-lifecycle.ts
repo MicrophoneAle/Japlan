@@ -29,7 +29,7 @@ import { losersOf } from "@/lib/game/setup";
 import { formatBoardTime } from "@/lib/game/board-schedule";
 import { soloModeEnabled } from "@/lib/game/solo";
 import { buildStandingsRows } from "@/lib/game/standings";
-import { sendDM, sendText } from "@/lib/linq/send";
+import { sendDM, sendText, type MessageEffect } from "@/lib/linq/send";
 import {
   bootstrapGroupIfNeeded,
   findOpenSurveyByPhone,
@@ -43,7 +43,11 @@ import { beginSetup } from "./setup";
 import { bootstrapSoloIfNeeded } from "./solo";
 import { teamsWithMembers } from "./teams";
 
-type SendFn = (chatId: string, text: string) => Promise<{ messageId: string }>;
+type SendFn = (
+  chatId: string,
+  text: string,
+  opts?: { effect?: MessageEffect },
+) => Promise<{ messageId: string }>;
 
 function lifecycleStep(step: string, fields: Record<string, unknown> = {}): void {
   console.log("[japlan.lifecycle] step", { step, ...fields });
@@ -247,6 +251,8 @@ export async function handleTripCommand(opts: {
     .map((row) => ({ name: row.display_name, score: row.score }))
     .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
   // Final standings belong in the trip's own chat, even if confirmed by DM.
+  // Confetti, once: this branch only runs the one time a trip actually flips
+  // to complete (the update above is guarded by neq("state", "complete")).
   await send(
     trip.linq_chat_id,
     finalStandingsLine({
@@ -255,6 +261,7 @@ export async function handleTripCommand(opts: {
       stake: trip.stake_text,
       wrappedUrl: wrappedUrlFor(trip),
     }),
+    { effect: { type: "screen", name: "confetti" } },
   );
 }
 

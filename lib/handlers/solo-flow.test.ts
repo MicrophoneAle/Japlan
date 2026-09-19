@@ -36,6 +36,9 @@ vi.mock("@/lib/linq/send", () => ({
   sendTyping: vi.fn(async () => {}),
   react: vi.fn(async () => {}),
 }));
+vi.mock("@browserbasehq/stagehand", () => ({
+  browserbase: { search: vi.fn(async () => ({ results: [] })) },
+}));
 vi.mock("@/lib/places/foursquare", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/places/foursquare")>()),
   resolveNearArea: vi.fn(async () => null), // out of credits
@@ -79,6 +82,7 @@ import { dispatchLinqEvent } from "./dispatch";
 import { runDailyBoardForTrip } from "./daily-board";
 import { TOKYO_HAND_PROFILE } from "@/lib/game/tokyo-profile";
 import type { TripRow } from "@/lib/db/types";
+import { browserbase } from "@browserbasehq/stagehand";
 
 let n = 0;
 async function say(text: string) {
@@ -103,6 +107,8 @@ beforeEach(() => {
   vi.setSystemTime(new Date("2026-09-19T03:00:00Z")); // noon in Tokyo
   process.env.LINQ_FROM_NUMBER = "+15559999999";
   process.env.JAPLAN_SOLO_MODE = "true";
+  process.env.BROWSERBASE_API_KEY = "test-key";
+  vi.mocked(browserbase.search).mockReset().mockResolvedValue({ query: "", requestId: "req-0", results: [] });
   h.db = new FakeSupabase();
   h.sent.length = 0;
   h.turns.length = 0;
@@ -216,5 +222,30 @@ describe("conversation tool loop", () => {
       functionCall: { id: "c1", name: "get_standings", args: {}, thoughtSignature: "sig-abc" },
     });
     expect(last()).toBe("you're on 0, nobody to beat yet.");
+  });
+
+  it("calls search_web for a real place question and answers with what it returns", async () => {
+    await soloThroughSetup();
+    for (let i = 0; i < 25 && trip().state !== "active"; i++) await say("skip");
+    vi.mocked(browserbase.search).mockResolvedValue({
+      query: "teriyaki restaurants osaka",
+      requestId: "req-1",
+      results: [{ id: "r1", title: "Teriyaki House Momiji", url: "https://example.com/momiji" }],
+    });
+    h.script.push(
+      {
+        text: "",
+        functionCalls: [{ id: "c1", name: "search_web", args: { query: "teriyaki restaurants osaka" } }],
+      },
+      { text: "teriyaki house momiji looks solid: https://example.com/momiji", functionCalls: [] },
+    );
+    await say("japlan any good teriyaki spots in osaka?");
+
+    expect(browserbase.search).toHaveBeenCalledWith({
+      apiKey: "test-key",
+      query: "teriyaki restaurants osaka",
+      numResults: 5,
+    });
+    expect(last()).toBe("teriyaki house momiji looks solid: https://example.com/momiji");
   });
 });

@@ -63,6 +63,7 @@ import { fetchWithTimeout, withTimeout } from "@/lib/timeout";
 import { nextFreeformCode } from "@/lib/game/generate";
 import {
   applyDailyPointsCap,
+  claimEarnsScreenEffect,
   clampPhotoBonusMax,
   photoBonusMaxFor,
   DEFAULT_DAILY_POINTS_CAP,
@@ -95,7 +96,7 @@ import {
   senderFromData,
   textFromParts,
 } from "@/lib/linq/payload";
-import { react, sendText } from "@/lib/linq/send";
+import { react, sendText, type MessageEffect } from "@/lib/linq/send";
 
 // A claim that scores something: react on the claiming message itself,
 // alongside the text confirmation, instead of only ever replying with words.
@@ -185,7 +186,11 @@ async function claimAwait<T>(
   }
 }
 
-type SendFn = (chatId: string, text: string) => Promise<{ messageId: string }>;
+type SendFn = (
+  chatId: string,
+  text: string,
+  opts?: { effect?: MessageEffect },
+) => Promise<{ messageId: string }>;
 
 export type ClaimHandlerDeps = {
   send?: SendFn;
@@ -793,6 +798,12 @@ async function applyAwards(opts: {
   const name =
     opts.people.find((p) => p.id === opts.claimant.id)?.display_name ??
     opts.claimant.display_name;
+  // Rare on purpose: only a claim that was genuinely worth it before the day
+  // multiplier inflated it, and only when the claim actually paid out.
+  const effect: MessageEffect | undefined =
+    !claimantCapped && claimEarnsScreenEffect(opts.task.axes_json)
+      ? { type: "screen", name: "fireworks" }
+      : undefined;
   const confirmTo = [confirmChatId, ...(opts.alsoConfirmTo && opts.alsoConfirmTo !== confirmChatId ? [opts.alsoConfirmTo] : [])];
   for (const target of confirmTo) await claimAwait(
     "outbound.confirm",
@@ -814,6 +825,7 @@ async function applyAwards(opts: {
           boardCleared:
             personalBoardTask && !claimantCapped && remainingOpenPersonal === 0,
         }),
+        { effect },
       ),
   );
   console.info("[japlan.claim]", {

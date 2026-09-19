@@ -6,6 +6,29 @@ export type OutboundOp = "sendText" | "sendTyping" | "markRead" | "sendDM" | "re
 // The 6 standard iMessage tapbacks (Shared.ReactionType minus "custom"/"sticker").
 export type Tapback = "love" | "like" | "dislike" | "laugh" | "emphasize" | "question";
 
+// iMessage effects Linq's MessageContent.effect exposes. Screen effects
+// animate the whole screen; bubble effects animate only the message bubble.
+// Two different things in iMessage, and Linq exposes both under one field.
+export const SCREEN_EFFECTS = [
+  "confetti",
+  "fireworks",
+  "lasers",
+  "sparkles",
+  "celebration",
+  "hearts",
+  "love",
+  "balloons",
+  "happy_birthday",
+  "echo",
+  "spotlight",
+] as const;
+export const BUBBLE_EFFECTS = ["slam", "loud", "gentle", "invisible"] as const;
+export type ScreenEffectName = (typeof SCREEN_EFFECTS)[number];
+export type BubbleEffectName = (typeof BUBBLE_EFFECTS)[number];
+export type MessageEffect =
+  | { type: "screen"; name: ScreenEffectName }
+  | { type: "bubble"; name: BubbleEffectName };
+
 export type OutboundLog = {
   at: string;
   op: OutboundOp;
@@ -52,13 +75,33 @@ async function outbound<T>(
 export async function sendText(
   chatId: string,
   text: string,
+  opts?: { effect?: MessageEffect },
 ): Promise<SentText> {
-  const sent = await outbound({ op: "sendText", chatId, text }, async () => {
-    const res = await getLinqClient().chats.messages.send(chatId, {
-      message: textParts(text),
+  const attempt = (effect?: MessageEffect) =>
+    outbound({ op: "sendText", chatId, text }, async () => {
+      const res = await getLinqClient().chats.messages.send(chatId, {
+        message: { ...textParts(text), ...(effect ? { effect } : {}) },
+      });
+      return { chatId: res.chat_id, messageId: res.message.id };
     });
-    return { chatId: res.chat_id, messageId: res.message.id };
-  });
+  // An effect rides along with the message in one request: there is no
+  // separate call to fail independently. If the effect-carrying send throws,
+  // retry once, plain, so a decoration never costs the confirmation itself.
+  let sent: SentText;
+  if (opts?.effect) {
+    try {
+      sent = await attempt(opts.effect);
+    } catch (err) {
+      console.error("[linq.outbound] effect failed, retrying without", {
+        chatId,
+        effect: opts.effect,
+        err: err instanceof Error ? err.message : String(err),
+      });
+      sent = await attempt(undefined);
+    }
+  } else {
+    sent = await attempt(undefined);
+  }
   // The transcript is what the next conversational call reads; the bot's own
   // replies belong in it. Not game logic, just the record.
   await recordMessage({ chatId: sent.chatId, role: "bot", text });

@@ -46,6 +46,7 @@ import {
 import { teamsWithMembers } from "@/lib/handlers/teams";
 import { lookupOwnProfile } from "@/lib/handlers/profiles";
 import { otherPersonAskedAbout } from "@/lib/game/profile";
+import { searchTheWeb } from "@/lib/handlers/web-search";
 import type { LLMProvider, ToolContent, ToolTurn } from "@/lib/llm";
 import { GeminiProvider } from "@/lib/llm/gemini";
 import { react, sendDM, sendText } from "@/lib/linq/send";
@@ -219,6 +220,17 @@ export const CONVERSATION_TOOL_DEFS = [
         },
       },
       required: ["emoji"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "search_web",
+    description:
+      "Search the live web for something real and specific: restaurants, cafes, tickets, booking sites, or a place to look up on google maps. Call this before naming any specific place, restaurant, or link that is not already an open task or a trip landmark. query: a real search query in their words plus the destination, e.g. 'best teriyaki restaurants osaka' or 'universal studios japan tickets'.",
+    parameters: {
+      type: "object",
+      properties: { query: { type: "string" } },
+      required: ["query"],
       additionalProperties: false,
     },
   },
@@ -748,6 +760,17 @@ async function executeConversationTool(
       },
       sent: false,
     };
+  }
+  if (name === "search_web") {
+    const query = typeof args.query === "string" ? args.query.trim() : "";
+    if (!query) {
+      return { result: { ok: false, reason: "need_query" }, sent: false };
+    }
+    const outcome = await searchTheWeb(query);
+    if (!outcome.ok) {
+      return { result: { ok: false, reason: outcome.reason }, sent: false };
+    }
+    return { result: { ok: true, results: outcome.results }, sent: false };
   }
   if (name === "react_to_message") {
     const emoji = typeof args.emoji === "string" ? args.emoji.trim() : "";

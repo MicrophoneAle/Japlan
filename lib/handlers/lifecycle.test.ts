@@ -14,7 +14,7 @@ const SAM_DM = "dm-sam";
 
 const h = vi.hoisted(() => ({
   db: null as unknown as FakeSupabase,
-  sent: [] as { chatId: string; text: string }[],
+  sent: [] as { chatId: string; text: string; effect?: unknown }[],
   near: vi.fn(),
   tz: vi.fn(),
   dates: vi.fn(),
@@ -27,8 +27,8 @@ vi.mock("@/lib/game/weather", async (importOriginal) => ({
 }));
 vi.mock("@/lib/db/client", () => ({ getServiceClient: () => h.db }));
 vi.mock("@/lib/linq/send", () => ({
-  sendText: vi.fn(async (chatId: string, text: string) => {
-    h.sent.push({ chatId, text });
+  sendText: vi.fn(async (chatId: string, text: string, opts?: { effect?: unknown }) => {
+    h.sent.push({ chatId, text, effect: opts?.effect });
     return { chatId, messageId: `out-${h.sent.length}` };
   }),
   sendDM: vi.fn(async (phone: string, text: string) => {
@@ -108,6 +108,7 @@ const person = (phone: string) =>
   h.db.table("participants").find((p) => p.phone === phone && p.trip_id === openTrip()?.id);
 const lastTo = (chatId: string) => [...h.sent].reverse().find((m) => m.chatId === chatId)?.text;
 const allTo = (chatId: string) => h.sent.filter((m) => m.chatId === chatId).map((m) => m.text);
+const lastMessageTo = (chatId: string) => [...h.sent].reverse().find((m) => m.chatId === chatId);
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
@@ -356,6 +357,22 @@ describe("end trip and new trip", () => {
     expect(trips()[0].state).toBe("complete");
     expect(trips()[0].completed_at).toBeTruthy();
     expect(lastTo(GROUP)).toBe("it's over 😭 final: Mike 120 · Sam 40\nSam is on the hook, no takebacks: karaoke solo");
+    expect(lastMessageTo(GROUP)?.effect).toEqual({ type: "screen", name: "confetti" });
+  });
+
+  it("only confettis once: a second end-trip attempt on the same trip gets no effect", async () => {
+    await activeTripWithScores();
+    await send(MIKE, GROUP, "japlan end trip confirm");
+    const confettiCount = h.sent.filter(
+      (m) => JSON.stringify(m.effect) === JSON.stringify({ type: "screen", name: "confetti" }),
+    ).length;
+    expect(confettiCount).toBe(1);
+
+    await send(MIKE, GROUP, "japlan end trip confirm");
+    const confettiCountAfter = h.sent.filter(
+      (m) => JSON.stringify(m.effect) === JSON.stringify({ type: "screen", name: "confetti" }),
+    ).length;
+    expect(confettiCountAfter).toBe(1);
   });
 
   it("keeps the chat quiet after the end until someone asks for a new trip", async () => {
