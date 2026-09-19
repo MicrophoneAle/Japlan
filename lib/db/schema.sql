@@ -4,7 +4,6 @@
 -- TODO: plan does not specify created_at/updated_at except ratings.created_at; not added elsewhere.
 -- TODO: plan does not specify FK delete/update behaviour; using the Postgres default (NO ACTION).
 -- TODO: events.trip_id is nullable because inbound webhooks can arrive before a trip row exists.
--- TODO: places.fsq_id is required later in the Foursquare section but is not in the Data model column list; omitted.
 -- TODO: a `channel` field is required later for RCS/WhatsApp, but is not in the Data model; omitted.
 -- TODO: enum values for trips.state, trips.difficulty, tasks.tier, tasks.verification, claims.status are unspecified; stored as text.
 
@@ -19,7 +18,8 @@ create table trips (
   state text not null,
   difficulty text,
   stake_text text,
-  timezone text
+  timezone text,
+  destination_profile_json jsonb
 );
 
 create table participants (
@@ -56,6 +56,7 @@ create table team_members (
 create table places (
   id uuid primary key default gen_random_uuid(),
   trip_id uuid not null references trips (id),
+  fsq_place_id text,
   name text not null,
   lat double precision,
   lng double precision,
@@ -65,7 +66,8 @@ create table places (
   suggested_by text,
   hours_json jsonb,
   price_band integer,
-  score numeric
+  score numeric,
+  unique (trip_id, fsq_place_id)
 );
 
 create table itinerary (

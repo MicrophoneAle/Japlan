@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   computePoints,
+  pointsForBoard,
   tierForPoints,
   type Axes,
 } from "./scoring";
@@ -83,5 +84,21 @@ describe("computePoints", () => {
     });
     expect(points).toBe(35);
     expect(tierForPoints(points)).toBeNull();
+  });
+
+  it("clamps generated board points to Challenging", () => {
+    const { points, tier } = pointsForBoard(
+      {
+        boldness: 5,
+        physical: 5,
+        time: 5,
+        scarcity: 5,
+        cultural: 5,
+        aesthetics: 5,
+      },
+      { day: 1, tripDays: 5 },
+    );
+    expect(points).toBe(30);
+    expect(tier).toBe("Challenging");
   });
 });

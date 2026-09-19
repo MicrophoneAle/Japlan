@@ -7,7 +7,11 @@ export const SETUP_COMPLETE =
 export const SURVEY_DONE_DM =
   "PLACEHOLDER: that's everything from me for now.";
 
-export function dailyBoardHeader(day: number): string {
+export function dailyBoardHeader(
+  day: number,
+  weatherLine?: string | null,
+): string {
+  if (weatherLine) return `Day ${day} · ${weatherLine}`;
   return `Day ${day}`;
 }
 

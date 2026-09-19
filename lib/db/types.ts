@@ -11,6 +11,7 @@ export type TripRow = {
   difficulty: string | null;
   stake_text: string | null;
   timezone: string | null;
+  destination_profile_json?: unknown | null;
 };
 
 export type TaskRow = {
@@ -40,6 +41,21 @@ export type ClaimRow = {
   awarded_points: number | null;
   resolved_by: string | null;
   resolution_json: unknown;
+};
+
+export type PlaceRow = {
+  id: string;
+  trip_id: string;
+  fsq_place_id: string | null;
+  name: string;
+  lat: number | null;
+  lng: number | null;
+  category: string | null;
+  source: string | null;
+  suggested_by: string | null;
+  hours_json: unknown;
+  price_band: number | null;
+  score: number | null;
 };
 
 export type ParticipantRow = {

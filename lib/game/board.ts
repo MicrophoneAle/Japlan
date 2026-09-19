@@ -19,6 +19,7 @@ export function formatDailyBoard(opts: {
   day: number;
   tasks: BoardTask[];
   standings: BoardStanding[];
+  weatherLine?: string | null;
 }): string {
   const tasks = [...opts.tasks].sort((a, b) =>
     a.code.localeCompare(b.code, undefined, { numeric: true }),
@@ -29,7 +30,7 @@ export function formatDailyBoard(opts: {
   });
 
   const lines = [
-    dailyBoardHeader(opts.day),
+    dailyBoardHeader(opts.day, opts.weatherLine),
     "",
     ...tasks.map((task) =>
       dailyBoardTaskLine(task.code, task.title, task.base_points),
