@@ -30,6 +30,7 @@ import {
 } from "@/lib/game/claims";
 import { buildStandingsRows } from "@/lib/game/standings";
 import type { SurveyAnswers } from "@/lib/game/survey";
+import { localHour } from "@/lib/game/time";
 import { currentTripDay } from "@/lib/handlers/daily-board";
 import {
   describeBoardTime,
@@ -245,6 +246,19 @@ function stringArg(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+// A word, never a digit: reply-check discards any number in a reply that
+// didn't come from a tool or the sender's own message, so the model gets a
+// time-of-day label to reason with, not a clock time it could echo back.
+function timeOfDayLabel(hour: number): string {
+  if (hour < 5) return "late night";
+  if (hour < 8) return "early morning";
+  if (hour < 12) return "morning";
+  if (hour < 14) return "midday";
+  if (hour < 18) return "afternoon";
+  if (hour < 22) return "evening";
+  return "late night";
+}
+
 // Codes repeat per owner (everyone has an A1), so only show the sender theirs.
 function claimableTasks(miss: ClaimFallthrough): TaskRow[] {
   return tasksClaimableBy(miss.tasks, miss.claimant.id, miss.claimantTeamIds);
@@ -263,6 +277,7 @@ function userPrompt(opts: {
   people: string[];
   destination: string | null;
   day: number;
+  timeOfDay: string;
   history: { role: string; text: string }[];
 }): string {
   const history = opts.history
@@ -272,6 +287,7 @@ function userPrompt(opts: {
     `sender: ${opts.senderName}`,
     `destination: ${opts.destination ?? "unknown"}`,
     `day: ${opts.day}`,
+    `local time of day: ${opts.timeOfDay}`,
     `people: ${opts.people.join(", ") || "(none)"}`,
     // Their own settings, all editable by them any time (update_my_setting).
     // Not rules: never quote one back as a reason something cannot happen.
@@ -400,6 +416,7 @@ export async function handleConversation(
           people: miss.people.map((person) => person.display_name),
           destination: miss.trip.destination,
           day,
+          timeOfDay: timeOfDayLabel(localHour(new Date(now), miss.trip.timezone)),
           history,
         }),
       },
