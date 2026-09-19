@@ -19,8 +19,8 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 ## Itinerary research lab
 
 `/itinerary` is a development-only, no-database draft-itinerary workflow. It
-uses the Toronto fixture in `lib/itinerary/config.ts`; its dates are inclusive
-calendar dates and can be edited in that one file. Results and the Research
+uses the development fixture in `lib/itinerary/config.ts`; its dates are inclusive
+calendar dates and every preference can be edited in that one file. Results and the Research
 Inspector remain available for the current browser session only.
 
 Set these values in `.env.local` before running a real generation:
@@ -33,11 +33,14 @@ GEMINI_API_KEY=
 GEMINI_FAST_MODEL=
 GEMINI_SMART_MODEL=
 STAGEHAND_MODEL=google/gemini-3.6-flash
+ITINERARY_RESEARCH_STRATEGY=fast
 ```
 
 Open `/itinerary` and choose **Generate Itinerary**. Real mode uses a
-bounded Browserbase + Stagehand session for source-backed candidates, then
-Gemini selects only those candidates for an unvalidated draft. The developer
+parallel Foursquare discovery plus bounded Browserbase Search/Fetch enrichment
+for source-backed candidates, then Gemini selects only those candidates for an
+unvalidated draft. Set `ITINERARY_RESEARCH_STRATEGY=deep` only when you want
+the slower Stagehand browser workflow. The developer
 Research Inspector shows URLs, actions, candidates, selections, and Browserbase
 session metadata for that generation.
 

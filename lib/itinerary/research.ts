@@ -1,6 +1,8 @@
 import { browserbase, Stagehand, type StagehandBrowser } from "@browserbasehq/stagehand";
 import { z } from "zod";
 import { inclusiveTripDates, researchMode, type TripConfig } from "./config";
+import { researchActivitiesFast } from "./fast-research";
+import { itineraryResearchStrategy } from "./research-strategy";
 import { mockResearch } from "./mock-research";
 import { CandidateActivitySchema, type CandidateActivity, type ResearchAction, type ResearchSnapshot } from "./schemas";
 import { balanceCandidates, isEnglishFacing, isExplicitlyIncompatible } from "./quality";
@@ -24,6 +26,7 @@ function errorMessage(error: unknown): string {
 
 export async function researchActivities(config: TripConfig): Promise<ResearchSnapshot> {
   if (researchMode() === "mock") return mockResearch(config);
+  if (itineraryResearchStrategy() === "fast") return researchActivitiesFast(config);
   const browserbaseKey = process.env.BROWSERBASE_API_KEY;
   const projectId = process.env.BROWSERBASE_PROJECT_ID;
   const geminiKey = process.env.GEMINI_API_KEY;

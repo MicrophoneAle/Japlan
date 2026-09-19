@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { developmentTripConfig, inclusiveTripDates, researchMode } from "./config";
+import { foursquareCandidate } from "./fast-research";
+import { itineraryResearchStrategy } from "./research-strategy";
 import { generateDraftItinerary, generateMockDraftItinerary, validateModelItinerary } from "./generate";
 import { mockResearch } from "./mock-research";
 import { isExplicitlyIncompatible } from "./quality";
@@ -27,6 +29,16 @@ describe("itinerary draft boundaries", () => {
     expect(result.candidates.find(candidate => candidate.id === "mock-dining")?.unverifiedFields).toContain("allergy safety");
   });
   it("never permits mock research in production", () => { vi.stubEnv("ITINERARY_RESEARCH_MODE", "mock"); vi.stubEnv("NODE_ENV", "production"); expect(() => researchMode()).toThrow(/not permitted/); });
+  it("defaults real generation to fast Browserbase research and permits explicit deep research", () => {
+    expect(itineraryResearchStrategy()).toBe("fast");
+    vi.stubEnv("ITINERARY_RESEARCH_STRATEGY", "deep");
+    expect(itineraryResearchStrategy()).toBe("deep");
+  });
+  it("converts Foursquare discovery into an explicitly source-backed candidate", () => {
+    const candidate = foursquareCandidate({ fsq_place_id: "place-1", name: "Test Market", latitude: 0, longitude: 0, neighborhood: "Central", locality: "Tokyo", categories: ["Market"], price: null, tastes: [], hours_json: null, raw: {} }, developmentTripConfig, 0);
+    expect(candidate.sourceUrls[0]).toContain("place-1");
+    expect(candidate.unverifiedFields).toContain("opening hours");
+  });
   it("removes candidates that explicitly require extensive walking", () => {
     const walkingTour = { ...mockResearch(developmentTripConfig).candidates[0]!, name: "Historic walking tour", description: "Requires 90 minutes walking through back alleys and bridges." };
     expect(isExplicitlyIncompatible(walkingTour, developmentTripConfig)).toBe(true);
