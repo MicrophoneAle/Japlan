@@ -297,12 +297,15 @@ export function slotForMinute(minute: number): DaySlot {
   return "evening";
 }
 
-// Rough shape, not a schedule: tasks in route order, the spare time spread
-// evenly between them, each labelled by when its middle falls.
-export function assignSlots<T extends Plannable>(
+// Rough shape, not a schedule: tasks in route order, travel before each, the
+// spare time spread evenly after each. Minutes after local midnight. The
+// spare time is the dead time sidequests live in (lib/game/sidequests.ts).
+export type LaidOut<T> = { task: T; startMinutes: number; endMinutes: number };
+
+export function layoutDay<T extends Pick<Plannable, "minutes" | "coords">>(
   ordered: T[],
-  window: DayWindow,
-): (T & { slot: DaySlot })[] {
+  window: Pick<DayWindow, "startMinutes" | "endMinutes">,
+): LaidOut<T>[] {
   if (ordered.length === 0) return [];
   const legs: number[] = [];
   let last: LatLng | null = null;
@@ -316,8 +319,18 @@ export function assignSlots<T extends Plannable>(
   let clock = window.startMinutes;
   return ordered.map((task, i) => {
     clock += legs[i];
-    const middle = clock + task.minutes / 2;
+    const startMinutes = clock;
     clock += task.minutes + gap;
+    return { task, startMinutes, endMinutes: startMinutes + task.minutes };
+  });
+}
+
+export function assignSlots<T extends Plannable>(
+  ordered: T[],
+  window: DayWindow,
+): (T & { slot: DaySlot })[] {
+  return layoutDay(ordered, window).map(({ task, startMinutes }) => {
+    const middle = startMinutes + task.minutes / 2;
     const slot = task.when === "morning" ? "morning" : slotForMinute(middle);
     return { ...task, slot };
   });

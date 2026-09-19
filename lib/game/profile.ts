@@ -1,6 +1,7 @@
 import type { Constraint } from "./constraints";
-import { constraintsOf, effectiveWeight, prefsOf, PREF_DIMS, type PrefDim, type Prefs } from "./prefs";
+import { constraintsOf, effectiveWeight, hasPreferenceSignal, prefsOf, PREF_DIMS, v2View, type PrefDim, type Prefs } from "./prefs";
 import { answerValue, type SurveyAnswers } from "./survey";
+import { matchPerson } from "./split";
 
 // A written profile per person: a synthesis, not a transcript. It goes into
 // the generation prompt instead of raw JSON, answers "what do you know about
@@ -60,13 +61,22 @@ const BUDGET_WORDS: Record<string, string> = {
   no_limit: "doesn't want to think about money",
 };
 
+const YOUR_BUDGET_WORDS: Record<string, string> = {
+  under_50: "keep daily spending under $50",
+  "50_100": "are comfortable spending $50-100 a day",
+  "100_200": "are fine spending $100-200 a day",
+  no_limit: "don't want to think about money",
+};
+
 export function personProfile(opts: {
   name: string;
   answers: SurveyAnswers;
   prefs?: Prefs | null;
   partnerName?: string | null;
 }): string {
-  const { name, answers } = opts;
+  const { name } = opts;
+  // Either survey: the first one's answers read as the current one's.
+  const answers = v2View(opts.answers);
   const isYou = name.toLowerCase() === "you";
   const prefs = opts.prefs ?? prefsOf(null, answers);
   const lines: string[] = [];
@@ -100,22 +110,33 @@ export function personProfile(opts: {
 
   const constraints = constraintsOf(answers);
   if (constraints.length) {
-    lines.push(`Hard constraints, in their words: ${constraints.map(constraintLine).join("; ")}.`);
+    // Verbatim either way; only the framing changes.
+    lines.push(`Hard constraints, in ${isYou ? "your" : "their"} words: ${constraints.map(constraintLine).join("; ")}.`);
   } else if (answerValue(answers, "hard_constraints") !== undefined) {
     lines.push("No hard constraints.");
   }
 
   const mustHave = answerValue(answers, "must_have");
-  if (mustHave) lines.push(`Says the trip is a waste if they don't ${mustHave.replace(/[.!]+$/, "")}.`);
+  if (mustHave) {
+    const what = mustHave.replace(/[.!]+$/, "");
+    lines.push(isYou ? `You said the trip is a waste if you don't ${what}.` : `Says the trip is a waste if they don't ${what}.`);
+  }
 
   const budget = answerValue(answers, "budget_band");
-  if (budget && BUDGET_WORDS[budget]) lines.push(`${capitalize(BUDGET_WORDS[budget])}.`);
+  if (budget && BUDGET_WORDS[budget]) {
+    lines.push(isYou ? `You ${YOUR_BUDGET_WORDS[budget]}.` : `${capitalize(BUDGET_WORDS[budget])}.`);
+  }
 
   const split = answerValue(answers, "splitting");
-  if (split === "yes") lines.push("Fine splitting up.");
-  if (split === "no") lines.push("Would rather the group stayed together.");
+  if (split === "yes") lines.push(isYou ? "You're fine splitting up." : "Fine splitting up.");
+  if (split === "no") lines.push(isYou ? "You'd rather the group stayed together." : "Would rather the group stayed together.");
   if (split === "depends") {
-    lines.push(opts.partnerName ? `Fine splitting up if they're with ${opts.partnerName}.` : "Open to splitting up, depending on the plan.");
+    const who = isYou ? "you're" : "they're";
+    lines.push(
+      opts.partnerName
+        ? `${isYou ? "You're fine" : "Fine"} splitting up if ${who} with ${opts.partnerName}.`
+        : `${isYou ? "You're open" : "Open"} to splitting up, depending on the plan.`,
+    );
   }
   return lines.join(" ");
 }
@@ -127,16 +148,27 @@ function capitalize(s: string): string {
 // The group's profile: where it agrees, where it splits, and every hard
 // constraint anyone has, without saying whose. What shared boards and
 // splits generate from. Never names a person next to a restriction.
-export function groupProfile(people: { answers: SurveyAnswers; prefs?: Prefs | null }[]): string {
-  if (people.length === 0) return "";
-  const n = people.length;
-  const effs = people.map((p) => {
-    const prefs = p.prefs ?? prefsOf(null, p.answers);
-    return Object.fromEntries(PREF_DIMS.map((d) => [d, effectiveWeight(prefs.weights[d])])) as Record<PrefDim, number>;
+// Only reports what the answers support: agreement and splits come from the
+// people who have told us something, and every count says how many that is.
+// ("Everyone is fine splitting up" from one answer out of four was live.)
+export function groupProfile(
+  rawPeople: { answers: SurveyAnswers; prefs?: Prefs | null }[],
+  opts: { groupSize?: number } = {},
+): string {
+  if (rawPeople.length === 0) return "";
+  const size = Math.max(opts.groupSize ?? rawPeople.length, rawPeople.length);
+  const people = rawPeople.map((p) => {
+    const answers = v2View(p.answers);
+    return { answers, prefs: p.prefs ?? prefsOf(null, answers) };
   });
+  const informed = people.filter((p) => hasPreferenceSignal(p.prefs));
+  const n = informed.length;
+  const effs = informed.map((p) =>
+    Object.fromEntries(PREF_DIMS.map((d) => [d, effectiveWeight(p.prefs.weights[d])])) as Record<PrefDim, number>,
+  );
   const agree: string[] = [];
   const split: string[] = [];
-  for (const d of PREF_DIMS) {
+  for (const d of n > 0 ? PREF_DIMS : []) {
     const values = effs.map((e) => e[d]);
     const mean = values.reduce((a, b) => a + b, 0) / n;
     const spread = Math.max(...values) - Math.min(...values);
@@ -144,16 +176,19 @@ export function groupProfile(people: { answers: SurveyAnswers; prefs?: Prefs | n
     else if (mean >= 0.62) agree.push(DIM_WORDS[d]);
   }
   const lines: string[] = [];
+  const of = (k: number) => (k === size ? "" : ` (${k} of ${size} answered)`);
+  const everyone = n === size ? "Everyone leans" : n === 1 ? "The one person who answered leans" : `All ${n} who answered lean`;
   lines.push(
-    `A group of ${n}.${agree.length ? ` Everyone leans toward ${listWords(agree)}.` : ""}${
-      split.length ? ` Split on ${listWords(split)}: some are into it, some aren't.` : ""
+    `A group of ${size}.${n === 0 ? " Nobody has said what they're into yet." : ""}${agree.length ? ` ${everyone} toward ${listWords(agree)}.` : ""}${
+      split.length ? ` Split on ${listWords(split)}: some are into it, some aren't${of(n)}.` : ""
     }`,
   );
   const paces = people.map((p) => p.answers.ab_pace?.value).filter(Boolean);
   if (paces.length) {
     const packed = paces.filter((v) => v === "a").length;
     const slow = paces.filter((v) => v === "b").length;
-    lines.push(packed > slow ? "Mostly want packed days." : slow > packed ? "Mostly want slower days." : "Mixed on pace.");
+    const verdict = packed > slow ? "Mostly want packed days" : slow > packed ? "Mostly want slower days" : "Mixed on pace";
+    lines.push(`${verdict}${of(paces.length)}.`);
   }
   // Every hard constraint, deduplicated, no names. A shared task must be
   // safe for everyone.
@@ -163,6 +198,36 @@ export function groupProfile(people: { answers: SurveyAnswers; prefs?: Prefs | n
   if (musts.length) lines.push(`Must-haves someone named: ${musts.map((m) => m.replace(/[.!]+$/, "")).join("; ")}.`);
   const splits = people.map((p) => answerValue(p.answers, "splitting")).filter(Boolean);
   if (splits.includes("no")) lines.push("At least one person would rather not split up.");
-  else if (splits.length && splits.every((s) => s === "yes")) lines.push("Everyone is fine splitting up.");
+  else if (splits.length === size && splits.every((s) => s === "yes")) lines.push("Everyone is fine splitting up.");
+  else if (splits.length) {
+    const yes = splits.filter((s) => s === "yes").length;
+    lines.push(`${yes} of ${size} said they're fine splitting up${splits.length < size ? `; ${size - splits.length} haven't said` : ""}.`);
+  }
   return lines.join(" ");
+}
+
+// "japlan what do you know about michael", "what's jess's budget": asking
+// about someone else. Only when the name is someone on the trip (so "what do
+// you know about ramen" is still a question). Returns who, for the log.
+const OTHER_PERSON_ASKS: RegExp[] = [
+  /\b(?:what|wat)\s+(?:do|did|can|does)\s+(?:you|u|ya)\s+(?:know|tell me|remember|have)\s+(?:about|on)\s+([a-z][a-z'-]*)/,
+  /\btell me about\s+([a-z][a-z'-]*?)(?:'s)?\s+(?:survey|profile|answers|preferences|prefs|budget|diet|allergies|settings)\b/,
+  /\b([a-z][a-z'-]*?)'s\s+(?:survey|profile|answers|preferences|prefs|budget|diet|allergies|settings)\b/,
+];
+const NOT_A_NAME = new Set(["me", "myself", "us", "you", "u", "them", "it", "this", "that", "my", "your", "our", "their", "the", "everyone", "anyone"]);
+
+export function otherPersonAskedAbout(
+  text: string,
+  people: { id: string; display_name: string }[],
+  senderId: string,
+): { id: string; display_name: string } | null {
+  const t = text.toLowerCase().replace(/[’‘]/g, "'");
+  const others = people.filter((p) => p.id !== senderId).map((p) => ({ ...p, answers: {} }));
+  for (const re of OTHER_PERSON_ASKS) {
+    const word = t.match(re)?.[1]?.replace(/'s$/, "");
+    if (!word || NOT_A_NAME.has(word)) continue;
+    const hit = matchPerson(word, others);
+    if (hit) return { id: hit.id, display_name: hit.display_name };
+  }
+  return null;
 }

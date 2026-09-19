@@ -239,6 +239,9 @@ export type GenerationInput = {
   // Titles already on this trip's boards (any day), so day 2 is not day 1
   // again with different adjectives.
   boardTitles?: string[];
+  // A redo: the board they just asked to replace. The retry signal, and a
+  // list the new board must not repeat or rephrase.
+  rejectedTitles?: string[];
   // The bank the model may build from: main-task templates only (sidequests
   // never go on the board), no group templates on a solo trip.
   templates?: TaskTemplate[];
@@ -337,6 +340,11 @@ export function buildGenerationPrompt(input: GenerationInput): string {
     ...(difficultyGuidance(input.difficulty) ? [difficultyGuidance(input.difficulty) as string] : []),
     `Already completed (do not repeat): ${input.completedTitles.join("; ") || "(none)"}`,
     `Already on this trip's boards (do not repeat or rephrase): ${input.boardTitles?.slice(-40).join("; ") || "(none)"}`,
+    ...(input.rejectedTitles?.length
+      ? [
+          `They asked for a different board. This is a retry: every task must be new, not these and not rephrasings of them: ${input.rejectedTitles.join("; ")}`,
+        ]
+      : []),
     `Yesterday's ratings: ${input.yesterdayRatings || "(none)"}`,
     `Score gap: ${input.scoreGap}`,
     ...timing,

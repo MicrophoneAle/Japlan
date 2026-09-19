@@ -1,7 +1,7 @@
 import { loadEnvConfig } from "@next/env";
 import { formatDailyBoard } from "../lib/game/board";
 import { HAND_WRITTEN_DAY1_TASKS } from "../lib/game/hand-written-tasks";
-import { computePoints, tierForPoints } from "../lib/game/scoring";
+import { clampPhotoBonusMax, computePoints, tierForPoints } from "../lib/game/scoring";
 import { getServiceClient } from "../lib/db/client";
 import { sendText } from "../lib/linq/send";
 
@@ -50,7 +50,7 @@ async function main(): Promise<void> {
       tier,
       axes_json: task.axes,
       base_points,
-      photo_bonus_max: task.photo_bonus_max,
+      photo_bonus_max: clampPhotoBonusMax(task.photo_bonus_max, base_points).value,
       verification: task.verification,
       day: 1,
       neighborhood: task.neighborhood,

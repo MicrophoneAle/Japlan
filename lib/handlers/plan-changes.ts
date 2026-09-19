@@ -1,10 +1,16 @@
+import { REFILLS_PER_DAY } from "./board-request";
 import { getServiceClient } from "@/lib/db/client";
 import type { ParticipantRow, PlaceRow, TripRow } from "@/lib/db/types";
 import { parseBoardDay } from "@/lib/game/board-schedule";
 import {
   avoidNotedLine,
   BOARD_MAKE_FAILED_LINE,
-  boardRedoneLine,
+  redoAllClaimedLine,
+  redoLimitLine,
+  redoSwappedLine,
+  REDO_FAILED_LINE,
+  REDO_NO_BOARD_LINE,
+  REDO_PAST_DAY_LINE,
   EVERYONE_REDONE_LINE,
   onlyOrganizerLine,
   regroupLine,
@@ -554,7 +560,7 @@ export async function requestTasks(
 
 // "yes, redo it": their own board, from their answers as they are now. The
 // organizer can redo everyone's after a trip-level change.
-export async function redoToday(ctx: Ctx, args: { everyone?: boolean }): Promise<string> {
+export async function redoToday(ctx: Ctx, args: { everyone?: boolean; day?: string | null }): Promise<string> {
   if (args.everyone) {
     const refusal = organizerOnly(ctx);
     if (refusal) return refusal;
@@ -562,10 +568,39 @@ export async function redoToday(ctx: Ctx, args: { everyone?: boolean }): Promise
     const done = await replanDay(fresh ?? ctx.trip, today(ctx), ctx.now);
     return done ? EVERYONE_REDONE_LINE : BOARD_MAKE_FAILED_LINE;
   }
+  const date = args.day ? dateFor(ctx, args.day) : today(ctx);
+  const day = tripDayOn(ctx.trip, date, ctx.now);
+  const label = day === tripDayOn(ctx.trip, today(ctx), ctx.now) ? "today" : `day ${day}`;
+  const log = (path: string, fields: Record<string, unknown> = {}) =>
+    console.info("[japlan.board] step", { step: `redo.${path}`, tripId: ctx.trip.id, participantId: ctx.sender.id, day, ...fields });
+  // REAL: a finished day keeps what happened on it.
+  if (date < today(ctx)) {
+    log("refused", { reason: "past_day" });
+    return REDO_PAST_DAY_LINE;
+  }
+  // REAL (anti-abuse): the same generous limit as refills, said out loud.
+  const used = await redosUsed(ctx.trip.id, ctx.sender.id, day);
+  if (used >= REFILLS_PER_DAY) {
+    log("refused", { reason: "rate_limit", used });
+    return redoLimitLine(label, REFILLS_PER_DAY);
+  }
   const { data } = await getServiceClient().from("participants").select("*").eq("id", ctx.sender.id).maybeSingle();
   const me = (data as ParticipantRow | null) ?? ctx.sender;
-  const { rows, day } = await redoMyDay({ trip: ctx.trip, claimant: me, now: ctx.now });
-  if (rows.length === 0) return BOARD_MAKE_FAILED_LINE;
+  const out = await redoMyDay({ trip: ctx.trip, claimant: me, now: ctx.now, date, variant: used });
+  if (out.kind === "no_board") return REDO_NO_BOARD_LINE;
+  if (out.kind === "all_claimed") return redoAllClaimedLine(label);
+  if (out.kind === "failed") return REDO_FAILED_LINE;
+  const { error } = await getServiceClient()
+    .from("board_requests")
+    .insert({ trip_id: ctx.trip.id, participant_id: ctx.sender.id, requested_on: today(ctx), day, kind: "redo" });
+  if (error) console.error("[japlan.board] redo request log failed", error);
+  // Turning a whole board down says something: the kinds of thing on it lose
+  // a little weight (a nudge, not a rule; "no temples" is the rule).
+  await learnFrom(ctx.trip, ctx.sender.id, {
+    dims: prefDimsFor(out.replaced.join(" ")),
+    direction: -1,
+    why: "asked for a different board",
+  }).catch((err) => console.error("[japlan.profile] learn failed", err));
   const board = formatPersonalBoard({
     day,
     tasks: (await tasksForDay(ctx.trip.id, day))
@@ -573,5 +608,22 @@ export async function redoToday(ctx: Ctx, args: { everyone?: boolean }): Promise
       .map((t) => ({ code: t.code, title: t.title, base_points: t.base_points, slot: t.slot ?? null, neighborhood: t.neighborhood })),
     anchors: await dayAnchorsForBoard(ctx.trip, day),
   });
-  return boardRedoneLine(board);
+  return redoSwappedLine({
+    replaced: out.replaced.length,
+    added: out.rows.length,
+    keptCodes: out.kept.map((t) => t.code),
+    board,
+  });
+}
+
+async function redosUsed(tripId: string, participantId: string, day: number): Promise<number> {
+  const { data, error } = await getServiceClient()
+    .from("board_requests")
+    .select("id")
+    .eq("trip_id", tripId)
+    .eq("participant_id", participantId)
+    .eq("day", day)
+    .eq("kind", "redo");
+  if (error) throw error;
+  return (data ?? []).length;
 }

@@ -303,7 +303,7 @@ describe("settings and task counts are requests, handled by tools", () => {
     const before = tasks().filter((t) => t.participant_id === id("mike")).length;
     await sayWithCall("mike", "japlan yes", "redo_today", {});
     expect(lastIn(GROUP)).toBe("board's in your dms 📩");
-    expect(lastIn(dm("mike"))).toMatch(/^redone\.\nDay 1/);
+    expect(lastIn(dm("mike"))).toMatch(/^fresh board: \d+ out, \d+ new\.\nDay 1/);
     expect(tasks().filter((t) => t.participant_id === id("mike")).length).toBeGreaterThanOrEqual(before);
   });
 

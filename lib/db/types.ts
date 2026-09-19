@@ -113,6 +113,41 @@ export type ParticipantRow = {
   profile_md?: string | null;
   survey_state: string | null;
   sidequests_muted: boolean;
+  // Read in its own query (not in the standard participant selects).
+  survey_nudged_on?: string | null;
   consented_at: string | null;
+  created_at?: string;
+};
+
+export type SidequestRow = {
+  id: string;
+  trip_id: string;
+  day: number;
+  local_date: string;
+  template_id: string;
+  title: string;
+  points: number;
+  photo_bonus_max: number;
+  trigger: string;
+  status: "open" | "won" | "closed";
+  won_by: string | null;
+  won_at: string | null;
+  created_at?: string;
+};
+
+export type SidequestOfferStatus = "queued" | "live" | "won" | "lost" | "expired" | "declined" | "dropped";
+
+export type SidequestOfferRow = {
+  id: string;
+  sidequest_id: string;
+  trip_id: string;
+  participant_id: string;
+  status: SidequestOfferStatus;
+  queued_at: string | null;
+  fired_at: string | null;
+  expires_at: string | null;
+  resolved_at: string | null;
+  awarded_points: number | null;
+  photo_bonus: number;
   created_at?: string;
 };

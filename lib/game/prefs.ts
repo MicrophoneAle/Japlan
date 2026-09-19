@@ -87,6 +87,28 @@ export function weightsFromAnswers(answers: SurveyAnswers): Record<PrefDim, Weig
         set([...sides.a, ...sides.b], 0.5, "low");
     }
   }
+  // The first survey (before 2026-09-19's rewrite) never asked the
+  // either-ors: its interest picks, food share, nightlife and chaos answers
+  // fill whatever the either-ors left unknown. Without this, someone who took
+  // it read as "no preferences" everywhere (live, 2026-09-19).
+  const unknown = (d: PrefDim) => weights[d].c === "low" && weights[d].w === 0.5;
+  const lean = (dims: PrefDim[], w: number) => {
+    for (const d of dims) if (unknown(d)) weights[d] = { w, c: "medium" };
+  };
+  const picks = (answerValue(answers, "interest_picks") ?? "")
+    .split(",")
+    .map((k) => k.trim())
+    .filter((k): k is InterestKey => k in INTEREST_DIMS);
+  lean(dimsForInterests(picks), PICKED);
+  const food = answerValue(answers, "interests");
+  if (food === "food_heavy") lean(["food"], PICKED);
+  if (food === "not_food") lean(["food"], NOT_PICKED);
+  const night = answerValue(answers, "nightlife");
+  if (night === "yes") lean(["nightlife"], 0.75);
+  if (night === "no") lean(["nightlife"], NOT_PICKED);
+  const chaos = answerValue(answers, "chaos");
+  if (chaos === "high") lean(["adventure", "activity"], 0.7);
+  if (chaos === "low") lean(["chill"], 0.65);
   return weights;
 }
 
@@ -94,10 +116,53 @@ export function prefsFromAnswers(answers: SurveyAnswers): Prefs {
   return { version: 2, weights: weightsFromAnswers(answers) };
 }
 
+// Stored weights win (they carry what was learned since), except where the
+// stored value is still a low-confidence guess and the answers say more:
+// rows written before the first survey's answers were read stayed neutral.
 export function prefsOf(raw: unknown, answers: SurveyAnswers): Prefs {
   const p = raw as Prefs | null;
-  if (p && p.version === 2 && p.weights) return { ...p, weights: { ...neutral(), ...p.weights } };
-  return prefsFromAnswers(answers);
+  const fromAnswers = weightsFromAnswers(answers);
+  if (!(p && p.version === 2 && p.weights)) return { version: 2, weights: fromAnswers };
+  const weights = { ...neutral(), ...p.weights };
+  for (const d of PREF_DIMS) {
+    if (weights[d].c === "low" && fromAnswers[d].c !== "low") weights[d] = fromAnswers[d];
+  }
+  return { ...p, weights };
+}
+
+const LEGACY_PACE: Record<string, string> = { early_and_moving: "a", two_things_and_lunch: "b", steady: "both" };
+const LEGACY_BUDGET: Record<string, string> = { low: "under_50", medium: "50_100", high: "100_200" };
+
+// Someone who took the first survey, read as the current one: pace, budget,
+// and hard constraints (diet and mobility) filled in where the new keys are
+// missing. What the profile and group profile describe. Never written back.
+export function v2View(answers: SurveyAnswers): SurveyAnswers {
+  const out: SurveyAnswers = { ...answers };
+  const pace = answerValue(answers, "pace");
+  if (!out.ab_pace && pace && LEGACY_PACE[pace]) out.ab_pace = { value: LEGACY_PACE[pace], confidence: "medium" };
+  const budget = answerValue(answers, "budget");
+  if (!out.budget_band && budget && LEGACY_BUDGET[budget]) out.budget_band = { value: LEGACY_BUDGET[budget], confidence: "medium" };
+  if (!out.hard_constraints) {
+    const dietary = answerValue(answers, "dietary");
+    const detail = answerValue(answers, "dietary_detail");
+    const mobility = answerValue(answers, "mobility");
+    if (dietary !== undefined || mobility !== undefined) {
+      const items = [
+        dietary === "has_restriction" ? detail ?? "a dietary restriction they didn't spell out" : null,
+        mobility === "has_limits" ? "mobility limits" : null,
+      ].filter((x): x is string => Boolean(x));
+      out.hard_constraints = { value: items.length ? items.join("; ") : "none", confidence: "medium" };
+      if (answerValue(answers, "dietary_strictness") === "preference" && !out.fu_diet_strict) {
+        out.fu_diet_strict = { value: "preference" };
+      }
+    }
+  }
+  return out;
+}
+
+// Has this person told us anything about what they like, in either survey?
+export function hasPreferenceSignal(prefs: Prefs): boolean {
+  return PREF_DIMS.some((d) => prefs.weights[d].c !== "low");
 }
 
 // How far a weight is trusted: confidence pulls it toward the middle.

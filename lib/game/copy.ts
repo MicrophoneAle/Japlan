@@ -452,7 +452,7 @@ you do not enforce rules:
 
 facts come only from tools:
 - never state anything about the score, the tasks, the schedule, a place or a person that you did not read from a tool call in this turn. scores: get_standings. tasks, codes and the day's plan: get_open_tasks.
-- profile requests are handled by the explicit "japlan what do you know about me" command route, not by a conversation tool.
+- what you know about the sender: get_my_profile, in this turn. without it you have not read their profile, so never claim to know nothing about them.
 - never recall a number, a task code or a plan from the recent chat. that is where invented facts come from. if you need it, call the tool.
 - the recent chat is for following the conversation, not a source of facts. if a tool did not give it to you, don't say it.
 
@@ -462,13 +462,14 @@ tools:
 - request_tasks: they want more tasks, or a number of them ("7 attractions", "a packed day"). code adds as many as fit and replies.
 - update_my_setting: they want to change any of their own settings (pace, tasks per day, strangers, interests, budget, diet, anything). code saves it and replies.
 - update_trip_setting: destination, dates, difficulty, board time, stake. code handles who can.
-- redo_today: remake today's board from current settings, e.g. after they say yes to a redo.
+- redo_today: they want a DIFFERENT board ("different tasks", "these are boring", "something else", "new ones", "redo today"), or say yes to a redo after a settings change. claimed tasks stay, the rest is replaced with new ones. never answer a request for a different board by describing or resending the current one.
 - propose_freeform_claim: call only when they clearly say they already completed an activity that is not on the board. Never call for a future plan, intention, or activity still in progress; the server checks the original message and scores it.
 - request_photo_bonus: a photo might add bonus to a recent claim.
 - record_split: the group says it is splitting up (who is going where, who is sleeping in, splitting after lunch). code works out who is where, re-plans their day and sends the reply.
 - record_regroup: the group says it is back together.
 - add_suggestion: someone names a place or thing they want to do. code puts it on a day and sends the reply.
 - avoid_category: the group does not want a kind of thing (temples, museums). code sends the reply.
+- get_my_profile: the sender's own survey summary. in a group, code sends it to their dm. only ever for the sender: asked about someone else, say that's between them and you.
 - react_to_message: tapback their message with an emoji instead of, or alongside, texting back. good for something funny or hype-worthy, not a default, and not on every message.
 - no_action: ordinary chat that needs no game action.
 
@@ -492,6 +493,12 @@ export function profileLine(profile: string | null): string {
 
 export const PROFILE_IN_DM_LINE = "that's in your dm.";
 
+// Asked what the bot knows, before finishing the questions: say so, and
+// offer the next one right here.
+export function profileUnfinishedLine(nextQuestion: string): string {
+  return `you haven't finished the quick questions yet, so i only know the basics. want to keep going? next one: ${nextQuestion}`;
+}
+
 // A stated preference, confirmed: "got it, more museums."
 export function preferenceNotedLine(what: string, more: boolean, offerRedo: boolean): string {
   return `got it, ${more ? "more" : "less"} ${what}.${offerRedo ? " want me to redo today's board?" : ""}`;
@@ -499,6 +506,40 @@ export function preferenceNotedLine(what: string, more: boolean, offerRedo: bool
 
 // "japlan chill": about three words, then quiet until mentioned.
 export const STOP_LINE = "ok, going quiet.";
+
+// Sidequests: DM out, group announce in. Optional, never chased.
+export function sidequestOfferLine(title: string, points: number, fuseMinutes: number): string {
+  return `sidequest, ${fuseMinutes} min: ${title}. worth ${points}. reply done when you have, or pass. ignoring it costs nothing, and "japlan no sidequests" turns them off.`;
+}
+
+export function sidequestWonLine(points: number, bonus: number, total: number): string {
+  return `✅ sidequest done · +${points}${bonus > 0 ? ` (+${bonus} photo)` : ""} · ${total}`;
+}
+
+export function sidequestWinnerGroupLine(name: string, title: string, points: number): string {
+  return `sidequest: ${title}. ${name} got it first, +${points}.`;
+}
+
+export const SIDEQUEST_CAPPED_LINE = "✅ sidequest done, but you're at today's points cap, so it's for glory only.";
+export const SIDEQUEST_BEATEN_LINE = "someone got to that one first. no harm done.";
+export const SIDEQUEST_EXPIRED_LINE = "that one ran out. no harm done.";
+export const SIDEQUEST_PASSED_LINE = "no worries.";
+export const SIDEQUESTS_OFF_LINE = `sidequests off for you. "japlan sidequests on" brings them back.`;
+export const SIDEQUESTS_ON_LINE = "sidequests back on.";
+export const SIDEQUESTS_ON_CIVILIZED_LINE = "sidequests back on, the civilized ones.";
+
+// Nobody has finished the questions yet, at board time: said once.
+export function waitingOnSurveysLine(names: string[]): string {
+  const list = names.length <= 1 ? (names[0] ?? "everyone") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+  return `boards start as soon as someone finishes the quick questions in their dm. waiting on ${list}.`;
+}
+
+// Finished the survey on a day that is already under way: their board now.
+export function lateFinisherLine(board: string): string {
+  return `${SURVEY_DONE_DM} you're in. here's today:
+
+${board}`;
+}
 
 // A reply that failed the checks (untrue, unrelated, empty): this instead.
 export const DISCARD_FALLBACK = "lost the thread for a sec. say that again?";
@@ -640,8 +681,25 @@ export function tasksRequestedLine(opts: {
   return `${head}\n${opts.board}`;
 }
 
-export function boardRedoneLine(board: string): string {
-  return `redone.\n${board}`;
+export const EVERYONE_REDONE_LINE = "redone for everyone, new boards are in your dms.";
+
+// "Give me a different board": say what changed, never resend silently.
+export function redoSwappedLine(opts: { replaced: number; added: number; keptCodes: string[]; board: string }): string {
+  const kept = opts.keptCodes.length
+    ? `, kept ${opts.keptCodes.join(", ")} since you claimed ${opts.keptCodes.length === 1 ? "it" : "them"}`
+    : "";
+  return `fresh board: ${opts.replaced} out, ${opts.added} new${kept}.
+${opts.board}`;
 }
 
-export const EVERYONE_REDONE_LINE = "redone for everyone, new boards are in your dms.";
+export function redoAllClaimedLine(label: string): string {
+  return `every task on ${label === "today" ? "today's" : `${label}'s`} board is already claimed, so there's nothing left to swap. want more on top? say how many.`;
+}
+
+export function redoLimitLine(label: string, count: number): string {
+  return `that's ${count} redos of ${label} already, so this one stays as it is. next day's board is fresh.`;
+}
+
+export const REDO_NO_BOARD_LINE = `no board to swap for that day yet. "japlan plans" makes one.`;
+export const REDO_FAILED_LINE = "couldn't make a different one rn, that's on me. your old board is still there.";
+export const REDO_PAST_DAY_LINE = "that day's done, so its board stays as it was.";

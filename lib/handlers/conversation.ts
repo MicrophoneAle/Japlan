@@ -12,6 +12,9 @@ import {
 } from "@/lib/game/conversation";
 import {
   BOARD_IN_DM_LINE,
+  PROFILE_IN_DM_LINE,
+  profileLine,
+  profileUnfinishedLine,
   CONVERSATION_FALLBACK,
   CONVERSATION_PRIVACY_LINE,
   CONVERSATION_SYSTEM_PROMPT,
@@ -31,6 +34,7 @@ import { currentTripDay } from "@/lib/handlers/daily-board";
 import {
   describeBoardTime,
   isBoardRequest,
+  isRedoRequest,
   nextBoardAt,
 } from "@/lib/game/board-schedule";
 import { answerBoardRequest } from "@/lib/handlers/board-request";
@@ -40,6 +44,8 @@ import {
   type ClaimFallthrough,
 } from "@/lib/handlers/claims";
 import { teamsWithMembers } from "@/lib/handlers/teams";
+import { lookupOwnProfile } from "@/lib/handlers/profiles";
+import { otherPersonAskedAbout } from "@/lib/game/profile";
 import type { LLMProvider, ToolContent, ToolTurn } from "@/lib/llm";
 import { GeminiProvider } from "@/lib/llm/gemini";
 import { react, sendDM, sendText } from "@/lib/linq/send";
@@ -177,7 +183,7 @@ export const CONVERSATION_TOOL_DEFS = [
   {
     name: "request_tasks",
     description:
-      "The sender wants more tasks, or a specific number ('7 attractions', 'give me more', 'a packed day'). count: the number they asked for, if they gave one. day: only if not today. Code adds as many as fit in the day and sends the reply with their board.",
+      "The sender wants MORE tasks on top of their current board, or a specific number ('7 attractions', 'give me more', 'a packed day'). count: the number they asked for, if they gave one. day: only if not today. Code adds as many as fit in the day and sends the reply with their board. Never for different or new tasks instead of these: that is redo_today.",
     parameters: {
       type: "object",
       properties: { count: { type: "integer" }, day: { type: "string" } },
@@ -187,12 +193,18 @@ export const CONVERSATION_TOOL_DEFS = [
   {
     name: "redo_today",
     description:
-      "Remake today's board from current settings, usually after a settings change ('yes', 'redo it'). everyone: true only for a trip-level change for the whole group. Claimed tasks stay. Code sends the reply.",
+      "Replace the sender's board with a different one: they want different or new tasks ('these are boring', 'give me something else', 'completely new tasks', 'redo today', 'reroll'), or say yes to a redo after a settings change. Claimed tasks stay; the rest is replaced with tasks that do not repeat the old ones. day: only if not today. everyone: true only for a trip-level change for the whole group. Code sends the reply, saying what changed.",
     parameters: {
       type: "object",
-      properties: { everyone: { type: "boolean" } },
+      properties: { everyone: { type: "boolean" }, day: { type: "string" } },
       additionalProperties: false,
     },
+  },
+  {
+    name: "get_my_profile",
+    description:
+      "What the bot knows about the SENDER only: their own survey answers and learned preferences, as a short summary. Call it before saying anything about what you know of them, and never say you know nothing about them without calling it. Never for anyone else. In a group chat, code sends it to their DM and replies for you; in a DM it returns the summary for you to answer from.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     name: "react_to_message",
@@ -306,6 +318,13 @@ export async function handleConversation(
 
   // "japlan plans", "japlan tomorrow": the board for that day, made now if it
   // does not exist yet. No model; asking before a board exists is normal.
+  // "different tasks", "these are boring", "redo today": replace the board,
+  // before the plain board request (which only shows the stored one).
+  if (isRedoRequest(miss.text)) {
+    console.info("[japlan.board] step", { step: "redo.request", via: "matcher", text: miss.text.slice(0, 80) });
+    await executeConversationTool("redo_today", { day: redoDayFrom(miss) }, miss);
+    return;
+  }
   if (isBoardRequest(miss.text)) {
     await answerBoardRequest(miss, now);
     return;
@@ -313,6 +332,14 @@ export async function handleConversation(
   // "lb", "leader", "leaderboard", "standings", "scores": read straight from
   // the database and reply, same numbers get_standings would give the model,
   // without spending a model call on a request this unambiguous.
+  // Someone else's profile: DM privacy, decided in code before any model
+  // sees the question.
+  const other = otherPersonAskedAbout(miss.text, miss.people, miss.claimant.id);
+  if (other) {
+    console.info("[japlan.profile] step", { step: "other_person.refused", asker: miss.claimant.id, about: other.id });
+    await send(miss.chatId, CONVERSATION_PRIVACY_LINE);
+    return;
+  }
   if (isStandingsRequest(miss.text)) {
     await sendStandingsReply(miss);
     return;
@@ -322,7 +349,6 @@ export async function handleConversation(
   // when the message itself calls for a short answer.
 
   const provider = deps.provider ?? miss.provider ?? new GeminiProvider();
-  const open = openTasksFor(claimableTasks(miss), miss.claims);
   const day = currentTripDay(miss.trip, new Date(now));
   const survey = surveySliceForConversation(
     (miss.claimant.survey_json ?? {}) as SurveyAnswers,
@@ -642,7 +668,7 @@ async function executeConversationTool(
       }
       reply = text;
     } else {
-      reply = await redoToday(ctx, { everyone: args.everyone === true });
+      reply = await redoToday(ctx, { everyone: args.everyone === true, day: stringArg(args.day) });
       if (!miss.isDm && args.everyone !== true) {
         await sendDM(miss.claimant.phone, reply);
         await send(miss.chatId, BOARD_IN_DM_LINE);
@@ -699,6 +725,30 @@ async function executeConversationTool(
     await (miss.send ?? sendText)(miss.chatId, reply);
     return { result: { ok: true }, sent: true };
   }
+  if (name === "get_my_profile") {
+    // miss.claimant was resolved by (trip_id, phone) in loadTripContext.
+    const own = await lookupOwnProfile(miss.trip, miss.claimant.id);
+    const text = own && !own.finished && own.nextQuestion
+      ? profileUnfinishedLine(own.nextQuestion)
+      : profileLine(own?.text ?? null);
+    if (!miss.isDm) {
+      // DM-private: the content never goes to the model in a group, so it
+      // can never end up in a group reply.
+      await sendDM(miss.claimant.phone, text);
+      await (miss.send ?? sendText)(miss.chatId, PROFILE_IN_DM_LINE);
+      console.info("[japlan.conversation] profile", { chatId: miss.chatId, passedToModel: 0, sentTo: "dm" });
+      return { result: { ok: true, sent_to: "dm" }, sent: true };
+    }
+    console.info("[japlan.conversation] profile", { chatId: miss.chatId, passedToModel: (own?.text ?? "").length, finished: own?.finished ?? false });
+    return {
+      result: {
+        finished: own?.finished ?? false,
+        profile: own?.text ?? null,
+        next_question: own?.nextQuestion ?? null,
+      },
+      sent: false,
+    };
+  }
   if (name === "react_to_message") {
     const emoji = typeof args.emoji === "string" ? args.emoji.trim() : "";
     const messageId = typeof miss.data.id === "string" ? miss.data.id : null;
@@ -717,4 +767,13 @@ async function executeConversationTool(
     return { result: { ok: true, emoji }, sent: false };
   }
   return { result: { ok: false, reason: "unknown_tool" }, sent: false };
+}
+
+// The day a redo request names ("redo tomorrow", "different tasks for day 3"),
+// or null for today.
+function redoDayFrom(miss: ClaimFallthrough): string | null {
+  const m = miss.text
+    .toLowerCase()
+    .match(/\b(tomorrow|tmrw|day\s*\d{1,2}|monday|tuesday|wednesday|thursday|friday|saturday|sunday|(?:the\s+)?(?:first|last|final)\s+day)\b/);
+  return m?.[1] ?? null;
 }
