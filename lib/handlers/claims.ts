@@ -37,6 +37,8 @@ import {
   photoCheckFailedLine,
   photoOutsideTripLine,
   reusedPhotoLine,
+  PRIVATE_BOARD_CLAIM_IN_DM_LINE,
+  SHARED_BOARD_CLAIM_IN_GROUP_LINE,
   teamTaskExpiredLine,
   TRIP_OVER_LINE,
   tripNotReadyLine,
@@ -690,6 +692,32 @@ async function pointsAwardedOnDay(
   );
 }
 
+async function individualClaimGroupUpdate(opts: {
+  tripId: string;
+  day: number;
+  name: string;
+  code: string;
+  title: string;
+  awardedPoints: number;
+}): Promise<string> {
+  const { data, error } = await getServiceClient()
+    .from("participants")
+    .select("id, display_name, score")
+    .eq("trip_id", opts.tripId);
+  if (error) throw error;
+  const people = (data ?? []) as { id: string; display_name: string; score: number }[];
+  const teams = await teamsWithMembers(opts.tripId);
+  const label = opts.code || opts.title;
+  const result = opts.awardedPoints > 0
+    ? `🎯 ${opts.name} scored +${opts.awardedPoints} pts for ${label}.`
+    : `✅ ${opts.name} finished ${label}; today's points cap held.`;
+  const standings = formatMorningStandings({
+    day: opts.day,
+    standings: buildStandingsRows(people, teams),
+  });
+  return `${result}\n\n${standings}`;
+}
+
 async function applyAwards(opts: {
   task: TaskRow;
   claimant: ParticipantRow;
@@ -739,6 +767,7 @@ async function applyAwards(opts: {
 
   let claimantTotal = opts.claimant.score;
   let claimantCapped = false;
+  let claimantAwardedPoints = 0;
   for (const row of rows) {
     const pointsToday = await claimAwait(
       "daily_cap",
@@ -782,7 +811,10 @@ async function applyAwards(opts: {
       const total = await bumpScore(row.participantId, capped.awarded_points);
       if (row.participantId === opts.claimant.id) claimantTotal = total;
     }
-    if (row.participantId === opts.claimant.id) claimantCapped = capped.capped;
+    if (row.participantId === opts.claimant.id) {
+      claimantCapped = capped.capped;
+      claimantAwardedPoints = capped.awarded_points;
+    }
   }
 
   // A personal generated task may be the claimant's last open one. Count first
@@ -805,13 +837,21 @@ async function applyAwards(opts: {
       ? { type: "screen", name: "fireworks" }
       : undefined;
   const confirmTo = [confirmChatId, ...(opts.alsoConfirmTo && opts.alsoConfirmTo !== confirmChatId ? [opts.alsoConfirmTo] : [])];
-  for (const target of confirmTo) await claimAwait(
-    "outbound.confirm",
-    { chatId: target, code: opts.task.code },
-    () =>
-      opts.send(
-        target,
-        claimConfirmedLine({
+  const groupUpdate = opts.trip.play_mode === "individual" &&
+    opts.alsoConfirmTo && opts.alsoConfirmTo !== confirmChatId
+    ? await individualClaimGroupUpdate({
+        tripId: opts.trip.id,
+        day: opts.task.day,
+        name,
+        code: opts.task.code,
+        title: opts.task.title,
+        awardedPoints: claimantAwardedPoints,
+      })
+    : null;
+  for (const target of confirmTo) {
+    const text = target === confirmChatId && groupUpdate
+      ? groupUpdate
+      : claimConfirmedLine({
           code: opts.task.code,
           name,
           base: opts.task.base_points,
@@ -824,10 +864,11 @@ async function applyAwards(opts: {
             photoBonusMaxFor(opts.task) > 0,
           boardCleared:
             personalBoardTask && !claimantCapped && remainingOpenPersonal === 0,
-        }),
-        { effect },
-      ),
-  );
+        });
+    await claimAwait("outbound.confirm", { chatId: target, code: opts.task.code }, () =>
+      opts.send(target, text, { effect }),
+    );
+  }
   console.info("[japlan.claim]", {
     task: opts.task.code,
     participant: opts.claimant.id,
@@ -1393,6 +1434,7 @@ export async function applyLatePhotoBonus(opts: {
   photo: { url: string; mime: string };
   send: SendFn;
   provider?: LLMProvider;
+  alsoConfirmTo?: string | null;
 }): Promise<void> {
   claimStep("photo_bonus.late", { code: opts.task.code, claimId: opts.claim.id });
   if (opts.claim.capped) {
@@ -1488,6 +1530,7 @@ export async function applyLatePhotoBonus(opts: {
 
   let claimantTotal = opts.claimant.score;
   let claimantCapped = false;
+  let claimantAwardedBonus = 0;
   const claimedAt = new Date().toISOString();
   for (const participantId of memberIds) {
     const pointsToday = await pointsAwardedOnDay(
@@ -1544,7 +1587,10 @@ export async function applyLatePhotoBonus(opts: {
       const total = await bumpScore(participantId, capped.awarded_points);
       if (participantId === opts.claimant.id) claimantTotal = total;
     }
-    if (participantId === opts.claimant.id) claimantCapped = capped.capped;
+    if (participantId === opts.claimant.id) {
+      claimantCapped = capped.capped;
+      claimantAwardedBonus = capped.awarded_points;
+    }
   }
 
   if (incoming === 0 && !claimantCapped) {
@@ -1555,17 +1601,30 @@ export async function applyLatePhotoBonus(opts: {
     return;
   }
 
-  await claimAwait("outbound.confirm", { reason: "photo_bonus", code: opts.task.code }, () =>
-    opts.send(
-      opts.trip.linq_chat_id,
-      photoBonusLine({
+  const groupUpdate = opts.trip.play_mode === "individual" && opts.alsoConfirmTo
+    ? await individualClaimGroupUpdate({
+        tripId: opts.trip.id,
+        day: opts.task.day,
+        name: opts.claimant.display_name,
+        code: opts.task.code,
+        title: opts.task.title,
+        awardedPoints: claimantAwardedBonus,
+      })
+    : null;
+  const targets = [opts.trip.linq_chat_id, ...(opts.alsoConfirmTo && opts.alsoConfirmTo !== opts.trip.linq_chat_id ? [opts.alsoConfirmTo] : [])];
+  for (const target of targets) {
+    const text = target === opts.trip.linq_chat_id && groupUpdate
+      ? groupUpdate
+      : photoBonusLine({
         code: opts.task.code,
         bonus: claimantCapped ? 0 : incoming,
         total: claimantTotal,
         capped: claimantCapped,
-      }),
-    ),
-  );
+      });
+    await claimAwait("outbound.confirm", { reason: "photo_bonus", code: opts.task.code, chatId: target }, () =>
+      opts.send(target, text),
+    );
+  }
 }
 
 // Whether a bare photo from this sender should count as addressed: they have
@@ -1779,6 +1838,7 @@ async function handleGroupClaimInner(
           photo,
           send,
           provider: deps.provider,
+          alsoConfirmTo: chatId !== ctx.trip.linq_chat_id ? chatId : null,
         });
         return null;
       }
@@ -1803,6 +1863,20 @@ async function handleGroupClaimInner(
     taskCount: ctx.tasks.length,
     openCount: openTasks.length,
   });
+
+  if (
+    decision.type === "code" &&
+    !isDm &&
+    (ctx.trip.play_mode === "individual" || ctx.trip.play_mode === "teams")
+  ) {
+    await send(chatId, PRIVATE_BOARD_CLAIM_IN_DM_LINE);
+    return null;
+  }
+
+  if (decision.type === "code" && isDm && ctx.trip.play_mode === "full_group") {
+    await send(chatId, SHARED_BOARD_CLAIM_IN_GROUP_LINE);
+    return null;
+  }
 
   if (decision.type === "silent") {
     claimStep("decision.silent", {

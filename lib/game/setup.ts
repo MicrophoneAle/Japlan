@@ -3,9 +3,11 @@
 // reading loose dates happen in handlers; this module decides what to ask
 // and whether answers are usable.
 
-export type SetupQuestionId = "destination" | "dates" | "difficulty" | "stake";
+export type PlayMode = "individual" | "teams" | "full_group";
 
-export const SETUP_ORDER: SetupQuestionId[] = ["destination", "dates", "difficulty", "stake"];
+export type SetupQuestionId = "destination" | "dates" | "play_mode" | "difficulty" | "stake";
+
+export const SETUP_ORDER: SetupQuestionId[] = ["destination", "dates", "play_mode", "difficulty", "stake"];
 
 // setup_state values beyond a question id.
 export const SETUP_DONE = "done";
@@ -18,6 +20,7 @@ export type SetupFields = {
   destination: string | null;
   start_date: string | null;
   end_date: string | null;
+  play_mode?: PlayMode | null;
   difficulty: string | null;
   stake_text: string | null;
 };
@@ -41,7 +44,9 @@ export function setupReadyToActivate(trip: SetupFields): boolean {
 
 // The stake is what the loser does; a solo trip has no loser.
 export function setupOrderFor(ctx: { isSolo?: boolean } = {}): SetupQuestionId[] {
-  return ctx.isSolo ? SETUP_ORDER.filter((id) => id !== "stake") : SETUP_ORDER;
+  return ctx.isSolo
+    ? SETUP_ORDER.filter((id) => id !== "stake" && id !== "play_mode")
+    : SETUP_ORDER;
 }
 
 export function nextSetupQuestion(
@@ -64,6 +69,26 @@ export function matchDifficulty(text: string): Difficulty | null {
   if (/^(medium|regular|mid|standard)$/.test(t)) return "normal";
   if (/^(hard|chaos|chaotic|wild|insane|max)$/.test(t)) return "unhinged";
   return null;
+}
+
+export function matchPlayMode(text: string): PlayMode | null {
+  const value = text.trim().toLowerCase().replace(/[.!?]+$/, "");
+  if (/^(?:1\b|individual|solo|separately|on my own)(?:[.)·:\-\s]|$)/.test(value)) return "individual";
+  if (/^(?:2\b|teams?|pairs?|pair up|with partners?)(?:[.)·:\-\s]|$)/.test(value)) return "teams";
+  if (/^(?:3\b|full group|group|together|all together)(?:[.)·:\-\s]|$)/.test(value)) return "full_group";
+  return null;
+}
+
+export function playModeLabel(value: string | null | undefined): string {
+  switch (value) {
+    case "teams":
+      return "teams (daily pairs when interests overlap; otherwise individual tasks)";
+    case "full_group":
+      return "full group (one shared board and group decisions in this chat)";
+    case "individual":
+    default:
+      return "individual (separate boards and tasks)";
+  }
 }
 
 // What the generator is told for each difficulty. Points still come from the

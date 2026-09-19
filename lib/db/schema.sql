@@ -18,6 +18,8 @@ create table trips (
   destination text,
   start_date date,
   end_date date,
+  play_mode text
+    constraint trips_play_mode_check check (play_mode in ('individual', 'teams', 'full_group')),
   state text not null,
   difficulty text,
   stake_text text,
@@ -32,8 +34,8 @@ create table trips (
   -- whoever sent the first group message (or the solo participant). FK added
   -- after participants exists, below.
   organizer_participant_id uuid,
-  -- destination | dates | difficulty | stake while asking, 'deferred' when a
-  -- required answer was skipped, 'done', or null before setup starts.
+  -- destination | dates | play_mode | difficulty | stake while asking,
+  -- 'deferred' when a required answer was skipped, 'done', or null before setup.
   setup_state text,
   -- Local HH:MM the daily board posts.
   board_time text not null default '08:00'
@@ -79,6 +81,45 @@ alter table trips add constraint trips_organizer_participant_id_fkey
 
 create index participants_phone_idx on participants (phone);
 create index participants_trip_id_idx on participants (trip_id);
+
+-- Shared group choices. Only option-message tapbacks and explicit vote
+-- commands are counted; silence is an abstention. The organizer closes ties.
+create table group_decisions (
+  id uuid primary key default gen_random_uuid(),
+  trip_id uuid not null references trips (id) on delete cascade,
+  prompt text not null,
+  status text not null default 'open' check (status in ('open', 'closed')),
+  created_by uuid not null references participants (id) on delete cascade,
+  selected_option integer,
+  created_at timestamptz not null default now(),
+  closed_at timestamptz,
+  last_reminded_at timestamptz
+);
+
+create unique index group_decisions_one_open_per_trip
+  on group_decisions (trip_id) where status = 'open';
+
+create table group_decision_options (
+  id uuid primary key default gen_random_uuid(),
+  decision_id uuid not null references group_decisions (id) on delete cascade,
+  option_index integer not null check (option_index > 0),
+  label text not null,
+  message_id text,
+  unique (decision_id, option_index)
+);
+
+create unique index group_decision_options_message_id_key
+  on group_decision_options (message_id) where message_id is not null;
+
+create table group_decision_votes (
+  id uuid primary key default gen_random_uuid(),
+  decision_id uuid not null references group_decisions (id) on delete cascade,
+  participant_id uuid not null references participants (id) on delete cascade,
+  option_index integer not null check (option_index > 0),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (decision_id, participant_id)
+);
 
 create table teams (
   id uuid primary key default gen_random_uuid(),

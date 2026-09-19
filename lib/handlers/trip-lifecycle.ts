@@ -5,7 +5,6 @@ import {
   END_TRIP_CONFIRM_LINE,
   NEW_TRIP_DM_LINE,
   NO_TRIP_RUNNING_LINE,
-  SETUP_IN_DM_LINE,
   TRIP_ALREADY_RUNNING_LINE,
   TRIP_OVER_LINE,
   BOARD_TIME_UNREADABLE_LINE,
@@ -19,6 +18,7 @@ import {
   resurveyStartLine,
   SETTINGS_IN_DM_LINE,
   settingsListLine,
+  surveyStatusLine,
   tripNotReadyLine,
 } from "@/lib/game/copy";
 import { settingsSummary } from "@/lib/game/settings";
@@ -39,7 +39,7 @@ import {
   listParticipants,
   persistSurveyProgress,
 } from "./bootstrap";
-import { beginSetup } from "./setup";
+import { beginSetup, setupPromptFor } from "./setup";
 import { bootstrapSoloIfNeeded } from "./solo";
 import { teamsWithMembers } from "./teams";
 
@@ -162,6 +162,18 @@ export async function handleTripCommand(opts: {
   }
   const people = await listParticipants(trip.id);
 
+  if (opts.command === "survey_status") {
+    const setupPending = trip.state === "setup" || trip.state === "bootstrapping";
+    const completed = people
+      .filter((person) => person.survey_state === "done")
+      .map((person) => person.display_name);
+    const pending = people
+      .filter((person) => person.survey_state !== "done")
+      .map((person) => person.display_name);
+    await send(opts.chatId, surveyStatusLine(completed, pending, setupPending));
+    return;
+  }
+
   // Everyone's own answers are theirs to see and change, any time. Private
   // ones, so the list goes to their DM.
   if (opts.command === "settings") {
@@ -212,13 +224,18 @@ export async function handleTripCommand(opts: {
       await send(opts.chatId, refusal);
       return;
     }
-    const prompt = await beginSetup(trip);
+    await beginSetup(trip);
+    if (trip.is_solo) {
+      await send(opts.chatId, setupPromptFor(trip, "destination"));
+      return;
+    }
+    const prompt = setupPromptFor(trip, "destination");
+    await send(
+      trip.linq_chat_id,
+      `👑 ${participant.display_name} is the organizer and controls the shared setup. answer in this chat with “japlan” + your response.\n${prompt}`,
+    );
     if (opts.isDm) {
-      await send(opts.chatId, prompt);
-    } else {
-      // The questions go to the organizer's DM; the group gets one line.
-      await sendDM(participant.phone, prompt);
-      await send(opts.chatId, SETUP_IN_DM_LINE);
+      await send(opts.chatId, `setup is in the group chat so everyone can see the shared trip details.`);
     }
     return;
   }

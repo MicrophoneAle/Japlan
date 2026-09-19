@@ -1,17 +1,24 @@
 import { clockLabel } from "./time";
 
 export const GROUP_INTRO =
-  "heyyyy i'm japlan 🔥 i turn this trip into a whole points game: every morning u each get a few tasks and doing them scores points, no cap. sliding into everyone's dms rn with a few quick questions. i read this chat to catch claims but i only clap back when someone says japlan, sends a task code, or dms me 🫡";
+  "🗺️ i'm japlan. i turn your trip into daily tasks and points. claim a task code when you do one; i'll post the leaderboard here.\n\n🧭 first, we set the city, dates, and play style in this chat. then i'll DM each person a short private preference survey. i'll share who has finished, never their answers.\n\n👑 the organizer controls shared trip settings and makes the final call if the group gets stuck on an activity. i'll post shared choices here so everyone can vote; silence counts as abstaining. change settings with “japlan setup.” personal preferences stay private.";
 
 // Kept for tests and older callers; setupCompleteLine carries the next board.
 export const SETUP_COMPLETE =
   "we're live 🔥 every morning your tasks land in your dms, and a code like A1 claims one.";
 
-export function setupCompleteLine(nextBoard: string | null): string {
-  return nextBoard ? `${SETUP_COMPLETE} first board drops ${nextBoard}.` : SETUP_COMPLETE;
+export function setupCompleteLine(nextBoard: string | null, mode?: string | null): string {
+  const intro = mode === "full_group"
+    ? "we're live 🔥 the shared daily board lands in this group chat; claim a code here when you do a task."
+    : mode === "teams"
+      ? "we're live 🔥 daily boards land in your dms. i'll pair people for the day when their interests overlap."
+      : mode === "individual"
+        ? "we're live 🔥 everyone gets their own daily board in their dms, with separate tasks and points."
+        : SETUP_COMPLETE;
+  return nextBoard ? `${intro} first board drops ${nextBoard}.` : intro;
 }
 
-export const SURVEY_DONE_DM = "done. you're less mysterious than you think.";
+export const SURVEY_DONE_DM = "saved 🔒 your private preference survey is complete.";
 
 export function surveyReaskLine(options: string[]): string {
   return `didn't catch that lol. reply ${options.join(" / ")}, or skip.`;
@@ -21,6 +28,8 @@ export function surveyReaskLine(options: string[]): string {
 export const SETUP_QUESTIONS = {
   destination: "ok where we headed? a city is plenty.",
   dates: `when's this happening? something like "march 14-19" or "next weekend" works.`,
+  play_mode:
+    "how should we play?\n1 · individual — everyone gets their own board and separate tasks\n2 · teams — each day i'll pair people whose task interests overlap; no match means solo tasks\n3 · full group — one shared board lands here; decisions happen in this chat, and the organizer breaks ties",
   difficulty: "how unhinged should the tasks be? chill / normal / unhinged",
   stake: "real talk, what's the loser doing at the end of this 💀",
 } as const;
@@ -33,7 +42,7 @@ export function setupPrompt(
   opts: { first?: boolean; isSolo?: boolean } = {},
 ): string {
   // Solo trips skip the stake question (no loser), so three, not four.
-  const lead = opts.first ? `trip setup, ${opts.isSolo ? 3 : 4} quick ones. ` : "";
+  const lead = opts.first ? `trip setup, ${opts.isSolo ? 3 : 5} quick ones. ` : "";
   const tail = current
     ? ` (rn: ${current}. skip keeps it)`
     : SETUP_REQUIRED.has(id)
@@ -86,6 +95,50 @@ export function setupFinishedLine(missing: ("destination" | "dates")[]): string 
   return `setup's paused rq. still need ${what} before the game can start, i'll ask again next time you text.`;
 }
 
+export function organizerOnlySetupLine(name: string): string {
+  return `👑 ${name} is organizing this trip and controls the shared setup. they can change it with “japlan setup.” your personal survey answers stay private.`;
+}
+
+export function groupSetupPendingDmLine(name: string): string {
+  return `👑 ${name} is setting the shared city, dates, and play style in the group chat first. i'll send your private preference survey once that's done.`;
+}
+
+export function groupSetupCompleteLine(opts: {
+  destination: string | null;
+  dates: string | null;
+  mode: string;
+  organizer: string;
+}): string {
+  return [
+    "✅ shared trip setup is locked in:",
+    `📍 ${opts.destination ?? "destination not set"}`,
+    `📅 ${opts.dates ?? "dates not set"}`,
+    `🎮 ${opts.mode}`,
+    `👑 ${opts.organizer} controls shared trip settings and makes the final call if the group gets stuck on an activity. update settings with “japlan setup.”`,
+  ].join("\n");
+}
+
+export function surveyLaunchGroupLine(sent: string[], failed: string[]): string {
+  const lines = ["📩 private preference surveys are ready."];
+  if (sent.length > 0) lines.push(`sent to: ${sent.join(", ")}.`);
+  if (failed.length > 0) lines.push(`couldn't DM: ${failed.join(", ")} — check that they can receive Japlan messages.`);
+  lines.push("reply in your own Japlan DM. i'll post only who's finished, not what anyone said.");
+  return lines.join("\n");
+}
+
+export function surveyProgressGroupLine(name: string, waiting: string[]): string {
+  if (waiting.length === 0) return `✅ ${name} finished their private survey. everyone is in — first boards are next.`;
+  return `✅ ${name} finished their private survey.\n⏳ still waiting on: ${waiting.join(", ")}. preferences stay private.`;
+}
+
+export function surveyStatusLine(completed: string[], pending: string[], setupPending = false): string {
+  if (setupPending) return "🧭 the organizer is still setting up the trip here. private surveys go out after the shared setup is done.";
+  const lines = ["🔒 private survey status (answers stay private):"];
+  lines.push(completed.length > 0 ? `✅ finished: ${completed.join(", ")}` : "✅ finished: nobody yet");
+  lines.push(pending.length > 0 ? `⏳ still needed: ${pending.join(", ")}` : "🎉 everyone has finished");
+  return lines.join("\n");
+}
+
 // The survey's first question already introduces itself.
 export function setupNowAboutYouLine(finished: string, surveyPrompt: string): string {
   return `${finished} ${surveyPrompt}`;
@@ -106,6 +159,12 @@ export function provisionalBoard(board: string): string {
 }
 
 export const BOARD_IN_DM_LINE = "board's in your dms 📩";
+export const BOARD_IN_GROUP_LINE = "the shared board is in the group chat 📣";
+export const GROUP_BOARD_CLEARED_LINE = "the group cleared today's shared board 🫡 more tasks land tomorrow.";
+export const PRIVATE_BOARD_CLAIM_IN_DM_LINE =
+  "your board lives in your dm 📩 send its code to me there; i'll update the group leaderboard here.";
+export const SHARED_BOARD_CLAIM_IN_GROUP_LINE =
+  "📣 that's the shared group board — claim its code in this chat so everyone sees the update.";
 
 // REAL: the day is outside the trip.
 export function dayNotInTripLine(start: string, end: string): string {
@@ -210,7 +269,7 @@ export function boardRouteLabel(first: string, last: string): string {
 // Rough time of day, never clock times: nobody is actually on a schedule.
 // Padded so the codes line up where the font allows.
 export function boardSlotLabel(slot: string): string {
-  return slot.padEnd(11);
+  return `${slot} · `;
 }
 
 // One line per task, tier before points so people can pick by effort:
@@ -222,14 +281,18 @@ export function dailyBoardTaskLine(
   tier: string,
   slot?: string | null,
 ): string {
-  const line = `${code} · ${title} · ${tier.toLowerCase()} (${points})`;
-  return slot ? `${boardSlotLabel(slot)}${line}` : line;
+  void slot;
+  return `${code} · ${title}\n   ${tier.toLowerCase()} · ${points} pts`;
 }
 
 export function standingsLine(
   rows: { display_name: string; score: number }[],
 ): string {
-  return rows.map((row) => `${row.display_name} ${row.score}`).join(" · ");
+  if (rows.length === 0) return "🏆 no scores yet";
+  return [
+    "🏆 leaderboard",
+    ...rows.map((row, index) => `${index + 1}. ${row.display_name} · ${row.score} pts`),
+  ].join("\n");
 }
 
 // Next steps. A message that CLOSES something (an error, a refusal, a cleared
@@ -340,14 +403,20 @@ export const DISPATCH_ERROR_LINE =
   "something broke on my end 😭 send that again in a minute.";
 
 export function surveyDoneLine(waitingOn: number, setupPending = false): string {
-  const waits: string[] = [];
-  if (waitingOn > 0) waits.push(waitingOn === 1 ? "1 more person" : `${waitingOn} more people`);
-  if (setupPending) waits.push("the trip setup");
-  if (waits.length > 0) {
-    return `${SURVEY_DONE_DM} waiting on ${waits.join(" and ")}, then your first board drops in the morning.`;
+  const waiting = waitingOn === 1 ? "1 person still needs to answer" : `${waitingOn} people still need to answer`;
+  if (waitingOn > 0 || setupPending) {
+    return `${SURVEY_DONE_DM} ${setupPending ? "the organizer is still finishing shared trip setup" : waiting}. i'll post the group status without sharing anyone's answers.`;
   }
-  return `${SURVEY_DONE_DM} your first board drops in the morning.`;
+  return `${SURVEY_DONE_DM} everyone's in. first boards drop in the morning.`;
 }
+
+export function sidequestClarificationLine(question: "sidequest_level" | "sidequest_red_lines"): string {
+  return question === "sidequest_level"
+    ? "sidequests are optional, quick bonus challenges separate from your main tasks. pick how bold or silly they can get."
+    : "red lines are anything you want me to avoid in those bonus challenges, like strangers, public embarrassment, physical stuff, or spending money. say “none” if you have no limits.";
+}
+
+export const ONBOARDING_ACK_LINE = "👍 all set — i saved your answers.";
 
 export function peerLapsedLine(codes: string[]): string {
   const list = codes.join(", ");
@@ -409,11 +478,15 @@ export function teamNameUnreadableLine(): string {
 export const HELP_TEXT = {
   group: `ok here's the whole deal 📋
 
-· every morning your board lands in your dm, one plan for the group
-· send the code (like A1) to claim one
+· your play style is set in this chat: individual boards, daily interest-based teams, or one shared group board
+· the organizer controls trip-wide setup and can change it with “japlan setup”
+· private preference surveys stay in your dms; the group only sees who has finished
+· “japlan survey status” shows who has finished and who is still up
+· organizer: “japlan decide dinner | ramen | sushi” opens a group vote; react ❤️/👍 to an option or send “japlan vote 1”
+· “japlan vote status” shows the tally; the organizer can send “japlan remind vote” and make the final call with “japlan close vote 2”
+· claim the code where your board landed: here for full group, in your dm for individual/teams
 · send a photo after and u get bonus points
 · did something cool i didn't even ask for? just tell me, i'll score it
-· on a team? "japlan we're team <name>" names urselves
 · "japlan lb" or "japlan standings" for the leaderboard
 · "japlan settings" to see or change anything you told me
 · "japlan chill" if i'm being too much lol
@@ -421,8 +494,10 @@ export const HELP_TEXT = {
 that's it. now go do something unhinged.`,
   dm: `ok here's the whole deal 📋
 
-· every morning you get a board that fits your day. want more? just ask
-· send the code (like A1) to claim one
+· your private preferences shape your tasks; only you can see or change them
+· every morning your board lands here; full-group boards land in the trip chat
+· claim a code where that board landed: here for individual/teams, in the group for full group
+· group activity votes happen in the trip chat so everyone sees the choices
 · send a photo after and u get bonus points
 · did something cool i didn't even ask for? just tell me, i'll score it
 · "japlan lb" or "japlan standings" for the leaderboard
@@ -493,7 +568,7 @@ export function profileLine(profile: string | null): string {
   return `here's what i've learned about you so far:\n${profile}\nif something's off, tell me what you'd change.`;
 }
 
-export const PROFILE_IN_DM_LINE = "that's in your dm.";
+export const PROFILE_IN_DM_LINE = "📩 check your dm — that's your private profile, you sneaky thing 😏";
 
 // Asked what the bot knows, before finishing the questions: say so, and
 // offer the next one right here.
@@ -654,7 +729,7 @@ export function settingsListLine(lines: string[]): string {
   return `your settings:\n${lines.map((l) => `· ${l}`).join("\n")}\nchange any by saying it, like "japlan pace faster", "japlan budget 150" or "japlan i'm into museums now".`;
 }
 
-export const SETTINGS_IN_DM_LINE = "your settings are in your dm.";
+export const SETTINGS_IN_DM_LINE = "📩 your private preferences are in your dm; the group can't see them.";
 
 export function resurveyStartLine(prompt: string): string {
   return `starting over, one question at a time. skip keeps what you said before. ${prompt}`;

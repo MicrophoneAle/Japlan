@@ -320,19 +320,19 @@ export const LEGACY_QUESTION_ORDER: QuestionId[] = [
 // organizer; not asked yet.
 
 // ---------------------------------------------------------------------------
-// Survey v2: fast, playful, hypothetical. Eight interactions at most. The
-// either-or questions are weights with confidence (lib/game/prefs.ts), not
-// facts; vague answers are stored as vague, never re-asked. Only budget and
-// hard constraints get clarified, because only they are unusable when vague.
+// Survey v2: fast, playful, hypothetical. Eight core questions. The either-or
+// questions are weights with confidence (lib/game/prefs.ts), not facts. Budget
+// and split preferences use a low-confidence default when answers are vague;
+// only unclear safety details get follow-up questions.
 
 export const SURVEY_INTRO =
-  `quick personality test, because asking "what do you like" is useless. pick whatever you'd rather be doing, don't overthink it. say skip whenever.`;
+  `🔒 quick private setup: up to 8 short questions to shape your board. replies stay in this dm; the group sees who's done, never your answers. use the number shown, say “both” on either-or questions, or “skip”; i'll only ask extra questions if i need a safety detail right.`;
 
 export const SURVEY_V2: Partial<Record<QuestionId, Question>> = {
   ab_food_outdoors: {
     id: "ab_food_outdoors",
     kind: "either_or",
-    prompt: "insane local food spot you've never heard of, or kayaking somewhere stupidly pretty?",
+    prompt: "pick one:\n1 · an unreal local food spot\n2 · kayaking somewhere stupidly pretty",
     reask: "so: mystery food spot or pretty kayak?",
     sides: {
       a: "insane local food spot",
@@ -344,7 +344,7 @@ export const SURVEY_V2: Partial<Record<QuestionId, Question>> = {
   ab_discover_iconic: {
     id: "ab_discover_iconic",
     kind: "either_or",
-    prompt: "wander a neighbourhood and find random shit, or finally see the famous thing everyone talks about?",
+    prompt: "pick one:\n1 · wander a neighbourhood and find random stuff\n2 · see the famous thing everyone talks about",
     reask: "wandering and finding random stuff, or the famous thing?",
     sides: {
       a: "wander and find random shit",
@@ -356,7 +356,7 @@ export const SURVEY_V2: Partial<Record<QuestionId, Question>> = {
   ab_culture_nightlife: {
     id: "ab_culture_nightlife",
     kind: "either_or",
-    prompt: "museum + café + nice dinner, or activity + street food + bar at 1am?",
+    prompt: "pick one:\n1 · museum + café + nice dinner\n2 · activity + street food + a late bar",
     reask: "museum-café-dinner day, or activity-street-food-1am-bar day?",
     sides: {
       a: "museum, café, nice dinner",
@@ -368,7 +368,7 @@ export const SURVEY_V2: Partial<Record<QuestionId, Question>> = {
   ab_pace: {
     id: "ab_pace",
     kind: "either_or",
-    prompt: "you've got 4 free hours: cram in 3 things, or do one really good thing and vibe after?",
+    prompt: "pick one:\n1 · cram 3 things into 4 hours\n2 · do one great thing, then vibe",
     reask: "4 free hours: cram three things in, or one good thing and vibe?",
     sides: {
       a: "cram in 3 things",
@@ -381,8 +381,8 @@ export const SURVEY_V2: Partial<Record<QuestionId, Question>> = {
     id: "budget_band",
     kind: "choice",
     prompt:
-      "money check. excluding flights and hotel, what feels normal to spend in a day? <$50 / $50-100 / $100-200 / don't make me think about money",
-    reask: "rough daily spend, flights and hotel aside? under 50, 50-100, 100-200, or don't care?",
+      "daily spend, not counting flights or hotel?\n1 · under $50\n2 · $50–100\n3 · $100–200\n4 · don't make me think about money",
+    reask: "daily spend? 1 · under $50, 2 · $50–100, 3 · $100–200, or 4 · don't care",
     choices: [
       { id: "under_50", label: "<$50" },
       { id: "50_100", label: "$50-100" },
@@ -406,8 +406,8 @@ export const SURVEY_V2: Partial<Record<QuestionId, Question>> = {
   splitting: {
     id: "splitting",
     kind: "choice",
-    prompt: "if everyone wants different stuff, are you cool splitting up for a few hours? yes / depends / absolutely not",
-    reask: "cool splitting up for a few hours if people want different things? yes, depends, or absolutely not?",
+    prompt: "if people want different things, split up for a few hours?\n1 · yes\n2 · depends\n3 · absolutely not",
+    reask: "split up for a few hours? 1 · yes, 2 · depends, or 3 · absolutely not",
     choices: [
       { id: "yes", label: "yes" },
       { id: "depends", label: "depends" },

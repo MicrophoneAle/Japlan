@@ -54,6 +54,7 @@ export type PublicTripFields = {
   linq_chat_id: string;
   name: string;
   state: string;
+  organizerName?: string | null;
 };
 
 export function isSkip(text: string): boolean {
@@ -105,7 +106,7 @@ export function includeQuestion(
   const constraints = () => parseConstraints(answerValue(answers, "hard_constraints"));
   switch (id) {
     case "fu_budget":
-      return answerValue(answers, "budget_band") === "vague";
+      return false;
     case "fu_constraints":
       return Boolean(answerValue(answers, "hard_constraints")) && constraints().vague;
     case "fu_allergy_cc":
@@ -114,7 +115,7 @@ export function includeQuestion(
       return constraints().followUp === "diet_strictness" ||
         constraints().items.some((c) => c.kind === "diet" && c.strict === undefined);
     case "fu_split":
-      return answerValue(answers, "splitting") === "depends";
+      return false;
     case "sidequest_red_lines": {
       const level = answerValue(answers, "sidequest_level");
       return level === "2" || level === "3";
@@ -184,10 +185,21 @@ export function readEitherOr(question: Question, text: string): AnswerValue | nu
   return null;
 }
 
-// A daily budget band from whatever they said. "vague" asks once for a
-// number; null is nothing about money at all.
+// A daily budget band from whatever they said. When `afterClarifying` is true,
+// a vague answer settles on the middle band with low confidence; null is
+// nothing about money at all.
 export function readBudget(text: string, afterClarifying = false): AnswerValue | null {
   const t = text.toLowerCase().replace(/,/g, "");
+  const choice = t.trim().match(/^([1-4])[.!]?$/)?.[1];
+  if (choice) {
+    const value = ({
+      "1": "under_50",
+      "2": "50_100",
+      "3": "100_200",
+      "4": "no_limit",
+    } as const)[choice as "1" | "2" | "3" | "4"];
+    return { value, confidence: "high" };
+  }
   if (/don'?t make me think|no limit|money'?s no object|don'?t care|whatever it costs|unlimited|not worried|no budget/.test(t)) {
     return { value: "no_limit", confidence: "medium" };
   }
@@ -210,6 +222,9 @@ export function readBudget(text: string, afterClarifying = false): AnswerValue |
 
 function readSplitting(text: string): AnswerValue | null {
   const t = text.toLowerCase();
+  if (/^\s*1\s*[.!]?\s*$/.test(t)) return { value: "yes", confidence: "high" };
+  if (/^\s*2\s*[.!]?\s*$/.test(t)) return { value: "depends", confidence: "high" };
+  if (/^\s*3\s*[.!]?\s*$/.test(t)) return { value: "no", confidence: "high" };
   if (/absolutely not|\bno\b|never|nope|nah|rather not|hate/.test(t)) return { value: "no", confidence: "medium" };
   if (/depends|maybe|kinda|sometimes|situational|could be|possibly|if /.test(t)) return { value: "depends", confidence: "medium" };
   if (/whatever the group|up to the group|don'?t mind|either way|whatever/.test(t)) return { value: "yes", confidence: "low" };
@@ -218,6 +233,7 @@ function readSplitting(text: string): AnswerValue | null {
 }
 
 function readSidequestLevel(text: string): AnswerValue | null {
+  if (isSidequestClarificationRequest(text)) return null;
   const t = text.toLowerCase();
   const digit = t.match(/\b([1-4])\b/)?.[1];
   if (digit) return { value: digit, confidence: "high" };
@@ -281,7 +297,7 @@ function recordV2(answers: SurveyAnswers, id: QuestionId, text: string): SurveyA
     case "ab_pace":
       return put(readEitherOr(question, text));
     case "budget_band":
-      return put(readBudget(text));
+      return put(readBudget(text, true));
     case "fu_budget": {
       const band = readBudget(text, true);
       return band ? { ...answers, budget_band: band, fu_budget: { value: band.value } } : null;
@@ -321,6 +337,7 @@ function recordV2(answers: SurveyAnswers, id: QuestionId, text: string): SurveyA
     case "sidequest_level":
       return put(readSidequestLevel(text));
     case "sidequest_red_lines":
+      if (isSidequestClarificationRequest(text)) return undefined;
       return { ...answers, sidequest_red_lines: { value: text.trim(), confidence: "high" } };
     default:
       return undefined;
@@ -432,6 +449,10 @@ export function isSidequestQuestion(id: string | null | undefined): boolean {
   return Boolean(id) && SIDEQUEST_ORDER.includes(id as QuestionId);
 }
 
+export function isSidequestClarificationRequest(text: string): boolean {
+  return /\b(?:what.{0,24}\bmean|what are you up to|what(?:'s| is)\s+(?:a\s+)?sidequests?|how does (?:this|that) work|explain sidequests?)\b/i.test(text);
+}
+
 export function applyReply(
   state: SurveyMachineState,
   text: string,
@@ -519,8 +540,9 @@ export function allParticipantsComplete(
 }
 
 export function buildIntroGroupPost(trip: PublicTripFields): string {
-  void trip;
-  return GROUP_INTRO;
+  return trip.organizerName
+    ? `👑 ${trip.organizerName} is the organizer for this trip.\n\n${GROUP_INTRO}`
+    : GROUP_INTRO;
 }
 
 export function buildSetupCompleteGroupPost(trip: PublicTripFields): string {
