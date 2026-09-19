@@ -50,16 +50,14 @@ export function buildLiveWrapped(opts: {
     .filter((row): row is { claim: ClaimRow; task: TaskRow; person: ParticipantRow } => Boolean(row.task && row.person))
     .sort((a, b) => scorePhoto(b.claim, b.task) - scorePhoto(a.claim, a.task) || a.task.title.localeCompare(b.task.title));
 
-  const used = new Set<string>();
   const photoFor = (row: (typeof photos)[number]): WrappedPhoto => ({
     src: `/wrapped/photo/${row.claim.id}`,
     claimId: row.claim.id,
     alt: `${row.person.display_name}'s photo for ${row.task.title}`,
   });
   const pickForPerson = (personId: string) => {
-    const found = photos.find((row) => row.person.id === personId && !used.has(row.claim.id));
+    const found = photos.find((row) => row.person.id === personId);
     if (!found) return null;
-    used.add(found.claim.id);
     return photoFor(found);
   };
 
@@ -83,17 +81,16 @@ export function buildLiveWrapped(opts: {
   const questPeople = new Set<string>();
   const questDays = new Set<number>();
   for (const row of photos) {
-    if (used.has(row.claim.id)) continue;
     if (questPeople.has(row.person.id) || questDays.has(row.task.day)) continue;
-    questRows.push(row); used.add(row.claim.id); questPeople.add(row.person.id); questDays.add(row.task.day);
+    questRows.push(row); questPeople.add(row.person.id); questDays.add(row.task.day);
     if (questRows.length === 3) break;
   }
   for (const row of photos) {
     if (questRows.length === 3) break;
-    if (!used.has(row.claim.id)) { questRows.push(row); used.add(row.claim.id); }
+    if (!questRows.some((picked) => picked.claim.id === row.claim.id)) questRows.push(row);
   }
   const quests = questRows.map((row) => ({ title: row.task.title, points: row.claim.awarded_points ?? 0, winner: row.person.display_name, photo: photoFor(row) }));
-  const gallery = photos.filter((row) => !used.has(row.claim.id)).slice(0, 18).map(photoFor);
+  const gallery = photos.slice(0, 18).map(photoFor);
   const placeNames = [...new Set(opts.itinerary.map((row) => row.name).filter((name): name is string => Boolean(name)))].slice(0, 6);
   const days = tripDays(opts.trip);
 
