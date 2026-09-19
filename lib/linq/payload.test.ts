@@ -5,6 +5,7 @@ import {
   isFromMe,
   isGroupChat,
   mediaFromParts,
+  membersFromChatJson,
   senderFromData,
   textFromParts,
 } from "./payload";
@@ -78,5 +79,35 @@ describe("group vs parts", () => {
         url: "https://cdn.example/a.jpg",
       },
     ]);
+  });
+});
+
+describe("membersFromChatJson", () => {
+  it("reads SDK-shaped handles", () => {
+    const result = membersFromChatJson({
+      handles: [
+        { handle: "+19055550100", is_me: false },
+        { handle: "+19055550199", is_me: true },
+      ],
+    });
+    expect(result.sourcePath).toBe("handles");
+    expect(result.parsed).toEqual([
+      { handle: "+19055550100", is_me: false },
+      { handle: "+19055550199", is_me: true },
+    ]);
+  });
+
+  it("finds handle arrays under a different parent key", () => {
+    const result = membersFromChatJson({
+      participants: [{ handle: "+19055550100", is_me: false }],
+    });
+    expect(result.sourcePath).toBe("participants");
+    expect(result.parsed).toHaveLength(1);
+  });
+
+  it("returns empty on an unexpected shape", () => {
+    const result = membersFromChatJson({ id: "c1", display_name: "Trip" });
+    expect(result.parsed).toEqual([]);
+    expect(result.sourcePath).toBeNull();
   });
 });

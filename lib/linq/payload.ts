@@ -100,6 +100,78 @@ export function humansFromHandles(handles: HandleLike[]): HandleLike[] {
   );
 }
 
+function coerceMember(value: unknown): HandleLike | null {
+  if (typeof value === "string" && value.trim()) {
+    return { handle: value.trim(), is_me: null };
+  }
+  const fromHandle = handleFromUnknown(value);
+  if (fromHandle) return fromHandle;
+  if (!isRecord(value)) return null;
+  if (typeof value.phone === "string" && value.phone.trim()) {
+    return {
+      handle: value.phone.trim(),
+      is_me: value.is_me === true ? true : value.is_me === false ? false : null,
+    };
+  }
+  return null;
+}
+
+export type ChatMemberParse = {
+  parsed: HandleLike[];
+  sourcePath: string | null;
+  candidatePaths: string[];
+};
+
+// Walk the raw GET /v3/chats/{id} JSON. `handles` is an SDK guess; captures
+// never showed this resource, so we record every array we find.
+export function membersFromChatJson(raw: unknown): ChatMemberParse {
+  const candidatePaths: string[] = [];
+  const found: { path: string; items: HandleLike[] }[] = [];
+
+  function walk(value: unknown, path: string): void {
+    if (Array.isArray(value)) {
+      const items: HandleLike[] = [];
+      for (const item of value) {
+        const member = coerceMember(item);
+        if (member) items.push(member);
+      }
+      candidatePaths.push(
+        `${path || "(root)"} len=${value.length} parsed=${items.length}`,
+      );
+      if (items.length > 0) found.push({ path: path || "(root)", items });
+      return;
+    }
+    if (!isRecord(value)) return;
+    for (const [key, child] of Object.entries(value)) {
+      walk(child, path ? `${path}.${key}` : key);
+    }
+  }
+
+  walk(raw, "");
+  const preferred =
+    found.find((entry) => entry.path === "handles" || entry.path.endsWith(".handles")) ??
+    found.sort((a, b) => b.items.length - a.items.length)[0];
+  return {
+    parsed: preferred?.items ?? [],
+    sourcePath: preferred?.path ?? null,
+    candidatePaths,
+  };
+}
+
+export function displayNameFromChatJson(raw: unknown): string | null {
+  if (!isRecord(raw)) return null;
+  if (typeof raw.display_name === "string" && raw.display_name.trim()) {
+    return raw.display_name;
+  }
+  if (isRecord(raw.data) && typeof raw.data.display_name === "string") {
+    return raw.data.display_name;
+  }
+  if (isRecord(raw.chat) && typeof raw.chat.display_name === "string") {
+    return raw.chat.display_name;
+  }
+  return null;
+}
+
 // Captures show the chat id as both data.chat_id and data.chat.id.
 export function chatIdFromData(data: unknown): string | null {
   if (!isRecord(data)) return null;

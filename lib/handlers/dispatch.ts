@@ -41,7 +41,7 @@ async function onMessageReceived(data: unknown): Promise<void> {
 
   const isGroup = isGroupChat(data);
   if (isGroup) {
-    await bootstrapGroupIfNeeded(chatId);
+    await bootstrapGroupIfNeeded(chatId, { isGroup });
   }
 
   const text = textFromParts(data.parts);
