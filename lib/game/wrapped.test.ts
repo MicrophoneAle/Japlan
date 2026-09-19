@@ -56,8 +56,10 @@ describe("Wrapped from real stats", () => {
     expect(data.places).toEqual(["Namba", "Umeda"]);
   });
 
-  it("says which fields are still fictional", () => {
-    expect(WRAPPED_SOURCES["people[].photo"].source).toBe("fictional");
+  it("says where each field comes from", () => {
+    // Photos became real with the live page's claim-photos storage.
+    expect(WRAPPED_SOURCES["people[].photo"].source).toBe("real");
     expect(WRAPPED_SOURCES["people[].quests"].source).toBe("real");
+    expect(Object.values(WRAPPED_SOURCES).some((s) => s.source === "fictional")).toBe(false);
   });
 });

@@ -2,12 +2,12 @@ import { getServiceClient } from "@/lib/db/client";
 import { prefsOf } from "@/lib/game/prefs";
 import { topInterestWords } from "@/lib/game/profile";
 import type { SurveyAnswers } from "@/lib/game/survey";
-import { buildWrappedData, type WrappedData, type WrappedPhoto } from "@/lib/game/wrapped";
+import { buildWrappedData, type WrappedPhoto, type WrappedStory } from "@/lib/game/wrapped";
 import { readStats } from "./stats";
 
 // A real trip's Wrapped, in the contract the page renders (lib/game/wrapped).
 // Numbers come from participant_stats, kept live as the trip happens.
-export async function wrappedDataFor(tripId: string, placeholder: WrappedPhoto): Promise<WrappedData | null> {
+export async function wrappedDataFor(tripId: string, placeholder: WrappedPhoto): Promise<WrappedStory | null> {
   const db = getServiceClient();
   const trip = await db.from("trips").select("name, destination, start_date, end_date").eq("id", tripId).maybeSingle();
   if (trip.error) throw trip.error;

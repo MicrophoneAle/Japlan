@@ -1,12 +1,13 @@
-import type { WrappedData, WrappedPerson, WrappedPhoto, WrappedSlide } from "@/lib/game/wrapped";
+import type { WrappedData, WrappedPerson, WrappedPhoto, WrappedSlide, WrappedStory } from "@/lib/game/wrapped";
 import { zeroStats } from "@/lib/game/stats";
 
-// FICTIONAL FIXTURE. The contract is WrappedData (lib/game/wrapped.ts); a real
-// trip's data comes from wrappedDataFor (lib/handlers/wrapped.ts), and
-// WRAPPED_SOURCES says which fields are real. This file only demos the shape.
+// FICTIONAL FIXTURE for the demo page (/wrapped). The contract is WrappedData
+// in lib/game/wrapped.ts, re-exported here for the page and for
+// lib/wrapped/data.ts, which builds live data for /wrapped/[tripId].
+// WRAPPED_SOURCES in lib/game/wrapped.ts says which fields are real.
 export type Photo = WrappedPhoto;
 export type Person = WrappedPerson;
-export type { WrappedSlide };
+export type { WrappedData, WrappedSlide, WrappedStory };
 
 export const photos: Photo[] = [
   { src: "/assets/images.jpg", alt: "Friends enjoying a Japlan trip memory" },
@@ -22,7 +23,9 @@ const people: Person[] = [
   { name: "Theo", score: 198, rank: 5, quests: 6, favorite: "Coffee stops", moment: "The espresso relay", photo: photos[1] },
 ];
 
-export const demo = {
+// Annotated, not just `satisfies`: the page types its data prop as
+// `typeof demo`, which must be the contract, so live data fits it too.
+export const demo: WrappedStory = {
   trip: {
     name: "The long weekend that got competitive",
     destination: "Montréal",
@@ -43,6 +46,7 @@ export const demo = {
     { title: "A View Worth Missing Dinner For", points: 31, winner: "Zara", photo: photos[1] },
   ],
   people,
+  photos,
   slides: [
     { type: "intro" },
     { type: "stats" },
@@ -53,4 +57,4 @@ export const demo = {
     { type: "photos" },
     { type: "finale" },
   ] satisfies WrappedSlide[],
-} satisfies WrappedData;
+};
