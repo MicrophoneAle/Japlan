@@ -92,12 +92,29 @@ async function onMessageReceived(data: unknown): Promise<void> {
     }
   }
 
+  console.log("[japlan.dispatch] after markRead", {
+    chatId,
+    isDm,
+    hasPhone: Boolean(phone),
+    textPreview: text.slice(0, 80),
+  });
+
   if (isDm && phone) {
     const soloEnabled = soloModeEnabled();
+    const soloModeRaw = process.env.JAPLAN_SOLO_MODE ?? null;
+    console.log("[japlan.solo] command check", {
+      soloEnabled,
+      soloModeRaw,
+      textPreview: text.slice(0, 80),
+    });
     const soloTrip = soloEnabled ? await soloTripForChat(chatId) : null;
     const soloRoute = routeSoloDm({
       enabled: soloEnabled,
       text,
+      soloTripState: soloTrip?.state ?? null,
+    });
+    console.log("[japlan.solo] command check route", {
+      soloRoute,
       soloTripState: soloTrip?.state ?? null,
     });
     if (soloRoute === "solo_bootstrap") {
@@ -139,6 +156,11 @@ export async function dispatchLinqEvent(envelope: LinqEnvelope): Promise<void> {
     }
     await markProcessed(envelope.event_id);
   } catch (err) {
-    console.error("[japlan.dispatch]", err);
+    const error = err instanceof Error ? err : new Error(String(err));
+    console.error("[japlan.dispatch]", {
+      name: error.name,
+      message: error.message,
+      stack: error.stack ?? null,
+    });
   }
 }

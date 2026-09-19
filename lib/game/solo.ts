@@ -1,9 +1,22 @@
 import type { SurveyAnswers } from "./survey";
 
+let loggedSoloModeRaw = false;
+
 export function soloModeEnabled(
   value = process.env.JAPLAN_SOLO_MODE,
 ): boolean {
-  return value?.trim().toLowerCase() === "true";
+  const raw = value ?? null;
+  const normalized = raw?.trim().toLowerCase() ?? "";
+  const enabled =
+    normalized === "true" || normalized === "1" || normalized === "yes";
+  if (!loggedSoloModeRaw) {
+    loggedSoloModeRaw = true;
+    console.info("[japlan.solo] JAPLAN_SOLO_MODE", {
+      raw,
+      enabled,
+    });
+  }
+  return enabled;
 }
 
 export function isSoloBootstrapPhrase(text: string): boolean {

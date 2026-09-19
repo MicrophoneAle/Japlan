@@ -4,6 +4,8 @@ import { dispatchLinqEvent } from "@/lib/handlers/dispatch";
 import { captureInboundWebhook } from "@/lib/linq/capture";
 import { inspectLinqSignature } from "@/lib/linq/verify";
 
+export const maxDuration = 60;
+
 type LinqWebhookEnvelope = {
   event_id?: string;
   event_type?: string;
@@ -101,21 +103,31 @@ export async function POST(request: Request): Promise<Response> {
     eventId: linqEventId,
     type,
   });
-  after(async () => {
+  after(() => {
     console.log("[japlan.webhook] dispatch started", {
       eventId: linqEventId,
       type,
     });
-    try {
-      await dispatchLinqEvent(envelope);
-    } catch (err) {
-      console.error("[japlan.dispatch]", err);
-    } finally {
-      console.log("[japlan.webhook] dispatch finished", {
-        eventId: linqEventId,
-        type,
+    // Promise chain so a rejection cannot escape after() as unhandled
+    // (Vercel can kill the isolate without running an async-fn finally).
+    return Promise.resolve()
+      .then(() => dispatchLinqEvent(envelope))
+      .catch((err: unknown) => {
+        const error = err instanceof Error ? err : new Error(String(err));
+        console.error("[japlan.webhook] dispatch escaped", {
+          eventId: linqEventId,
+          type,
+          name: error.name,
+          message: error.message,
+          stack: error.stack ?? null,
+        });
+      })
+      .finally(() => {
+        console.log("[japlan.webhook] dispatch finished", {
+          eventId: linqEventId,
+          type,
+        });
       });
-    }
   });
 
   return new Response(null, { status: 200 });

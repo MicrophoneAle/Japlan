@@ -90,6 +90,10 @@ describe("group behaviour when solo mode is off", () => {
     expect(soloModeEnabled(undefined)).toBe(false);
     expect(soloModeEnabled("false")).toBe(false);
     expect(soloModeEnabled("true")).toBe(true);
+    expect(soloModeEnabled("TRUE")).toBe(true);
+    expect(soloModeEnabled("1")).toBe(true);
+    expect(soloModeEnabled("yes")).toBe(true);
+    expect(soloModeEnabled(" YES ")).toBe(true);
 
     expect(
       shouldRunSoloBootstrap({
