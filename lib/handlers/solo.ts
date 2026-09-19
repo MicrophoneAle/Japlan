@@ -205,7 +205,31 @@ export async function skipSoloSurvey(opts: {
 }
 
 export async function soloTripForChat(chatId: string): Promise<TripRow | null> {
+  console.log("[japlan.solo] step", { step: "soloTripForChat.before", chatId });
   const trip = await getTripByChatId(chatId);
-  if (!trip?.is_solo) return null;
+  console.log("[japlan.solo] step", {
+    step: "soloTripForChat.after",
+    chatId,
+    found: Boolean(trip),
+    isSolo: trip?.is_solo ?? null,
+    state: trip?.state ?? null,
+    tripId: trip?.id ?? null,
+  });
+  if (!trip) {
+    console.log("[japlan.dispatch] idle", {
+      reason: "solo_trip_lookup_miss",
+      chatId,
+    });
+    return null;
+  }
+  if (!trip.is_solo) {
+    console.log("[japlan.dispatch] idle", {
+      reason: "trip_for_chat_is_not_solo",
+      chatId,
+      tripId: trip.id,
+      state: trip.state,
+    });
+    return null;
+  }
   return trip;
 }

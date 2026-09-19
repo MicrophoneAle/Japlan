@@ -64,12 +64,29 @@ function logError(
 }
 
 export async function getTripByChatId(chatId: string): Promise<TripRow | null> {
+  console.log("[japlan.dispatch] step", { step: "getTripByChatId.before", chatId });
   const { data, error } = await getServiceClient()
     .from("trips")
     .select(TRIP_COLS)
     .eq("linq_chat_id", chatId)
     .maybeSingle();
-  if (error) throw error;
+  if (error) {
+    console.error("[japlan.dispatch] step", {
+      step: "getTripByChatId.throw",
+      chatId,
+      message: error.message,
+      code: error.code ?? null,
+    });
+    throw error;
+  }
+  console.log("[japlan.dispatch] step", {
+    step: "getTripByChatId.after",
+    chatId,
+    found: Boolean(data),
+    tripId: data ? (data as { id: string }).id : null,
+    isSolo: data ? Boolean((data as { is_solo?: boolean }).is_solo) : null,
+    state: data ? (data as { state?: string }).state ?? null : null,
+  });
   return data ? asTrip(data) : null;
 }
 

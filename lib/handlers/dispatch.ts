@@ -31,8 +31,50 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+function dispatchStep(step: string, fields: Record<string, unknown> = {}): void {
+  console.log("[japlan.dispatch] step", { step, ...fields });
+}
+
+function dispatchIdle(reason: string, fields: Record<string, unknown> = {}): void {
+  console.log("[japlan.dispatch] idle", { reason, ...fields });
+}
+
+function dispatchThrow(
+  step: string,
+  err: unknown,
+  fields: Record<string, unknown> = {},
+): never {
+  const error = err instanceof Error ? err : new Error(String(err));
+  console.error("[japlan.dispatch] step", {
+    step,
+    ...fields,
+    name: error.name,
+    message: error.message,
+    stack: error.stack ?? null,
+  });
+  throw error;
+}
+
+async function dispatchAwait<T>(
+  step: string,
+  fields: Record<string, unknown>,
+  run: () => Promise<T>,
+): Promise<T> {
+  dispatchStep(`${step}.before`, fields);
+  try {
+    const result = await run();
+    dispatchStep(`${step}.after`, fields);
+    return result;
+  } catch (err) {
+    dispatchThrow(`${step}.throw`, err, fields);
+  }
+}
+
 async function markProcessed(eventId: string | undefined, tripId?: string) {
-  if (!eventId) return;
+  if (!eventId) {
+    dispatchIdle("mark_processed_skipped", { hasEventId: false });
+    return;
+  }
   const patch: { processed_at: string; trip_id?: string } = {
     processed_at: new Date().toISOString(),
   };
@@ -47,15 +89,37 @@ async function markProcessed(eventId: string | undefined, tripId?: string) {
 }
 
 async function onMessageReceived(data: unknown): Promise<void> {
-  if (!isRecord(data)) return;
-  if (data.direction === "outbound") return;
+  dispatchStep("onMessageReceived.enter");
+  try {
+    await onMessageReceivedInner(data);
+  } catch (err) {
+    dispatchThrow("onMessageReceived.throw", err);
+  } finally {
+    dispatchStep("onMessageReceived.exit");
+  }
+}
+
+async function onMessageReceivedInner(data: unknown): Promise<void> {
+  if (!isRecord(data)) {
+    dispatchIdle("not_a_record");
+    return;
+  }
+  if (data.direction === "outbound") {
+    dispatchIdle("outbound_ignored");
+    return;
+  }
 
   const chatId = chatIdFromData(data);
-  if (!chatId) return;
+  if (!chatId) {
+    dispatchIdle("no_chat_id");
+    return;
+  }
 
   const isGroup = isGroupChat(data);
   if (isGroup) {
-    await bootstrapGroupIfNeeded(chatId, { isGroup });
+    await dispatchAwait("bootstrap_group", { chatId }, () =>
+      bootstrapGroupIfNeeded(chatId, { isGroup }),
+    );
   }
 
   const text = textFromParts(data.parts);
@@ -76,8 +140,7 @@ async function onMessageReceived(data: unknown): Promise<void> {
   });
 
   if (!decision.respond) {
-    console.debug("[japlan.address]", {
-      respond: false,
+    dispatchIdle("addressing_silent", {
       reason: decision.reason,
       chatId,
       textPreview: text.slice(0, 80),
@@ -92,6 +155,8 @@ async function onMessageReceived(data: unknown): Promise<void> {
     } catch (err) {
       console.error("[japlan.dispatch] markRead failed", err);
     }
+  } else {
+    dispatchIdle("mark_read_skipped", { reason: "no_message_id", chatId });
   }
 
   console.log("[japlan.dispatch] after markRead", {
@@ -100,55 +165,101 @@ async function onMessageReceived(data: unknown): Promise<void> {
     hasPhone: Boolean(phone),
     textPreview: text.slice(0, 80),
   });
+  dispatchStep("after_markRead.next", {
+    chatId,
+    isDm,
+    hasPhone: Boolean(phone),
+    phoneLength: phone?.length ?? 0,
+  });
 
-  if (isDm && phone) {
-    const soloEnabled = soloModeEnabled();
-    const soloModeRaw = process.env.JAPLAN_SOLO_MODE ?? null;
-    console.log("[japlan.solo] command check", {
-      soloEnabled,
-      soloModeRaw,
-      textPreview: text.slice(0, 80),
+  if (!(isDm && phone)) {
+    dispatchStep("group_or_no_phone.claim", {
+      chatId,
+      isDm,
+      hasPhone: Boolean(phone),
     });
-    const soloTrip = soloEnabled ? await soloTripForChat(chatId) : null;
-    const soloRoute = routeSoloDm({
-      enabled: soloEnabled,
-      text,
-      soloTripState: soloTrip?.state ?? null,
-    });
-    console.log("[japlan.solo] command check route", {
-      soloRoute,
-      soloTripState: soloTrip?.state ?? null,
-    });
-    if (soloRoute === "solo_bootstrap") {
-      await bootstrapSoloIfNeeded({ chatId, phone, displayName: senderName });
-      return;
-    }
-    if (soloRoute === "solo_skip") {
-      await skipSoloSurvey({ chatId, phone, displayName: senderName });
-      return;
-    }
-    if (soloRoute === "solo_claim") {
-      console.log("[japlan.claim] step", { step: "solo_claim.before", chatId });
-      try {
-        await handleGroupClaim(data);
-      } finally {
-        console.log("[japlan.claim] step", { step: "solo_claim.after", chatId });
-      }
-      return;
-    }
-    await handleSurveyDm({ phone, chatId, text });
+    await dispatchAwait("group_claim", { chatId }, () => handleGroupClaim(data));
     return;
   }
 
-  await handleGroupClaim(data);
+  dispatchStep("dm_branch.enter", { chatId, textPreview: text.slice(0, 80) });
+  const soloModeRaw = process.env.JAPLAN_SOLO_MODE ?? null;
+  dispatchStep("dm_branch.env_read", {
+    soloModeRaw,
+    soloModeEnabledType: typeof soloModeEnabled,
+  });
+  let soloEnabled = false;
+  try {
+    soloEnabled = soloModeEnabled();
+  } catch (err) {
+    dispatchThrow("soloModeEnabled.throw", err, { chatId });
+  }
+  console.log("[japlan.solo] command check", {
+    soloEnabled,
+    soloModeRaw,
+    textPreview: text.slice(0, 80),
+  });
+
+  const soloTrip = soloEnabled
+    ? await dispatchAwait("soloTripForChat", { chatId }, () =>
+        soloTripForChat(chatId),
+      )
+    : null;
+  if (soloEnabled && !soloTrip) {
+    dispatchIdle("solo_enabled_but_no_solo_trip", { chatId });
+  }
+  const soloRoute = routeSoloDm({
+    enabled: soloEnabled,
+    text,
+    soloTripState: soloTrip?.state ?? null,
+  });
+  console.log("[japlan.solo] command check route", {
+    soloRoute,
+    soloTripState: soloTrip?.state ?? null,
+    soloTripId: soloTrip?.id ?? null,
+  });
+
+  if (soloRoute === "solo_bootstrap") {
+    await dispatchAwait("solo_bootstrap", { chatId }, () =>
+      bootstrapSoloIfNeeded({ chatId, phone, displayName: senderName }),
+    );
+    return;
+  }
+  if (soloRoute === "solo_skip") {
+    await dispatchAwait("solo_skip", { chatId }, () =>
+      skipSoloSurvey({ chatId, phone, displayName: senderName }),
+    );
+    return;
+  }
+  if (soloRoute === "solo_claim") {
+    console.log("[japlan.claim] step", { step: "solo_claim.before", chatId });
+    try {
+      await handleGroupClaim(data);
+    } finally {
+      console.log("[japlan.claim] step", { step: "solo_claim.after", chatId });
+    }
+    return;
+  }
+
+  dispatchStep("survey_dm.before", {
+    chatId,
+    soloRoute,
+    soloTripState: soloTrip?.state ?? null,
+  });
+  await handleSurveyDm({ phone, chatId, text });
+  dispatchStep("survey_dm.after", { chatId });
 }
 
 export async function dispatchLinqEvent(envelope: LinqEnvelope): Promise<void> {
+  dispatchStep("dispatchLinqEvent.enter", {
+    type: envelope.event_type ?? null,
+    eventId: envelope.event_id ?? null,
+  });
   try {
     if (isFromMe(envelope.data)) {
-      console.debug("[japlan.dispatch] ignore is_me", {
-        type: envelope.event_type,
-        eventId: envelope.event_id,
+      dispatchIdle("is_me", {
+        type: envelope.event_type ?? null,
+        eventId: envelope.event_id ?? null,
       });
       await markProcessed(envelope.event_id);
       return;
@@ -158,8 +269,16 @@ export async function dispatchLinqEvent(envelope: LinqEnvelope): Promise<void> {
       await onMessageReceived(envelope.data);
     } else if (envelope.event_type === "reaction.added") {
       if (isRecord(envelope.data)) {
-        await handlePeerReaction(envelope.data);
+        await dispatchAwait("peer_reaction", {}, () =>
+          handlePeerReaction(envelope.data as Record<string, unknown>),
+        );
+      } else {
+        dispatchIdle("reaction_not_a_record");
       }
+    } else {
+      dispatchIdle("unhandled_event_type", {
+        type: envelope.event_type ?? null,
+      });
     }
     await markProcessed(envelope.event_id);
   } catch (err) {
@@ -168,6 +287,11 @@ export async function dispatchLinqEvent(envelope: LinqEnvelope): Promise<void> {
       name: error.name,
       message: error.message,
       stack: error.stack ?? null,
+    });
+  } finally {
+    dispatchStep("dispatchLinqEvent.exit", {
+      type: envelope.event_type ?? null,
+      eventId: envelope.event_id ?? null,
     });
   }
 }
