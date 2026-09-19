@@ -35,7 +35,11 @@ export function claimConfirmedLine(opts: {
   base: number;
   photoBonus: number;
   total: number;
+  capped?: boolean;
 }): string {
+  if (opts.capped) {
+    return `✅ ${opts.code} · ${opts.name} · daily cap reached · ${opts.total}`;
+  }
   if (opts.photoBonus > 0) {
     return `✅ ${opts.code} · ${opts.name} +${opts.base} +${opts.photoBonus} photo · ${opts.total}`;
   }
@@ -60,6 +64,22 @@ export function peerConfirmLine(opts: {
   title: string;
 }): string {
   return `${opts.name} claims ${opts.code} (${opts.title}).\n👍 this if you believe them.`;
+}
+
+export function freeformPeerLine(opts: {
+  name: string;
+  title: string;
+  code: string;
+}): string {
+  return `${opts.name} says they ${opts.title}. ${opts.code}. 👍 if that happened.`;
+}
+
+export function freeformAlreadyUsedLine(): string {
+  return `already used today's freeform.`;
+}
+
+export function freeformRejectedLine(): string {
+  return `can't count that.`;
 }
 
 export function twoMatchAskLine(left: string, right: string): string {

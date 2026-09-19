@@ -1,6 +1,6 @@
 import { getServiceClient } from "@/lib/db/client";
 import type { ClaimRow, ParticipantRow, TaskRow, TripRow } from "@/lib/db/types";
-import { formatDailyBoard } from "@/lib/game/board";
+import { formatMorningStandings } from "@/lib/game/board";
 import {
   CLAIM_MATCH_CONFIDENCE_MIN,
   applyPhotoBonusRules,
@@ -15,15 +15,41 @@ import {
 import {
   alreadyClaimedLine,
   claimConfirmedLine,
+  freeformAlreadyUsedLine,
+  freeformPeerLine,
+  freeformRejectedLine,
   peerConfirmLine,
   reusedPhotoLine,
   twoMatchAskLine,
   visionRejectedLine,
 } from "@/lib/game/copy";
+import {
+  FREEFORM_PHOTO_BONUS_MAX,
+  FREEFORM_SOURCE,
+  hasFreeformClaimToday,
+  isClaimantTapback,
+  openPersonalTaskIds,
+  parseFreeformExtraction,
+} from "@/lib/game/freeform";
 import { perceptualHash, imageTakenAt } from "@/lib/game/image-hash";
+import { nextFreeformCode } from "@/lib/game/generate";
+import {
+  applyDailyPointsCap,
+  DEFAULT_DAILY_POINTS_CAP,
+  pointsForFreeform,
+  tripLengthDays,
+} from "@/lib/game/scoring";
+import { verificationForSolo } from "@/lib/game/solo";
+import type { SurveyAnswers } from "@/lib/game/survey";
+import { validateGeneratedTask } from "@/lib/game/validate";
 import { getTripByChatId } from "@/lib/handlers/bootstrap";
+import {
+  currentTripDay,
+  refillPersonalTasksIfNeeded,
+} from "@/lib/handlers/daily-board";
 import type { LLMProvider } from "@/lib/llm";
 import {
+  extractFreeformActivity,
   matchClaimText,
   scorePhotoFidelity,
 } from "@/lib/llm/gemini";
@@ -37,11 +63,11 @@ import {
 import { sendText } from "@/lib/linq/send";
 
 const TASK_COLS =
-  "id, trip_id, participant_id, team_id, code, title, tier, axes_json, base_points, photo_bonus_max, verification, day, expires_at, neighborhood";
+  "id, trip_id, participant_id, team_id, code, title, tier, axes_json, base_points, photo_bonus_max, verification, day, expires_at, neighborhood, source";
 const PARTICIPANT_COLS =
   "id, trip_id, phone, display_name, score, survey_json, survey_state, sidequests_muted, consented_at";
 const CLAIM_COLS =
-  "id, task_id, participant_id, evidence_url, image_hash, status, awarded_points, resolved_by, resolution_json";
+  "id, task_id, participant_id, evidence_url, image_hash, status, awarded_points, resolved_by, resolution_json, capped";
 
 const recentCodeMentions = new Map<string, { code: string; at: number }>();
 
@@ -192,8 +218,12 @@ async function insertClaim(row: {
   awarded_points: number | null;
   resolved_by: string | null;
   resolution_json: unknown;
+  capped?: boolean;
 }): Promise<void> {
-  const { error } = await getServiceClient().from("claims").insert(row);
+  const { error } = await getServiceClient().from("claims").insert({
+    ...row,
+    capped: row.capped ?? false,
+  });
   if (error) {
     if (error.code === "23505") {
       const conflict = new Error("claim_conflict");
@@ -226,12 +256,30 @@ export async function postDailyBoard(tripId: string, send: SendFn = sendText): P
     day: number;
   }[];
   const day = tasks[0]?.day ?? 1;
-  const text = formatDailyBoard({
+  const text = formatMorningStandings({
     day,
-    tasks,
     standings: (peopleRes.data ?? []) as { display_name: string; score: number }[],
   });
   await send(trip.linq_chat_id, text);
+}
+
+async function pointsAwardedOnDay(
+  participantId: string,
+  tripId: string,
+  day: number,
+): Promise<number> {
+  const { data, error } = await getServiceClient()
+    .from("claims")
+    .select("awarded_points, tasks!inner(trip_id, day)")
+    .eq("participant_id", participantId)
+    .eq("status", "awarded")
+    .eq("tasks.trip_id", tripId)
+    .eq("tasks.day", day);
+  if (error) throw error;
+  return (data ?? []).reduce(
+    (sum, row) => sum + ((row as { awarded_points: number | null }).awarded_points ?? 0),
+    0,
+  );
 }
 
 async function applyAwards(opts: {
@@ -243,7 +291,7 @@ async function applyAwards(opts: {
   imageHash: string | null;
   resolvedBy: string;
   resolution: unknown;
-  chatId: string;
+  trip: TripRow;
   send: SendFn;
 }): Promise<void> {
   const memberIds = opts.task.team_id
@@ -256,43 +304,98 @@ async function applyAwards(opts: {
     basePoints: opts.task.base_points,
     photoBonus: opts.photoBonus,
   });
+  const cap = opts.trip.daily_points_cap ?? DEFAULT_DAILY_POINTS_CAP;
+  const confirmChatId = opts.trip.linq_chat_id;
 
   let claimantTotal = opts.claimant.score;
+  let claimantCapped = false;
   for (const row of rows) {
+    const pointsToday = await pointsAwardedOnDay(
+      row.participantId,
+      opts.trip.id,
+      opts.task.day,
+    );
+    const capped = applyDailyPointsCap({
+      pointsToday,
+      incoming: row.points,
+      cap,
+    });
+    const resolution =
+      typeof opts.resolution === "object" && opts.resolution !== null
+        ? { ...(opts.resolution as Record<string, unknown>), capped: capped.capped }
+        : { capped: capped.capped };
     await insertClaim({
       task_id: opts.task.id,
       participant_id: row.participantId,
       evidence_url: opts.evidenceUrl,
       image_hash: opts.imageHash,
       status: "awarded",
-      awarded_points: row.points,
+      awarded_points: capped.awarded_points,
       resolved_by: opts.resolvedBy,
-      resolution_json: opts.resolution,
+      resolution_json: resolution,
+      capped: capped.capped,
     });
-    const total = await bumpScore(row.participantId, row.points);
-    if (row.participantId === opts.claimant.id) claimantTotal = total;
+    if (capped.awarded_points > 0) {
+      const total = await bumpScore(row.participantId, capped.awarded_points);
+      if (row.participantId === opts.claimant.id) claimantTotal = total;
+    }
+    if (row.participantId === opts.claimant.id) claimantCapped = capped.capped;
   }
 
   const name =
     opts.people.find((p) => p.id === opts.claimant.id)?.display_name ??
     opts.claimant.display_name;
   await opts.send(
-    opts.chatId,
+    confirmChatId,
     claimConfirmedLine({
       code: opts.task.code,
       name,
       base: opts.task.base_points,
       photoBonus: opts.photoBonus,
       total: claimantTotal,
+      capped: claimantCapped,
     }),
   );
   console.info("[japlan.claim]", {
     task: opts.task.code,
     participant: opts.claimant.id,
-    points: opts.task.base_points + opts.photoBonus,
+    points: claimantCapped ? 0 : opts.task.base_points + opts.photoBonus,
+    capped: claimantCapped,
     photo: Boolean(opts.evidenceUrl),
     at: new Date().toISOString(),
   });
+
+  if (
+    opts.task.participant_id === opts.claimant.id &&
+    opts.task.source !== FREEFORM_SOURCE
+  ) {
+    const { data: personal, error: personalErr } = await getServiceClient()
+      .from("tasks")
+      .select("id, participant_id, source")
+      .eq("trip_id", opts.trip.id)
+      .eq("participant_id", opts.claimant.id);
+    if (personalErr) throw personalErr;
+    const { data: claimRows, error: claimErr } = await getServiceClient()
+      .from("claims")
+      .select("task_id, status")
+      .eq("participant_id", opts.claimant.id);
+    if (claimErr) throw claimErr;
+    const remaining = openPersonalTaskIds(
+      (personal ?? []) as {
+        id: string;
+        participant_id: string | null;
+        source?: string | null;
+      }[],
+      (claimRows ?? []) as { task_id: string; status: string }[],
+      opts.claimant.id,
+    ).length;
+    await refillPersonalTasksIfNeeded({
+      trip: opts.trip,
+      claimant: opts.claimant,
+      people: opts.people,
+      remainingOpenPersonal: remaining,
+    });
+  }
 }
 
 async function resolveKnownTask(opts: {
@@ -341,7 +444,7 @@ async function resolveKnownTask(opts: {
 
   if (opts.task.verification === "peer") {
     const sent = await opts.send(
-      opts.chatId,
+      opts.trip.linq_chat_id,
       peerConfirmLine({
         name: opts.claimant.display_name,
         code: opts.task.code,
@@ -426,7 +529,7 @@ async function resolveKnownTask(opts: {
             : "code"
           : opts.task.verification,
       resolution: { ladder: opts.decision },
-      chatId: opts.chatId,
+      trip: opts.trip,
       send: opts.send,
     });
   } catch (err) {
@@ -436,6 +539,187 @@ async function resolveKnownTask(opts: {
     }
     throw err;
   }
+}
+
+async function tryHandleFreeform(opts: {
+  text: string;
+  hasPhoto: boolean;
+  photo: { url: string; mime: string } | null;
+  claimant: ParticipantRow;
+  people: ParticipantRow[];
+  trip: TripRow;
+  tasks: TaskRow[];
+  claims: ClaimRow[];
+  send: SendFn;
+  provider?: LLMProvider;
+}): Promise<void> {
+  if (!opts.text.trim()) return;
+  const day = currentTripDay(opts.trip, new Date());
+  if (
+    hasFreeformClaimToday({
+      tasks: opts.tasks,
+      claims: opts.claims,
+      participantId: opts.claimant.id,
+      day,
+    })
+  ) {
+    await opts.send(opts.trip.linq_chat_id, freeformAlreadyUsedLine());
+    return;
+  }
+
+  const raw = await extractFreeformActivity({
+    provider: opts.provider,
+    text: opts.text,
+  });
+  const extracted = parseFreeformExtraction(raw);
+  if (!extracted) return;
+
+  const completed = opts.tasks
+    .filter((task) =>
+      opts.claims.some(
+        (claim) =>
+          claim.task_id === task.id &&
+          claim.status === "awarded" &&
+          claim.participant_id === opts.claimant.id,
+      ),
+    )
+    .map((task) => task.title);
+  const proposed = {
+    code: "",
+    title: extracted.title,
+    axes: extracted.axes,
+    verification: "peer" as const,
+    photo_bonus_max: FREEFORM_PHOTO_BONUS_MAX,
+    neighborhood: extracted.neighborhood || extracted.place_name || "",
+    participantId: opts.claimant.id,
+    teamId: null,
+    source: "freeform" as const,
+  };
+  const reason = validateGeneratedTask(proposed, {
+    assignees: [
+      { answers: (opts.claimant.survey_json ?? {}) as SurveyAnswers },
+    ],
+    completedTitles: completed,
+  });
+  if (reason === "unsafe" || reason === "illegal" || reason === "duplicate") {
+    await opts.send(opts.trip.linq_chat_id, freeformRejectedLine());
+    return;
+  }
+
+  const tripDays = tripLengthDays(opts.trip.start_date, opts.trip.end_date);
+  const scored = pointsForFreeform(extracted.axes, { day, tripDays });
+  const verification = verificationForSolo(
+    "peer",
+    Boolean(opts.trip.is_solo),
+  );
+  const code = nextFreeformCode(opts.tasks.map((task) => task.code));
+  const { data: inserted, error: insertErr } = await getServiceClient()
+    .from("tasks")
+    .insert({
+      trip_id: opts.trip.id,
+      participant_id: opts.claimant.id,
+      team_id: null,
+      code,
+      title: extracted.title,
+      tier: scored.tier,
+      axes_json: extracted.axes,
+      base_points: scored.points,
+      photo_bonus_max: FREEFORM_PHOTO_BONUS_MAX,
+      verification,
+      day,
+      neighborhood: extracted.neighborhood || extracted.place_name || null,
+      source: FREEFORM_SOURCE,
+    })
+    .select(TASK_COLS)
+    .single();
+  if (insertErr) throw insertErr;
+  const task = inserted as TaskRow;
+
+  if (extracted.place_name) {
+    const { error: placeErr } = await getServiceClient().from("places").insert({
+      trip_id: opts.trip.id,
+      name: extracted.place_name,
+      lat: extracted.lat,
+      lng: extracted.lng,
+      category: extracted.category,
+      source: FREEFORM_SOURCE,
+      suggested_by: opts.claimant.id,
+    });
+    if (placeErr) {
+      console.error("[japlan.freeform] place insert failed", placeErr);
+    }
+  }
+
+  let imageHash: string | null = null;
+  let evidenceUrl: string | null = null;
+  let photoBonus = 0;
+  if (opts.hasPhoto && opts.photo) {
+    evidenceUrl = opts.photo.url;
+    const bytes = await fetchPhoto(opts.photo.url);
+    imageHash = await perceptualHash(bytes);
+    const hashes = await tripHashes(opts.trip.id);
+    if (hashAlreadyUsed(hashes, imageHash)) {
+      await opts.send(opts.trip.linq_chat_id, reusedPhotoLine());
+      return;
+    }
+    const takenAt = await imageTakenAt(bytes);
+    const scoredPhoto = await scorePhotoFidelity({
+      provider: opts.provider,
+      title: extracted.title,
+      photoBonusMax: FREEFORM_PHOTO_BONUS_MAX,
+      image: {
+        data: bytes.toString("base64"),
+        mime: opts.photo.mime || "image/jpeg",
+      },
+    });
+    if (scoredPhoto?.shows_task) {
+      const bonus = applyPhotoBonusRules({
+        fidelity: scoredPhoto.fidelity,
+        hasExif: Boolean(takenAt),
+        takenAt,
+        tripStart: opts.trip.start_date,
+        tripEnd: opts.trip.end_date,
+      });
+      if (!bonus.reject) {
+        photoBonus = Math.min(bonus.bonus, FREEFORM_PHOTO_BONUS_MAX);
+      }
+    }
+  }
+
+  if (verification === "peer") {
+    const sent = await opts.send(
+      opts.trip.linq_chat_id,
+      freeformPeerLine({
+        name: opts.claimant.display_name,
+        title: extracted.title,
+        code,
+      }),
+    );
+    await insertClaim({
+      task_id: task.id,
+      participant_id: opts.claimant.id,
+      evidence_url: evidenceUrl,
+      image_hash: imageHash,
+      status: "pending_peer",
+      awarded_points: null,
+      resolved_by: "peer",
+      resolution_json: { peer_message_id: sent.messageId, photoBonus },
+    });
+    return;
+  }
+
+  await applyAwards({
+    task,
+    claimant: opts.claimant,
+    people: opts.people,
+    photoBonus,
+    evidenceUrl,
+    imageHash,
+    resolvedBy: "freeform",
+    resolution: { freeform: true },
+    trip: opts.trip,
+    send: opts.send,
+  });
 }
 
 export async function handleGroupClaim(
@@ -504,6 +788,18 @@ export async function handleGroupClaim(
       match.confidence < CLAIM_MATCH_CONFIDENCE_MIN ||
       !match.task_code
     ) {
+      await tryHandleFreeform({
+        text,
+        hasPhoto,
+        photo,
+        claimant,
+        people: ctx.people,
+        trip: ctx.trip,
+        tasks: ctx.tasks,
+        claims: ctx.claims,
+        send,
+        provider: deps.provider,
+      });
       return;
     }
     const task = openTasks.find(
@@ -550,7 +846,21 @@ export async function handleGroupClaim(
         });
       }
     }
-    if (scored.length === 0) return;
+    if (scored.length === 0) {
+      await tryHandleFreeform({
+        text,
+        hasPhoto,
+        photo,
+        claimant,
+        people: ctx.people,
+        trip: ctx.trip,
+        tasks: ctx.tasks,
+        claims: ctx.claims,
+        send,
+        provider: deps.provider,
+      });
+      return;
+    }
     if (scored.length > 1) {
       await send(chatId, twoMatchAskLine(scored[0].code, scored[1].code));
       return;
@@ -616,7 +926,7 @@ export async function handlePeerReaction(
   if (!ctx) return;
   const claimant = ctx.people.find((p) => p.id === pending.participant_id);
   if (!claimant) return;
-  if (fromHandle && fromHandle === claimant.phone) return;
+  if (isClaimantTapback(fromHandle ?? null, claimant.phone)) return;
 
   const { error: delErr } = await getServiceClient()
     .from("claims")
@@ -625,16 +935,20 @@ export async function handlePeerReaction(
     .eq("status", "pending_peer");
   if (delErr) throw delErr;
 
+  const pendingJson = pending.resolution_json as {
+    peer_message_id?: string;
+    photoBonus?: number;
+  } | null;
   await applyAwards({
     task,
     claimant,
     people: ctx.people,
-    photoBonus: 0,
+    photoBonus: pendingJson?.photoBonus ?? 0,
     evidenceUrl: pending.evidence_url,
     imageHash: pending.image_hash,
     resolvedBy: "peer",
     resolution: { peer_message_id: messageId },
-    chatId,
+    trip: ctx.trip,
     send,
   });
 }

@@ -44,6 +44,8 @@ export function tierForPoints(points: number): Tier | null {
 }
 
 export const BAND_CEILING = TIER_BANDS.Challenging.max;
+export const MEDIUM_CEILING = TIER_BANDS.Medium.max;
+export const DEFAULT_DAILY_POINTS_CAP = 120;
 
 export function dayLetter(day: number): string {
   if (day < 1 || day > 26) {
@@ -81,4 +83,25 @@ export function pointsForBoard(
   const points = Math.min(BAND_CEILING, Math.max(1, scaled));
   const tier = tierForPoints(points) ?? "Challenging";
   return { points, tier };
+}
+
+export function pointsForFreeform(
+  axes: Axes,
+  opts: { day: number; tripDays: number | null } = { day: 1, tripDays: null },
+): { points: number; tier: Tier } {
+  const scored = pointsForBoard(axes, opts);
+  const points = Math.min(scored.points, MEDIUM_CEILING);
+  const tier = tierForPoints(points) ?? "Medium";
+  return { points, tier };
+}
+
+export function applyDailyPointsCap(opts: {
+  pointsToday: number;
+  incoming: number;
+  cap: number;
+}): { awarded_points: number; capped: boolean } {
+  if (opts.pointsToday >= opts.cap) {
+    return { awarded_points: 0, capped: true };
+  }
+  return { awarded_points: opts.incoming, capped: false };
 }

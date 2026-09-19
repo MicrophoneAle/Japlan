@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyDailyPointsCap,
   computePoints,
   pointsForBoard,
+  pointsForFreeform,
   tierForPoints,
   type Axes,
 } from "./scoring";
@@ -100,5 +102,22 @@ describe("computePoints", () => {
     );
     expect(points).toBe(30);
     expect(tier).toBe("Challenging");
+  });
+
+  it("caps a freeform all-5s claim at Medium, not Challenging", () => {
+    const { points, tier } = pointsForFreeform(
+      {
+        boldness: 5,
+        physical: 5,
+        time: 5,
+        scarcity: 5,
+        cultural: 5,
+        aesthetics: 5,
+      },
+      { day: 1, tripDays: 5 },
+    );
+    expect(points).toBe(20);
+    expect(tier).toBe("Medium");
+    expect(tier).not.toBe("Challenging");
   });
 });

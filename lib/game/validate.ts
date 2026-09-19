@@ -28,6 +28,7 @@ export type ProposedTask = {
   neighborhood: string;
   participantId?: string | null;
   teamId?: string | null;
+  source?: "generated" | "freeform";
 };
 
 export type AssigneeConstraints = {

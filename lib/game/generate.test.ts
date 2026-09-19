@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseGeneratedTasks } from "./generate";
+import { assignDayCodes, nextCodeNumber, nextFreeformCode, parseGeneratedTasks } from "./generate";
 import { pointsForBoard } from "./scoring";
 import {
   validateGeneratedTask,
@@ -104,5 +104,14 @@ describe("generation validation", () => {
       completedTitles: ["Eat something starting with a-d"],
     });
     expect(reason).toBe("duplicate");
+  });
+});
+
+describe("day codes", () => {
+  it("continues numbering on a refill", () => {
+    expect(nextCodeNumber(["A1", "A2", "A3", "X1"], 1)).toBe(4);
+    const refill = assignDayCodes([baseTask, baseTask, baseTask], 1, 4);
+    expect(refill.map((t) => t.code)).toEqual(["A4", "A5", "A6"]);
+    expect(nextFreeformCode(["A1", "X1", "X2"])).toBe("X3");
   });
 });

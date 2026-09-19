@@ -1,4 +1,4 @@
-import { formatDailyBoard } from "@/lib/game/board";
+import { formatMorningStandings, formatPersonalBoard } from "@/lib/game/board";
 import {
   assembleDestinationProfile,
   type DestinationProfile,
@@ -7,6 +7,7 @@ import {
   assignDayCodes,
   fillTemplatesDeterministically,
   generateTasksForAssignee,
+  nextCodeNumber,
   slotValuesFor,
   TASKS_PER_CALL,
 } from "@/lib/game/generate";
@@ -27,12 +28,12 @@ import {
 } from "@/lib/game/weather";
 import { getServiceClient } from "@/lib/db/client";
 import type { ParticipantRow, TaskRow, TripRow } from "@/lib/db/types";
-import { sendText } from "@/lib/linq/send";
+import { sendDM, sendText } from "@/lib/linq/send";
 import { applySoloVerification } from "@/lib/game/solo";
 import { fillArchetype, midpointAxes, TEMPLATES } from "@/lib/game/templates";
 
 const TRIP_COLS =
-  "id, linq_chat_id, name, destination, start_date, end_date, state, difficulty, stake_text, timezone, destination_profile_json, is_solo";
+  "id, linq_chat_id, name, destination, start_date, end_date, state, difficulty, stake_text, timezone, destination_profile_json, is_solo, daily_points_cap";
 
 export type PersistedGeneratedTask = {
   code: string;
@@ -98,7 +99,7 @@ export function currentTripDay(trip: TripRow, now: Date): number {
   return Math.max(1, day);
 }
 
-function endOfLocalDay(date: string, timezone: string): Date {
+export function endOfLocalDay(date: string, timezone: string): Date {
   // TODO: plan does not specify the exact expiry instant; using end of the local calendar day.
   const asUtc = new Date(`${date}T23:59:59`);
   void timezone;
@@ -279,6 +280,7 @@ export function persistableTask(opts: {
       day: opts.day,
       expires_at: opts.expiresAt.toISOString(),
       neighborhood: rowTask.neighborhood || null,
+      source: rowTask.source ?? "generated",
     },
   };
 }
@@ -481,20 +483,13 @@ export async function runDailyBoardForTrip(
   }
 
   const weatherLine = formatWeatherLine(weather);
-  const board = formatDailyBoard({
+  await deliverMorningBoards({
+    trip,
+    people,
+    rows,
     day,
     weatherLine,
-    tasks: rows.map((row) => ({
-      code: row.code,
-      title: row.title,
-      base_points: row.base_points,
-    })),
-    standings: people.map((p) => ({
-      display_name: p.display_name,
-      score: p.score,
-    })),
   });
-  await sendText(trip.linq_chat_id, board);
   console.info("[japlan.generate] board posted", {
     tripId: trip.id,
     day,
@@ -502,6 +497,231 @@ export async function runDailyBoardForTrip(
     usedFallback,
   });
   return { posted: true, day, count: rows.length, usedFallback };
+}
+
+async function deliverMorningBoards(opts: {
+  trip: TripRow;
+  people: ParticipantRow[];
+  rows: Omit<TaskRow, "id">[];
+  day: number;
+  weatherLine: string | null;
+}): Promise<void> {
+  const byPerson = new Map<string, Omit<TaskRow, "id">[]>();
+  for (const person of opts.people) {
+    byPerson.set(person.id, []);
+  }
+  for (const row of opts.rows) {
+    if (row.participant_id && byPerson.has(row.participant_id)) {
+      byPerson.get(row.participant_id)!.push(row);
+    }
+  }
+
+  const teamRows = opts.rows.filter((row) => row.team_id);
+  if (teamRows.length > 0) {
+    const supabase = getServiceClient();
+    for (const teamId of [...new Set(teamRows.map((row) => row.team_id!))]) {
+      const { data, error } = await supabase
+        .from("team_members")
+        .select("participant_id")
+        .eq("team_id", teamId);
+      if (error) throw error;
+      const memberIds = (data ?? []).map(
+        (row) => (row as { participant_id: string }).participant_id,
+      );
+      const tasks = teamRows.filter((row) => row.team_id === teamId);
+      for (const memberId of memberIds) {
+        const list = byPerson.get(memberId);
+        if (list) list.push(...tasks);
+      }
+    }
+  }
+
+  const shared = opts.rows.filter((row) => !row.participant_id && !row.team_id);
+  if (shared.length > 0) {
+    for (const list of byPerson.values()) list.push(...shared);
+  }
+
+  for (const person of opts.people) {
+    const tasks = byPerson.get(person.id) ?? [];
+    if (tasks.length === 0) continue;
+    const text = formatPersonalBoard({
+      day: opts.day,
+      weatherLine: opts.weatherLine,
+      tasks: tasks.map((row) => ({
+        code: row.code,
+        title: row.title,
+        base_points: row.base_points,
+      })),
+    });
+    try {
+      await sendDM(person.phone, text);
+    } catch (err) {
+      console.error("[japlan.generate] personal board DM failed", {
+        participantId: person.id,
+        err,
+      });
+    }
+  }
+
+  const standings = formatMorningStandings({
+    day: opts.day,
+    weatherLine: opts.weatherLine,
+    standings: opts.people.map((p) => ({
+      display_name: p.display_name,
+      score: p.score,
+    })),
+  });
+  await sendText(opts.trip.linq_chat_id, standings);
+}
+
+export async function refillPersonalTasksIfNeeded(opts: {
+  trip: TripRow;
+  claimant: ParticipantRow;
+  people: ParticipantRow[];
+  remainingOpenPersonal: number;
+}): Promise<void> {
+  if (opts.remainingOpenPersonal > 0) return;
+
+  const supabase = getServiceClient();
+  const peopleRes = await supabase
+    .from("participants")
+    .select(
+      "id, trip_id, phone, display_name, score, survey_json, survey_state, sidequests_muted, consented_at",
+    )
+    .eq("trip_id", opts.trip.id);
+  if (peopleRes.error) throw peopleRes.error;
+  const people = (peopleRes.data ?? []) as ParticipantRow[];
+
+  let profile: DestinationProfile;
+  try {
+    profile = await assembleDestinationProfile({ trip: opts.trip, people });
+  } catch (err) {
+    console.error("[japlan.generate] refill profile failed", err);
+    return;
+  }
+
+  const now = new Date();
+  const timezone = opts.trip.timezone || "UTC";
+  const today = localDateString(now, timezone);
+  const day = currentTripDay(opts.trip, now);
+  let weather: DayWeather = {
+    temperatureC: null,
+    precipitationChance: null,
+    summary: "unknown",
+    indoorPreferred: false,
+  };
+  if (profile.center) {
+    try {
+      weather = await fetchDayWeather({
+        lat: profile.center.lat,
+        lng: profile.center.lng,
+        date: today,
+        timezone,
+      });
+    } catch (err) {
+      console.error("[japlan.generate] refill weather failed", err);
+    }
+  }
+
+  const completed = await completedTitles(opts.trip.id, [opts.claimant.id]);
+  const ratings = await yesterdayRatings(opts.trip.id);
+  const gap = scoreGapText(people);
+  const assignee: Assignee = {
+    kind: "person",
+    id: opts.claimant.id,
+    participantId: opts.claimant.id,
+    teamId: null,
+    people: [opts.claimant],
+    label: opts.claimant.display_name,
+  };
+  let proposals: ProposedTask[] = [];
+  try {
+    proposals = await proposalsForAssignee({
+      assignee,
+      profile,
+      weather,
+      completed,
+      ratings,
+      gap,
+      day,
+    });
+  } catch (err) {
+    console.error("[japlan.generate] refill llm failed", err);
+  }
+  const expiresAt = endOfLocalDay(today, timezone);
+  const constraints: AssigneeConstraints[] = [
+    { answers: (opts.claimant.survey_json ?? {}) as SurveyAnswers },
+  ];
+  let kept = filterValid(proposals, constraints, completed, expiresAt);
+  if (kept.length < TASKS_PER_CALL / 2) {
+    kept = filterValid(
+      fillTemplatesDeterministically({
+        profile,
+        weather,
+        count: TASKS_PER_CALL,
+        seed: Date.now() % 1000,
+      }),
+      constraints,
+      completed,
+      expiresAt,
+    );
+  }
+  kept = kept.slice(0, TASKS_PER_CALL).map((task) => ({
+    ...task,
+    participantId: opts.claimant.id,
+    teamId: null,
+    source: "generated" as const,
+  }));
+  const existing = await supabase
+    .from("tasks")
+    .select("code")
+    .eq("trip_id", opts.trip.id)
+    .eq("day", day);
+  if (existing.error) throw existing.error;
+  const startAt = nextCodeNumber(
+    (existing.data ?? []).map((row) => (row as { code: string }).code),
+    day,
+  );
+  const coded = applySoloVerification(
+    assignDayCodes(kept, day, startAt),
+    Boolean(opts.trip.is_solo),
+  );
+  const tripDays = tripLengthDays(opts.trip.start_date, opts.trip.end_date);
+  const rows = coded.map((task) =>
+    persistableTask({
+      tripId: opts.trip.id,
+      day,
+      tripDays,
+      task,
+      participantId: opts.claimant.id,
+      teamId: null,
+      expiresAt,
+      isSolo: Boolean(opts.trip.is_solo),
+    }).row,
+  );
+  if (rows.length === 0) return;
+  const { error } = await supabase.from("tasks").upsert(rows, {
+    onConflict: "trip_id,code",
+  });
+  if (error) throw error;
+  const text = formatPersonalBoard({
+    day,
+    tasks: rows.map((row) => ({
+      code: row.code,
+      title: row.title,
+      base_points: row.base_points,
+    })),
+  });
+  try {
+    await sendDM(opts.claimant.phone, text);
+  } catch (err) {
+    console.error("[japlan.generate] refill DM failed", err);
+  }
+  console.info("[japlan.generate] personal refill", {
+    tripId: opts.trip.id,
+    participantId: opts.claimant.id,
+    count: rows.length,
+  });
 }
 
 export async function runDailyBoards(opts: {

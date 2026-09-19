@@ -20,7 +20,8 @@ create table trips (
   stake_text text,
   timezone text,
   destination_profile_json jsonb,
-  is_solo boolean not null default false
+  is_solo boolean not null default false,
+  daily_points_cap integer not null default 120
 );
 
 create table participants (
@@ -95,6 +96,7 @@ create table tasks (
   day integer not null,
   expires_at timestamptz,
   neighborhood text,
+  source text not null default 'generated',
   -- Shared board tasks may have both assignee columns null (first write wins).
   -- Split-team tasks set team_id; personal tasks set participant_id. Never both.
   constraint tasks_at_most_one_assignee check (
@@ -114,7 +116,8 @@ create table claims (
   status text not null,
   awarded_points integer,
   resolved_by text,
-  resolution_json jsonb
+  resolution_json jsonb,
+  capped boolean not null default false
 );
 
 create unique index claims_task_participant_key on claims (task_id, participant_id);

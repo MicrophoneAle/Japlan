@@ -13,6 +13,7 @@ export type TripRow = {
   timezone: string | null;
   destination_profile_json?: unknown | null;
   is_solo?: boolean;
+  daily_points_cap?: number;
 };
 
 export type TaskRow = {
@@ -30,6 +31,7 @@ export type TaskRow = {
   day: number;
   expires_at: string | null;
   neighborhood: string | null;
+  source?: string;
 };
 
 export type ClaimRow = {
@@ -42,6 +44,7 @@ export type ClaimRow = {
   awarded_points: number | null;
   resolved_by: string | null;
   resolution_json: unknown;
+  capped?: boolean;
 };
 
 export type PlaceRow = {

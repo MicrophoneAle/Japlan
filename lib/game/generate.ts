@@ -110,12 +110,34 @@ export function parseGeneratedTasks(raw: string): ProposedTask[] {
 export function assignDayCodes(
   tasks: ProposedTask[],
   day: number,
+  startAt = 1,
 ): ProposedTask[] {
   const letter = dayLetter(day);
   return tasks.map((task, index) => ({
     ...task,
-    code: `${letter}${index + 1}`,
+    code: `${letter}${startAt + index}`,
   }));
+}
+
+export function nextCodeNumber(codes: string[], day: number): number {
+  const letter = dayLetter(day);
+  const re = new RegExp(`^${letter}(\\d+)$`, "i");
+  let max = 0;
+  for (const code of codes) {
+    const match = code.match(re);
+    if (match) max = Math.max(max, Number(match[1]));
+  }
+  return max + 1;
+}
+
+export function nextFreeformCode(codes: string[]): string {
+  const re = /^X(\d+)$/i;
+  let max = 0;
+  for (const code of codes) {
+    const match = code.match(re);
+    if (match) max = Math.max(max, Number(match[1]));
+  }
+  return `X${max + 1}`;
 }
 
 export type GenerationInput = {

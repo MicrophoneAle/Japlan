@@ -40,3 +40,34 @@ export function formatDailyBoard(opts: {
   ];
   return lines.join("\n");
 }
+
+export function formatPersonalBoard(opts: {
+  day: number;
+  tasks: BoardTask[];
+  weatherLine?: string | null;
+}): string {
+  const tasks = [...opts.tasks].sort((a, b) =>
+    a.code.localeCompare(b.code, undefined, { numeric: true }),
+  );
+  return [
+    dailyBoardHeader(opts.day, opts.weatherLine),
+    "",
+    ...tasks.map((task) =>
+      dailyBoardTaskLine(task.code, task.title, task.base_points),
+    ),
+  ].join("\n");
+}
+
+export function formatMorningStandings(opts: {
+  day: number;
+  standings: BoardStanding[];
+  weatherLine?: string | null;
+}): string {
+  const standings = [...opts.standings].sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    return a.display_name.localeCompare(b.display_name);
+  });
+  return [dailyBoardHeader(opts.day, opts.weatherLine), "", standingsLine(standings)].join(
+    "\n",
+  );
+}

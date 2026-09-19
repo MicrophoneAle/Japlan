@@ -199,3 +199,52 @@ export async function scorePhotoFidelity(opts: {
     return { shows_task: true, fidelity: 0 };
   }
 }
+
+export const FREEFORM_EXTRACT_SCHEMA = {
+  type: "object",
+  properties: {
+    is_completed_activity: { type: "boolean" },
+    title: { type: "string" },
+    place_name: { type: "string" },
+    neighborhood: { type: "string" },
+    duration_minutes: { type: "integer" },
+    lat: { type: "number" },
+    lng: { type: "number" },
+    category: { type: "string" },
+    axes: {
+      type: "object",
+      properties: {
+        boldness: { type: "integer" },
+        physical: { type: "integer" },
+        time: { type: "integer" },
+        scarcity: { type: "integer" },
+        cultural: { type: "integer" },
+        aesthetics: { type: "integer" },
+      },
+      required: [
+        "boldness",
+        "physical",
+        "time",
+        "scarcity",
+        "cultural",
+        "aesthetics",
+      ],
+    },
+  },
+  required: ["is_completed_activity", "title", "axes"],
+};
+
+export async function extractFreeformActivity(opts: {
+  provider?: LLMProvider;
+  text: string;
+}): Promise<string> {
+  const provider = opts.provider ?? new GeminiProvider();
+  return provider.complete({
+    system:
+      "Extract a completed real-world activity from the message. Axes are integers 1-5. Never include a point value. If the message is not claiming something they already did, is_completed_activity is false. JSON only.",
+    messages: [{ role: "user", content: opts.text }],
+    schema: FREEFORM_EXTRACT_SCHEMA,
+    tier: "fast",
+    thinkingBudget: 0,
+  });
+}

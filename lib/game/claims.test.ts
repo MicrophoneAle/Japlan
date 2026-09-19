@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatDailyBoard } from "./board";
+import { formatDailyBoard, formatMorningStandings, formatPersonalBoard } from "./board";
 import {
   applyPhotoBonusRules,
   awardFanout,
@@ -205,6 +205,26 @@ describe("board and confirmation copy", () => {
     expect(text).not.toContain("⚓");
   });
 
+  it("keeps the group morning post to standings only", () => {
+    const text = formatMorningStandings({
+      day: 1,
+      weatherLine: "22° clear",
+      standings: [{ display_name: "Michael", score: 20 }],
+    });
+    expect(text).toContain("Day 1");
+    expect(text).toContain("Michael 20");
+    expect(text).not.toContain("A1");
+  });
+
+  it("formats a personal board for DM", () => {
+    const text = formatPersonalBoard({
+      day: 1,
+      tasks: [{ code: "A1", title: "first", base_points: 7 }],
+    });
+    expect(text).toContain("A1 · first (7)");
+    expect(text).not.toContain("Michael");
+  });
+
   it("formats the one-line confirmation", () => {
     expect(
       claimConfirmedLine({
@@ -224,5 +244,15 @@ describe("board and confirmation copy", () => {
         total: 162,
       }),
     ).toBe("✅ C2 · Michael +20 +2 photo · 162");
+    expect(
+      claimConfirmedLine({
+        code: "C2",
+        name: "Michael",
+        base: 20,
+        photoBonus: 0,
+        total: 160,
+        capped: true,
+      }),
+    ).toBe("✅ C2 · Michael · daily cap reached · 160");
   });
 });
