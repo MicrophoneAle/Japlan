@@ -3,34 +3,28 @@ import { evaluateAddress } from "@/lib/game/addressing";
 import {
   CONVERSATION_MAX_TOOL_ITERS,
   foreignSurveySecrets,
-  getOffTopicCount,
-  isOnTopicExchange,
-  nextOffTopicCount,
-  offTopicPolicy,
   recordConversationalReply,
   runToolLoop,
-  setOffTopicCount,
   stripPointFields,
   surveySliceForConversation,
   toolResultHasInventedPoints,
   finalizeConversationReply,
 } from "@/lib/game/conversation";
 import {
+  BOARD_IN_DM_LINE,
   CONVERSATION_FALLBACK,
   CONVERSATION_PRIVACY_LINE,
   CONVERSATION_SYSTEM_PROMPT,
-  conversationRedirect,
+  DISCARD_FALLBACK,
   standingsLine,
 } from "@/lib/game/copy";
 import { isStandingsRequest } from "@/lib/game/commands";
-import type { FreeformExtraction } from "@/lib/game/freeform";
 import {
   isOpenTask,
   pickLatePhotoTarget,
   photoBonusWindowMs,
   tasksClaimableBy,
 } from "@/lib/game/claims";
-import type { Axes } from "@/lib/game/scoring";
 import { buildStandingsRows } from "@/lib/game/standings";
 import type { SurveyAnswers } from "@/lib/game/survey";
 import { currentTripDay } from "@/lib/handlers/daily-board";
@@ -63,8 +57,6 @@ import {
   updateMySetting,
   updateTripSetting,
 } from "@/lib/handlers/plan-changes";
-import { BOARD_IN_DM_LINE, DISCARD_FALLBACK, PROFILE_IN_DM_LINE, profileLine } from "@/lib/game/copy";
-import { profileFor } from "@/lib/handlers/profiles";
 
 export const CONVERSATION_TOOL_DEFS = [
   {
@@ -82,34 +74,10 @@ export const CONVERSATION_TOOL_DEFS = [
   {
     name: "propose_freeform_claim",
     description:
-      "They already did something not on the board. Return title and six axes 1-5. Never include a point value.",
+      "Check a possible claim only after they clearly say they completed an activity that is not on the board. Never call for a plan, intention, or activity still in progress; the server checks the original message.",
     parameters: {
       type: "object",
-      properties: {
-        title: { type: "string" },
-        neighborhood: { type: "string" },
-        place_name: { type: "string" },
-        axes: {
-          type: "object",
-          properties: {
-            boldness: { type: "integer" },
-            physical: { type: "integer" },
-            time: { type: "integer" },
-            scarcity: { type: "integer" },
-            cultural: { type: "integer" },
-            aesthetics: { type: "integer" },
-          },
-          required: [
-            "boldness",
-            "physical",
-            "time",
-            "scarcity",
-            "cultural",
-            "aesthetics",
-          ],
-        },
-      },
-      required: ["title", "axes"],
+      properties: {},
       additionalProperties: false,
     },
   },
@@ -227,12 +195,6 @@ export const CONVERSATION_TOOL_DEFS = [
     },
   },
   {
-    name: "show_my_profile",
-    description:
-      "The sender asks what the bot knows about them ('what do you know about me', 'what's my profile'). Code sends their profile to their DM.",
-    parameters: { type: "object", properties: {}, additionalProperties: false },
-  },
-  {
     name: "react_to_message",
     description:
       "Tapback the message they just sent instead of (or in addition to) texting back. Use this for something funny, unhinged, or hype-worthy where a reaction hits harder than words. Not for every message, and not instead of answering a real question.",
@@ -259,25 +221,6 @@ function stringArg(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-function clampAxis(value: unknown): number {
-  const n = Math.round(Number(value));
-  if (!Number.isFinite(n)) return 1;
-  return Math.min(5, Math.max(1, n));
-}
-
-function axesFromTool(raw: unknown): Axes | null {
-  if (!raw || typeof raw !== "object") return null;
-  const row = raw as Record<string, unknown>;
-  return {
-    boldness: clampAxis(row.boldness),
-    physical: clampAxis(row.physical),
-    time: clampAxis(row.time),
-    scarcity: clampAxis(row.scarcity),
-    cultural: clampAxis(row.cultural),
-    aesthetics: clampAxis(row.aesthetics),
-  };
-}
-
 // Codes repeat per owner (everyone has an A1), so only show the sender theirs.
 function claimableTasks(miss: ClaimFallthrough): TaskRow[] {
   return tasksClaimableBy(miss.tasks, miss.claimant.id, miss.claimantTeamIds);
@@ -297,7 +240,6 @@ function userPrompt(opts: {
   destination: string | null;
   day: number;
   history: { role: string; text: string }[];
-  offTopicCount: number;
 }): string {
   const history = opts.history
     .map((line) => `${line.role}: ${line.text}`)
@@ -311,7 +253,6 @@ function userPrompt(opts: {
     // Not rules: never quote one back as a reason something cannot happen.
     `sender's own settings (editable by them any time, not rules): ${JSON.stringify(opts.survey)}`,
     `open tasks: ${opts.openTasks.map((t) => `${t.code} ${t.title}`).join("; ") || "(none)"}`,
-    `consecutive off-topic: ${opts.offTopicCount}`,
     `recent chat:\n${history || "(none)"}`,
     `message:\n${opts.text}`,
   ].join("\n");
@@ -377,8 +318,8 @@ export async function handleConversation(
     return;
   }
   // No hourly reply cap: it refused people who had addressed the bot, which
-  // is exactly who should get an answer. Chattiness is handled by the
-  // off-topic escalation below, which shortens replies instead of refusing.
+  // is exactly who should get an answer. The model prompt keeps replies brief
+  // when the message itself calls for a short answer.
 
   const provider = deps.provider ?? miss.provider ?? new GeminiProvider();
   const open = openTasksFor(claimableTasks(miss), miss.claims);
@@ -422,7 +363,6 @@ export async function handleConversation(
           destination: miss.trip.destination,
           day,
           history,
-          offTopicCount: getOffTopicCount(miss.chatId),
         }),
       },
     ],
@@ -504,26 +444,14 @@ export async function handleConversation(
     },
   });
 
-  const onTopic = isOnTopicExchange({
-    toolNames: loop.toolNames,
-    text: miss.text,
-    destination: miss.trip.destination,
-    taskTitles: open.map((task) => task.title),
-    neighborhoods: open
-      .map((task) => task.neighborhood)
-      .filter((value): value is string => Boolean(value)),
-  });
-  const next = nextOffTopicCount(getOffTopicCount(miss.chatId), !onTopic);
-  setOffTopicCount(miss.chatId, next);
-  const policy = offTopicPolicy(next);
-  // "X is still hunting" needs someone else to be X: no trailer on a solo trip.
-  const trailing =
-    miss.people.length > 1 ? [...miss.people].sort((a, b) => a.score - b.score)[0] : null;
-  const redirect = conversationRedirect({
-    task: open[0] ? { code: open[0].code } : null,
-    nearby: open[0]?.neighborhood || miss.trip.destination,
-    trailingName: trailing?.display_name ?? null,
-  });
+  // Record tool names for tracing, but never their arguments (which can
+  // contain private settings) or message/profile contents.
+  if (loop.toolNames.length > 0) {
+    console.info("[japlan.conversation] tools", {
+      chatId: miss.chatId,
+      tools: loop.toolNames,
+    });
+  }
 
   if (loop.sentByTool) {
     return;
@@ -532,8 +460,8 @@ export async function handleConversation(
   const reply = finalizeConversationReply({
     text: loop.text,
     others,
-    policy,
-    redirect,
+    policy: { consecutive: 0, redirect: false, oneLine: false },
+    redirect: "",
     fallback: CONVERSATION_FALLBACK,
     privacyLine: CONVERSATION_PRIVACY_LINE,
   });
@@ -616,25 +544,9 @@ async function executeConversationTool(
     return { result: { ok: true }, sent: false };
   }
   if (name === "propose_freeform_claim") {
-    const clean = stripPointFields(args);
-    const title = typeof clean.title === "string" ? clean.title.trim() : "";
-    const axes = axesFromTool(clean.axes);
-    if (!title || !axes) {
-      return { result: { ok: false, reason: "need_title_and_axes" }, sent: false };
-    }
-    const extraction: FreeformExtraction = {
-      is_completed_activity: true,
-      title,
-      place_name:
-        typeof clean.place_name === "string" ? clean.place_name : null,
-      neighborhood:
-        typeof clean.neighborhood === "string" ? clean.neighborhood : null,
-      duration_minutes: null,
-      lat: null,
-      lng: null,
-      category: null,
-      axes,
-    };
+    // The model's tool call is only a suggestion to check for a claim. The
+    // claim handler re-extracts the activity from the original message and
+    // rejects plans or intentions that are not completed activities.
     const sent = await submitFreeformClaim({
       text: miss.text,
       hasPhoto: miss.hasPhoto,
@@ -646,10 +558,9 @@ async function executeConversationTool(
       claims: miss.claims,
       send: miss.send,
       provider: miss.provider,
-      extraction,
       nextStep: miss.nextStep,
     });
-    return { result: { ok: sent, title }, sent };
+    return { result: { ok: sent }, sent };
   }
   if (name === "request_photo_bonus") {
     if (!miss.photo) {
@@ -686,18 +597,6 @@ async function executeConversationTool(
       provider: miss.provider,
     });
     return { result: { ok: true, code: task.code }, sent: true };
-  }
-  if (name === "show_my_profile") {
-    const send = miss.send ?? sendText;
-    const text = profileLine(await profileFor(miss.trip, miss.claimant.id));
-    // DM-private, exactly like survey_json: never in the group.
-    if (miss.isDm) {
-      await send(miss.chatId, text);
-    } else {
-      await sendDM(miss.claimant.phone, text);
-      await send(miss.chatId, PROFILE_IN_DM_LINE);
-    }
-    return { result: { ok: true }, sent: true };
   }
   if (
     name === "update_my_setting" ||

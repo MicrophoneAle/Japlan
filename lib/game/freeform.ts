@@ -3,6 +3,28 @@ import type { Axes } from "./scoring";
 export const FREEFORM_PHOTO_BONUS_MAX = 2;
 export const FREEFORM_SOURCE = "freeform";
 
+// A model tool call can suggest checking a claim, but plans and activities
+// still in progress are not completed claims. Catch clear intent/progressive
+// wording before asking the extractor to score anything.
+export function isLikelyUncompletedActivity(text: string): boolean {
+  const normalized = text.toLowerCase().replace(/[’‘]/g, "'");
+  const completedCue =
+    /\b(?:(?:already|just)\s+)?(?:went|finished|completed|tried|visited|played|hiked|climbed|walked|ran|ate|saw|rode|swam|made|took|watched|bowled|danced)\b/.test(
+      normalized,
+    );
+  if (completedCue) return false;
+
+  const futureCue =
+    /\b(?:tomorrow|later|tonight|soon|next\s+(?:week|month|year)|this\s+weekend|gonna|going\s+to|planning\s+to|plan\s+to|about\s+to|want\s+to|wanna|will|let's)\b/.test(
+      normalized,
+    );
+  const inProgressCue =
+    /\b(?:i|we|you|they|he|she)\s+(?:am|'m|are|'re|is|'s)\s+[a-z][a-z'-]*ing\b/.test(
+      normalized,
+    );
+  return futureCue || inProgressCue;
+}
+
 export type FreeformExtraction = {
   is_completed_activity: boolean;
   title: string;
