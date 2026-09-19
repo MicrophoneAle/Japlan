@@ -136,7 +136,7 @@ describe("solo setup and survey", () => {
     expect(trip().state).toBe("active");
     // One closing message, not "that's everything" then a separate "we're live".
     expect(last()).toBe(
-      "that's everything, thanks. we're live. every morning your tasks arrive by dm, and a code like A1 claims one. first board lands tomorrow at 8am.",
+      "that's everything, thanks. we're live. every morning your tasks arrive by dm, and a code like A1 claims one. first board lands oct 17 at 8am.",
     );
     expect(h.sent.filter((m) => /we're live/.test(m.text))).toHaveLength(1);
   });
@@ -148,8 +148,9 @@ describe("asking for the day's plan", () => {
     for (let i = 0; i < 25 && trip().state !== "active"; i++) await say("skip");
     const callsBefore = h.modelCalls;
 
+    // The trip (oct 17-20) has not started: say when it does.
     await say("Please give me the first day plans");
-    expect(last()).toBe("no board yet. the first one lands tomorrow at 8am.");
+    expect(last()).toBe("the trip starts oct 17. first board lands oct 17 at 8am.");
     expect(h.modelCalls).toBe(callsBefore);
     expect(h.sent.some((m) => /something broke/.test(m.text))).toBe(false);
   });
@@ -158,6 +159,7 @@ describe("asking for the day's plan", () => {
     await soloThroughSetup();
     for (let i = 0; i < 25 && trip().state !== "active"; i++) await say("skip");
     const me = h.db.table("participants")[0];
+    trip().start_date = "2026-09-19"; // the trip is underway today
     h.db.seed("tasks", [
       {
         trip_id: trip().id, participant_id: me.id, team_id: null, code: "A1",

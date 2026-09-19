@@ -21,11 +21,9 @@ import {
 import {
   CONVERSATION_FALLBACK,
   CONVERSATION_PRIVACY_LINE,
-  boardClearedLine,
   CONVERSATION_SYSTEM_PROMPT,
   conversationCapLine,
   conversationRedirect,
-  noBoardYetLine,
 } from "@/lib/game/copy";
 import type { FreeformExtraction } from "@/lib/game/freeform";
 import {
@@ -37,12 +35,12 @@ import {
 import type { Axes } from "@/lib/game/scoring";
 import type { SurveyAnswers } from "@/lib/game/survey";
 import { currentTripDay } from "@/lib/handlers/daily-board";
-import { formatPersonalBoard } from "@/lib/game/board";
 import {
   describeBoardTime,
   isBoardRequest,
-  nextScheduledBoard,
+  nextBoardAt,
 } from "@/lib/game/board-schedule";
+import { answerBoardRequest } from "@/lib/handlers/board-request";
 import {
   applyLatePhotoBonus,
   submitFreeformClaim,
@@ -204,53 +202,24 @@ function userPrompt(opts: {
   ].join("\n");
 }
 
-// Today's board for this person, or when the next one lands. Deterministic:
-// the same schedule the cron follows (lib/game/board-schedule.ts).
-export function boardStatus(
-  miss: ClaimFallthrough,
-  now: number,
-): { reply: string; tool: Record<string, unknown> } {
+// Board facts for the get_open_tasks tool. Read-only: making a board is
+// answerBoardRequest's job, reached before the model for any board request.
+function boardInfo(miss: ClaimFallthrough, now: number): Record<string, unknown> {
   const at = new Date(now);
   const day = currentTripDay(miss.trip, at);
   const todays = claimableTasks(miss).filter((task) => task.day === day);
   const openToday = todays.filter((task) => isOpenTask(task.id, miss.claims));
-  const boardToday = miss.tasks.some((task) => task.day === day);
-  const next = nextScheduledBoard({
-    state: miss.trip.state,
-    destination: miss.trip.destination,
-    timezone: miss.trip.timezone,
-    now: at,
-    todayBoardExists: boardToday,
+  const next = nextBoardAt(miss.trip, at, {
+    todayBoardExists: miss.tasks.some((task) => task.day === day),
   });
-  const when = next.at ? describeBoardTime(next.at, at, miss.trip.timezone) : null;
-  const tool = {
+  return {
     day,
     today_open: openToday.map((task) => ({ code: task.code, title: task.title })),
     today_cleared: todays.length > 0 && openToday.length === 0,
-    next_board: when,
-    next_board_unavailable: next.at === null ? next.reason : null,
+    next_board: next ? describeBoardTime(next.at, at, miss.trip.timezone) : null,
+    // A board can always be made on request: "japlan plans".
+    ask_for_board: "japlan plans",
   };
-
-  let reply: string;
-  if (openToday.length > 0) {
-    reply = formatPersonalBoard({
-      day,
-      tasks: openToday.map((task) => ({
-        code: task.code,
-        title: task.title,
-        base_points: task.base_points,
-      })),
-    });
-  } else if (todays.length > 0) {
-    reply = boardClearedLine(when);
-  } else {
-    reply = noBoardYetLine(
-      next.at === null
-        ? { reason: next.reason }
-        : { when: describeBoardTime(next.at, at, miss.trip.timezone), first: miss.tasks.length === 0 },
-    );
-  }
-  return { reply, tool };
 }
 
 export async function handleConversation(
@@ -267,15 +236,10 @@ export async function handleConversation(
   const now = miss.now ?? Date.now();
   const send = miss.send ?? sendText;
 
-  // "give me the first day plans": answer from the board, no model needed.
-  // Asking before a board exists is normal, not an error.
+  // "japlan plans", "japlan tomorrow": the board for that day, made now if it
+  // does not exist yet. No model; asking before a board exists is normal.
   if (isBoardRequest(miss.text)) {
-    const status = boardStatus(miss, now);
-    console.info("[japlan.conversation] board request", {
-      chatId: miss.chatId,
-      ...status.tool,
-    });
-    await send(miss.chatId, status.reply);
+    await answerBoardRequest(miss, now);
     return;
   }
   if (conversationalCapReached(miss.chatId, now)) {
@@ -456,7 +420,7 @@ async function executeConversationTool(
     }));
     // The board state too, so "what's the plan" can say when the next board
     // lands instead of guessing.
-    const board = boardStatus(miss, miss.now ?? Date.now()).tool;
+    const board = boardInfo(miss, miss.now ?? Date.now());
     return { result: { tasks, board }, sent: false };
   }
   if (name === "no_action") {

@@ -54,6 +54,30 @@ function zoneOffsetMs(instant: Date, zone: string): number {
   return asUtc - Math.floor(instant.getTime() / 1000) * 1000;
 }
 
+// "07:05": local wall-clock time, zero-padded, comparable as a string.
+export function localTimeHHMM(now: Date, timezone: string | null | undefined): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: safeZone(timezone),
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(now);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "00";
+  return `${get("hour").padStart(2, "0")}:${get("minute").padStart(2, "0")}`;
+}
+
+export function addDaysIso(iso: string, days: number): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+export function daysBetweenIso(from: string, to: string): number {
+  return Math.round(
+    (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000,
+  );
+}
+
 // A real IANA zone the runtime knows ("Asia/Tokyo"), not "JST" or "UTC+9".
 export function isValidTimeZone(zone: string | null | undefined): zone is string {
   if (!zone || !/^[A-Za-z]+(?:\/[A-Za-z0-9_+-]+)+$/.test(zone)) return false;

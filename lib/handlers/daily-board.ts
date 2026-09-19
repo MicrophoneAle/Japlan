@@ -35,6 +35,7 @@ import { applySoloVerification } from "@/lib/game/solo";
 import { endOfLocalDay, localDateString, localHour } from "@/lib/game/time";
 
 import { TRIP_COLS } from "@/lib/db/columns";
+import { boardDueNow, tripDayForDate } from "@/lib/game/board-schedule";
 
 // Matches tasks_owner_code_key: codes are unique per owner per day, not per trip.
 const TASK_CODE_CONFLICT = "trip_id,day,participant_id,team_id,code";
@@ -64,6 +65,12 @@ function preferenceText(answers: SurveyAnswers): string {
 
 export function isLocalMorning(now: Date, timezone: string): boolean {
   return localHour(now, timezone) === 8;
+}
+
+// The trip day a local date falls on; falls back to the current day when the
+// trip has no start date (only in tests and legacy rows).
+export function tripDayOn(trip: TripRow, date: string, now: Date): number {
+  return trip.start_date ? tripDayForDate(trip.start_date, date) : currentTripDay(trip, now);
 }
 
 export function currentTripDay(trip: TripRow, now: Date): number {
@@ -264,13 +271,16 @@ export async function generateValidatedBoard(opts: {
   profile: DestinationProfile;
   weather: DayWeather;
   now?: Date;
+  // The trip-local date the board is for. Default: today. A future date is an
+  // on-demand provisional board; everything else in the pipeline is the same.
+  date?: string;
   // Codes already taken today by tasks that must survive (claimed ones).
   reservedCodes?: ExistingDayCode[];
 }): Promise<{ tasks: ProposedTask[]; usedFallback: boolean; day: number }> {
   const now = opts.now ?? new Date();
-  const day = currentTripDay(opts.trip, now);
-  const today = localDateString(now, opts.trip.timezone || "UTC");
-  const expiresAt = endOfLocalDay(today, opts.trip.timezone || "UTC");
+  const date = opts.date ?? localDateString(now, opts.trip.timezone || "UTC");
+  const day = tripDayOn(opts.trip, date, now);
+  const expiresAt = endOfLocalDay(date, opts.trip.timezone || "UTC");
   const assignees = await loadAssignees(opts.trip.id, opts.people);
   const ratings = await yesterdayRatings(opts.trip.id);
   const gap = scoreGapText(opts.people);
@@ -383,20 +393,63 @@ export async function generateValidatedBoard(opts: {
   return { tasks: coded, usedFallback, day };
 }
 
-export async function runDailyBoardForTrip(
-  trip: TripRow,
-  opts: { now?: Date } = {},
-): Promise<{ posted: boolean; day: number; count: number; usedFallback: boolean }> {
-  const supabase = getServiceClient();
-  const peopleRes = await supabase
-    .from("participants")
-    .select(
-      "id, trip_id, phone, display_name, score, survey_json, survey_state, sidequests_muted, consented_at",
-    )
-    .eq("trip_id", trip.id);
-  if (peopleRes.error) throw peopleRes.error;
-  const people = (peopleRes.data ?? []) as ParticipantRow[];
+const PARTICIPANT_COLS =
+  "id, trip_id, phone, display_name, score, survey_json, survey_state, sidequests_muted, consented_at";
 
+async function tripPeople(tripId: string): Promise<ParticipantRow[]> {
+  const res = await getServiceClient()
+    .from("participants")
+    .select(PARTICIPANT_COLS)
+    .eq("trip_id", tripId);
+  if (res.error) throw res.error;
+  return (res.data ?? []) as ParticipantRow[];
+}
+
+async function weatherFor(
+  profile: DestinationProfile | null,
+  date: string,
+  timezone: string,
+): Promise<DayWeather> {
+  const unknown: DayWeather = {
+    temperatureC: null,
+    precipitationChance: null,
+    summary: "unknown",
+    indoorPreferred: false,
+  };
+  if (!profile?.center) return unknown;
+  try {
+    return await fetchDayWeather({
+      lat: profile.center.lat,
+      lng: profile.center.lng,
+      date,
+      timezone,
+    });
+  } catch (err) {
+    console.error("[japlan.generate] weather failed", err);
+    return unknown;
+  }
+}
+
+export type BuiltBoard = {
+  day: number;
+  date: string;
+  rows: Omit<TaskRow, "id">[];
+  weatherLine: string | null;
+  usedFallback: boolean;
+  people: ParticipantRow[];
+};
+
+// THE board pipeline: profile, weather for that date, generation, the
+// validation rejects, scoring, per-owner codes, and the write. The cron and
+// on-demand requests both come through here, so a board is the same however
+// it was asked for. Claimed tasks on the day are never overwritten.
+export async function buildBoardForDate(
+  trip: TripRow,
+  opts: { date: string; now?: Date },
+): Promise<BuiltBoard> {
+  const now = opts.now ?? new Date();
+  const timezone = trip.timezone || "UTC";
+  const people = await tripPeople(trip.id);
   let profile: DestinationProfile;
   try {
     profile = await assembleDestinationProfile({ trip, people });
@@ -404,81 +457,347 @@ export async function runDailyBoardForTrip(
     console.error("[japlan.generate] destination profile failed", err);
     throw err;
   }
+  const weather = await weatherFor(profile, opts.date, timezone);
+  const day = tripDayOn(trip, opts.date, now);
+  const claimedOnDay = await claimedTasksOnDay(trip.id, day);
 
-  const timezone = trip.timezone || "UTC";
-  const now = opts.now ?? new Date();
-  const today = localDateString(now, timezone);
-  let weather: DayWeather = {
-    temperatureC: null,
-    precipitationChance: null,
-    summary: "unknown",
-    indoorPreferred: false,
-  };
-  if (profile.center) {
-    try {
-      weather = await fetchDayWeather({
-        lat: profile.center.lat,
-        lng: profile.center.lng,
-        date: today,
-        timezone,
-      });
-    } catch (err) {
-      console.error("[japlan.generate] weather failed", err);
-    }
-  }
-
-  const lapsed = await sweepLapsedPeerClaims(trip.id, now);
-  const claimedToday = await claimedTasksOnDay(trip.id, currentTripDay(trip, now));
-
-  const { tasks, usedFallback, day } = await generateValidatedBoard({
+  const { tasks, usedFallback } = await generateValidatedBoard({
     trip,
     people,
     profile,
     weather,
     now,
-    reservedCodes: claimedToday,
+    date: opts.date,
+    reservedCodes: claimedOnDay,
   });
 
   const tripDays = tripLengthDays(trip.start_date, trip.end_date);
-  const expiresAt = endOfLocalDay(today, timezone);
-  const generated = tasks.map((task) => {
-    const persisted = persistableTask({
-      tripId: trip.id,
-      day,
-      tripDays,
-      task,
-      participantId: task.participantId ?? null,
-      teamId: task.teamId ?? null,
-      expiresAt,
-      isSolo: Boolean(trip.is_solo),
-    });
-    return persisted.row;
-  });
-  const rows = withoutClaimedCollisions(generated, claimedToday, trip.id);
-
+  const expiresAt = endOfLocalDay(opts.date, timezone);
+  const generated = tasks.map(
+    (task) =>
+      persistableTask({
+        tripId: trip.id,
+        day,
+        tripDays,
+        task,
+        participantId: task.participantId ?? null,
+        teamId: task.teamId ?? null,
+        expiresAt,
+        isSolo: Boolean(trip.is_solo),
+      }).row,
+  );
+  const rows = withoutClaimedCollisions(generated, claimedOnDay, trip.id);
   if (rows.length > 0) {
-    const { error } = await supabase.from("tasks").upsert(rows, {
+    const { error } = await getServiceClient().from("tasks").upsert(rows, {
       onConflict: TASK_CODE_CONFLICT,
     });
     if (error) throw error;
   }
-
-  const weatherLine = formatWeatherLine(weather);
-  await deliverMorningBoards({
-    trip,
-    people,
-    rows,
-    day,
-    weatherLine,
-    lapsed,
-  });
-  console.info("[japlan.generate] board posted", {
+  console.info("[japlan.generate] board built", {
     tripId: trip.id,
     day,
+    date: opts.date,
     count: rows.length,
     usedFallback,
   });
-  return { posted: true, day, count: rows.length, usedFallback };
+  return { day, date: opts.date, rows, weatherLine: formatWeatherLine(weather), usedFallback, people };
+}
+
+// Build today's board and deliver it to everyone. The force=1 path.
+export async function runDailyBoardForTrip(
+  trip: TripRow,
+  opts: { now?: Date } = {},
+): Promise<{ posted: boolean; day: number; count: number; usedFallback: boolean }> {
+  const now = opts.now ?? new Date();
+  // A manual run for a trip outside its dates builds the nearest real day
+  // (day 1 before the trip, the last day after it) rather than day 0 or -3.
+  const today = localDateString(now, trip.timezone || "UTC");
+  const date =
+    trip.start_date && today < trip.start_date
+      ? trip.start_date
+      : trip.end_date && today > trip.end_date
+        ? trip.end_date
+        : today;
+  const lapsed = await sweepLapsedPeerClaims(trip.id, now);
+  const built = await buildBoardForDate(trip, { date, now });
+  await deliverMorningBoards({
+    trip,
+    people: built.people,
+    rows: built.rows,
+    day: built.day,
+    weatherLine: built.weatherLine,
+    lapsed,
+  });
+  await upsertBoardRow(trip.id, built.day, date, {
+    status: "ready",
+    provisional: false,
+    delivered_at: new Date().toISOString(),
+  });
+  console.info("[japlan.generate] board posted", {
+    tripId: trip.id,
+    day: built.day,
+    count: built.rows.length,
+    usedFallback: built.usedFallback,
+  });
+  return { posted: true, day: built.day, count: built.rows.length, usedFallback: built.usedFallback };
+}
+
+// ---- boards rows: existence, provisional, delivery, and the generation lock.
+
+export type BoardRow = {
+  id: string;
+  trip_id: string;
+  day: number;
+  local_date: string;
+  status: string;
+  provisional: boolean;
+  requested_by: string | null;
+  delivered_at: string | null;
+  updated_at: string | null;
+};
+
+// A generating row older than this is from a crashed run and may be retaken.
+const STALE_GENERATING_MS = 10 * 60 * 1000;
+
+export async function getBoard(tripId: string, day: number): Promise<BoardRow | null> {
+  const { data, error } = await getServiceClient()
+    .from("boards")
+    .select("id, trip_id, day, local_date, status, provisional, requested_by, delivered_at, updated_at")
+    .eq("trip_id", tripId)
+    .eq("day", day)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as BoardRow | null) ?? null;
+}
+
+// Insert-first lock: only the caller whose insert succeeds generates the day.
+export async function lockNewBoard(
+  tripId: string,
+  day: number,
+  date: string,
+  opts: { provisional: boolean; requestedBy?: string | null },
+): Promise<BoardRow | null> {
+  const { data, error } = await getServiceClient()
+    .from("boards")
+    .insert({
+      trip_id: tripId,
+      day,
+      local_date: date,
+      status: "generating",
+      provisional: opts.provisional,
+      requested_by: opts.requestedBy ?? null,
+    })
+    .select("id, trip_id, day, local_date, status, provisional, requested_by, delivered_at, updated_at")
+    .maybeSingle();
+  if (error) {
+    if (error.code === "23505") return null;
+    throw error;
+  }
+  return data as BoardRow;
+}
+
+// Retake a board for regeneration: ready+provisional, or a stale generating
+// row. Conditional update, so two ticks cannot both retake it.
+async function relockBoard(board: BoardRow, now: Date): Promise<boolean> {
+  let query = getServiceClient()
+    .from("boards")
+    .update({ status: "generating", updated_at: now.toISOString() })
+    .eq("id", board.id);
+  if (board.status === "generating") {
+    query = query
+      .eq("status", "generating")
+      .lte("updated_at", new Date(now.getTime() - STALE_GENERATING_MS).toISOString());
+  } else {
+    query = query.eq("status", "ready").eq("provisional", true);
+  }
+  const { data, error } = await query.select("id");
+  if (error) throw error;
+  return (data ?? []).length > 0;
+}
+
+export async function updateBoard(id: string, patch: Record<string, unknown>): Promise<void> {
+  const { error } = await getServiceClient()
+    .from("boards")
+    .update({ ...patch, updated_at: new Date().toISOString() })
+    .eq("id", id);
+  if (error) throw error;
+}
+
+async function upsertBoardRow(
+  tripId: string,
+  day: number,
+  date: string,
+  patch: Record<string, unknown>,
+): Promise<void> {
+  const existing = await getBoard(tripId, day);
+  if (existing) {
+    await updateBoard(existing.id, patch);
+    return;
+  }
+  const { error } = await getServiceClient()
+    .from("boards")
+    .insert({ trip_id: tripId, day, local_date: date, ...patch });
+  if (error && error.code !== "23505") throw error;
+}
+
+export async function tasksForDay(tripId: string, day: number): Promise<TaskRow[]> {
+  const { data, error } = await getServiceClient()
+    .from("tasks")
+    .select(
+      "id, trip_id, participant_id, team_id, code, title, tier, axes_json, base_points, photo_bonus_max, verification, day, expires_at, neighborhood, source",
+    )
+    .eq("trip_id", tripId)
+    .eq("day", day);
+  if (error) throw error;
+  return (data ?? []) as TaskRow[];
+}
+
+// Deliver a board that already exists (made on demand earlier) to everyone
+// who has not seen it. People who asked for it already got it in their reply.
+export async function deliverExistingBoard(trip: TripRow, day: number, date: string, now: Date) {
+  const people = await tripPeople(trip.id);
+  const asked = await getServiceClient()
+    .from("board_requests")
+    .select("participant_id")
+    .eq("trip_id", trip.id)
+    .eq("day", day);
+  if (asked.error) throw asked.error;
+  const seen = new Set(
+    (asked.data ?? []).map((row) => (row as { participant_id: string }).participant_id),
+  );
+  const lapsed = await sweepLapsedPeerClaims(trip.id, now);
+  const profile = await cachedProfileOf(trip);
+  const weather = await weatherFor(profile, date, trip.timezone || "UTC");
+  const rows = (await tasksForDay(trip.id, day)).map(({ id: _id, ...row }) => {
+    void _id;
+    return row;
+  });
+  await deliverMorningBoards({
+    trip,
+    people: people.filter((p) => !seen.has(p.id)),
+    allPeople: people,
+    rows,
+    day,
+    weatherLine: formatWeatherLine(weather),
+    lapsed,
+  });
+}
+
+async function cachedProfileOf(trip: TripRow): Promise<DestinationProfile | null> {
+  const raw = trip.destination_profile_json;
+  return raw && typeof raw === "object" ? (raw as DestinationProfile) : null;
+}
+
+async function dayHasClaims(tripId: string, day: number): Promise<boolean> {
+  return (await claimedTasksOnDay(tripId, day)).length > 0;
+}
+
+export async function deleteUnclaimedTasksForDay(tripId: string, day: number): Promise<void> {
+  const claimed = new Set((await claimedTasksOnDay(tripId, day)).map((c) => c.code));
+  const tasks = await tasksForDay(tripId, day);
+  const drop = tasks.filter((t) => !claimed.has(t.code)).map((t) => t.id);
+  if (drop.length === 0) return;
+  const { error } = await getServiceClient().from("tasks").delete().in("id", drop);
+  if (error) throw error;
+}
+
+function boardLog(step: string, fields: Record<string, unknown>) {
+  console.info("[japlan.board] step", { step, ...fields });
+}
+
+// One cron tick for one trip whose board is due today:
+//  - no board: generate and deliver to everyone
+//  - provisional (made ahead on request): regenerate with today's weather and
+//    ratings unless something on it was claimed, then deliver
+//  - made on demand earlier today, not yet delivered: deliver it
+//  - delivered: nothing
+export async function tickBoard(trip: TripRow, date: string, day: number, now: Date) {
+  let board = await getBoard(trip.id, day);
+
+  if (!board) {
+    if ((await tasksForDay(trip.id, day)).length > 0) {
+      // Tasks from before boards rows existed: treat as delivered.
+      await upsertBoardRow(trip.id, day, date, {
+        status: "ready",
+        delivered_at: now.toISOString(),
+      });
+      boardLog("tick.legacy_tasks", { tripId: trip.id, day });
+      return "skipped";
+    }
+    const locked = await lockNewBoard(trip.id, day, date, { provisional: false });
+    if (!locked) {
+      boardLog("tick.lock_lost", { tripId: trip.id, day });
+      return "skipped";
+    }
+    await generateAndDeliver(trip, locked, date, now);
+    return "generated";
+  }
+
+  if (board.status === "generating") {
+    if (!(await relockBoard(board, now))) {
+      boardLog("tick.in_progress", { tripId: trip.id, day });
+      return "skipped";
+    }
+    await deleteUnclaimedTasksForDay(trip.id, day);
+    await generateAndDeliver(trip, board, date, now);
+    return "generated";
+  }
+
+  if (board.provisional) {
+    if (await dayHasClaims(trip.id, day)) {
+      // Someone already claimed from the provisional board: it stands.
+      await updateBoard(board.id, { provisional: false });
+      board = { ...board, provisional: false };
+      boardLog("tick.provisional_kept", { tripId: trip.id, day, reason: "claimed" });
+    } else if (await relockBoard(board, now)) {
+      await deleteUnclaimedTasksForDay(trip.id, day);
+      boardLog("tick.provisional_regenerate", { tripId: trip.id, day });
+      await generateAndDeliver(trip, board, date, now);
+      return "regenerated";
+    } else {
+      return "skipped";
+    }
+  }
+
+  if (!board.delivered_at) {
+    await deliverExistingBoard(trip, day, date, now);
+    await updateBoard(board.id, { delivered_at: now.toISOString() });
+    boardLog("tick.delivered_existing", { tripId: trip.id, day });
+    return "delivered";
+  }
+  return "skipped";
+}
+
+async function generateAndDeliver(trip: TripRow, board: BoardRow, date: string, now: Date) {
+  try {
+    const lapsed = await sweepLapsedPeerClaims(trip.id, now);
+    const built = await buildBoardForDate(trip, { date, now });
+    await deliverMorningBoards({
+      trip,
+      people: built.people,
+      rows: [...(await tasksForDay(trip.id, built.day))].map(({ id: _id, ...row }) => {
+        void _id;
+        return row;
+      }),
+      day: built.day,
+      weatherLine: built.weatherLine,
+      lapsed,
+    });
+    await updateBoard(board.id, {
+      status: "ready",
+      provisional: false,
+      delivered_at: new Date().toISOString(),
+    });
+    boardLog("tick.generated", { tripId: trip.id, day: built.day, count: built.rows.length });
+  } catch (err) {
+    // Leave the row generating; it goes stale and the next tick retakes it.
+    boardLog("tick.generate_failed", {
+      tripId: trip.id,
+      day: board.day,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
 }
 
 // Tasks on this day that already have any claim row. A forced re-run must
@@ -578,7 +897,10 @@ async function sweepLapsedPeerClaims(
 
 async function deliverMorningBoards(opts: {
   trip: TripRow;
+  // Who gets their board by DM now.
   people: ParticipantRow[];
+  // Everyone on the trip, for the group standings. Default: people.
+  allPeople?: ParticipantRow[];
   rows: Omit<TaskRow, "id">[];
   day: number;
   weatherLine: string | null;
@@ -658,7 +980,7 @@ async function deliverMorningBoards(opts: {
   const standings = formatMorningStandings({
     day: opts.day,
     weatherLine: opts.weatherLine,
-    standings: opts.people.map((p) => ({
+    standings: (opts.allPeople ?? opts.people).map((p) => ({
       display_name: p.display_name,
       score: p.score,
     })),
@@ -671,8 +993,11 @@ export async function refillPersonalTasksIfNeeded(opts: {
   claimant: ParticipantRow;
   people: ParticipantRow[];
   remainingOpenPersonal: number;
-}): Promise<void> {
-  if (opts.remainingOpenPersonal > 0) return;
+  // false: return the rows instead of DMing them, so an on-demand reply can
+  // carry the refill in its one message.
+  deliver?: boolean;
+}): Promise<Omit<TaskRow, "id">[]> {
+  if (opts.remainingOpenPersonal > 0) return [];
 
   const supabase = getServiceClient();
   const peopleRes = await supabase
@@ -689,7 +1014,7 @@ export async function refillPersonalTasksIfNeeded(opts: {
     profile = await assembleDestinationProfile({ trip: opts.trip, people });
   } catch (err) {
     console.error("[japlan.generate] refill profile failed", err);
-    return;
+    return [];
   }
 
   const now = new Date();
@@ -809,11 +1134,12 @@ export async function refillPersonalTasksIfNeeded(opts: {
       isSolo: Boolean(opts.trip.is_solo),
     }).row,
   );
-  if (rows.length === 0) return;
+  if (rows.length === 0) return [];
   const { error } = await supabase.from("tasks").upsert(rows, {
     onConflict: TASK_CODE_CONFLICT,
   });
   if (error) throw error;
+  if (opts.deliver === false) return rows;
   const text = formatPersonalBoard({
     day,
     tasks: rows.map((row) => ({
@@ -832,6 +1158,7 @@ export async function refillPersonalTasksIfNeeded(opts: {
     participantId: opts.claimant.id,
     count: rows.length,
   });
+  return rows;
 }
 
 export async function runDailyBoards(opts: {
@@ -858,24 +1185,32 @@ export async function runDailyBoards(opts: {
       skipped.push(trip.id);
       continue;
     }
-    const timezone = trip.timezone || "UTC";
-    if (!opts.force && !isLocalMorning(now, timezone)) {
+    if (opts.force) {
+      // Manual run (testing): today's board now, whatever the time or dates.
+      await runDailyBoardForTrip(trip, { now });
+      ran.push(trip.id);
+      continue;
+    }
+    // Due when local time is at or after board_time, inside the trip's dates.
+    // Any tick after board_time posts a missing board, so a late or missed
+    // tick recovers instead of skipping the day.
+    const due = boardDueNow(trip, now);
+    if (!due.due) {
+      boardLog("tick.not_due", { tripId: trip.id, reason: due.reason });
       skipped.push(trip.id);
       continue;
     }
-    const day = currentTripDay(trip, now);
-    const existing = await getServiceClient()
-      .from("tasks")
-      .select("id")
-      .eq("trip_id", trip.id)
-      .eq("day", day)
-      .limit(1);
-    if (!opts.force && existing.data && existing.data.length > 0) {
+    try {
+      const outcome = await tickBoard(trip, due.date, due.day, now);
+      (outcome === "skipped" ? skipped : ran).push(trip.id);
+    } catch (err) {
+      // One trip failing must not stop the rest of the tick.
+      console.error("[japlan.board] tick failed", {
+        tripId: trip.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
       skipped.push(trip.id);
-      continue;
     }
-    await runDailyBoardForTrip(trip, { now });
-    ran.push(trip.id);
   }
   return { ran, skipped };
 }

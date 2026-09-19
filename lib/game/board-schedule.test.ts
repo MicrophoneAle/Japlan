@@ -1,90 +1,162 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  BOARD_LOCAL_HOUR,
-  CRON_UTC_HOUR,
+  DEFAULT_BOARD_TIME,
+  boardDueNow,
   describeBoardTime,
+  formatBoardTime,
   isBoardRequest,
-  nextScheduledBoard,
+  nextBoardAt,
+  parseBoardDay,
+  parseBoardTime,
+  tripDayForDate,
 } from "./board-schedule";
+import { detectBoardTimeCommand } from "./commands";
 import { QUESTIONS, QUESTION_ORDER } from "./survey-questions";
 import { GROUP_INTRO, SETUP_COMPLETE, SURVEY_DONE_DM, setupPrompt } from "./copy";
 import { GROUP_ONLY_QUESTIONS, applyReply, startSurvey } from "./survey";
 import { nextSetupQuestion } from "./setup";
 
-describe("board schedule mirrors the cron", () => {
-  it("uses the hour vercel.json actually schedules", () => {
-    const vercel = JSON.parse(readFileSync(join(process.cwd(), "vercel.json"), "utf8"));
-    const schedule = vercel.crons.find((c: { path: string }) => c.path === "/api/cron/daily-board")
-      .schedule as string;
-    expect(schedule).toBe(`0 ${CRON_UTC_HOUR} * * *`);
-    expect(BOARD_LOCAL_HOUR).toBe(8);
+// Tokyo trip, Sep 19 to 23. 2026-09-19 is a Saturday.
+const tokyo = {
+  start_date: "2026-09-19",
+  end_date: "2026-09-23",
+  timezone: "Asia/Tokyo",
+  board_time: "08:00",
+};
+const jst = (local: string) => new Date(`${local}+09:00`);
+
+describe("when a board is due", () => {
+  it("is due at or after board_time, not only on the exact hour", () => {
+    expect(boardDueNow(tokyo, jst("2026-09-20T07:59:00"))).toEqual({
+      due: false,
+      reason: "before_board_time",
+    });
+    expect(boardDueNow(tokyo, jst("2026-09-20T08:00:00"))).toEqual({
+      due: true,
+      date: "2026-09-20",
+      day: 2,
+    });
+    // A tick hours late still posts the day's board: recovery, not a skip.
+    expect(boardDueNow(tokyo, jst("2026-09-20T23:10:00"))).toMatchObject({ due: true, day: 2 });
   });
 
-  const tokyo = (now: string, todayBoardExists = false) =>
-    nextScheduledBoard({
-      state: "active",
-      destination: "Tokyo",
-      timezone: "Asia/Tokyo",
-      now: new Date(now),
-      todayBoardExists,
-    });
-
-  it("puts a Tokyo board at 8am local", () => {
-    const noon = new Date("2026-09-19T03:00:00Z"); // 12:00 JST
-    const next = tokyo(noon.toISOString());
-    expect(next.at?.toISOString()).toBe("2026-09-19T23:00:00.000Z"); // 08:00 JST sept 20
-    expect(describeBoardTime(next.at!, noon, "Asia/Tokyo")).toBe("tomorrow at 8am");
-
-    const early = new Date("2026-09-19T22:30:00Z"); // 07:30 JST sept 20
-    expect(describeBoardTime(tokyo(early.toISOString()).at!, early, "Asia/Tokyo")).toBe(
-      "today at 8am",
-    );
-    // Today's board already posted: the cron skips today, so the next is tomorrow.
-    expect(tokyo(early.toISOString(), true).at?.toISOString()).toBe("2026-09-20T23:00:00.000Z");
+  it("follows a custom board_time", () => {
+    const late = { ...tokyo, board_time: "10:30" };
+    expect(boardDueNow(late, jst("2026-09-20T10:29:00")).due).toBe(false);
+    expect(boardDueNow(late, jst("2026-09-20T10:30:00")).due).toBe(true);
   });
 
-  it("says so when the cron never reaches 8am in the trip's zone", () => {
-    expect(
-      nextScheduledBoard({
-        state: "active",
-        destination: "New York",
-        timezone: "America/New_York",
-        now: new Date("2026-09-19T03:00:00Z"),
-        todayBoardExists: false,
-      }),
-    ).toEqual({ at: null, reason: "timezone_unscheduled" });
+  it("works in any timezone, not just UTC+9", () => {
+    const ny = { ...tokyo, timezone: "America/New_York" };
+    expect(boardDueNow(ny, new Date("2026-09-20T12:05:00Z"))).toMatchObject({ due: true, day: 2 }); // 08:05 EDT
+    const paris = { ...tokyo, timezone: "Europe/Paris" };
+    expect(boardDueNow(paris, new Date("2026-09-20T06:05:00Z"))).toMatchObject({ due: true, day: 2 }); // 08:05 CEST
   });
 
-  it("needs an active trip with a destination", () => {
-    const base = { timezone: "Asia/Tokyo", now: new Date(), todayBoardExists: false };
-    expect(nextScheduledBoard({ ...base, state: "surveying", destination: "Tokyo" })).toEqual({
-      at: null,
-      reason: "not_active",
-    });
-    expect(nextScheduledBoard({ ...base, state: "active", destination: null })).toEqual({
-      at: null,
-      reason: "no_destination",
-    });
+  it("skips trips that have not started or have ended", () => {
+    expect(boardDueNow(tokyo, jst("2026-09-18T09:00:00"))).toEqual({ due: false, reason: "not_started" });
+    expect(boardDueNow(tokyo, jst("2026-09-24T09:00:00"))).toEqual({ due: false, reason: "ended" });
+    expect(boardDueNow({ ...tokyo, start_date: null }, jst("2026-09-20T09:00:00")).due).toBe(false);
+  });
+});
+
+describe("next board time", () => {
+  it("is the first morning for a trip that has not started", () => {
+    const now = jst("2026-09-17T12:00:00");
+    const next = nextBoardAt(tokyo, now, { todayBoardExists: false })!;
+    expect(next.date).toBe("2026-09-19");
+    expect(describeBoardTime(next.at, now, tokyo.timezone)).toBe("sep 19 at 8am");
+  });
+
+  it("is tomorrow once today's board exists, and none after the trip", () => {
+    const now = jst("2026-09-20T12:00:00");
+    const next = nextBoardAt(tokyo, now, { todayBoardExists: true })!;
+    expect(describeBoardTime(next.at, now, tokyo.timezone)).toBe("tomorrow at 8am");
+    expect(nextBoardAt(tokyo, jst("2026-09-23T12:00:00"), { todayBoardExists: true })).toBeNull();
+  });
+
+  it("uses the trip's board_time", () => {
+    const now = jst("2026-09-20T06:00:00");
+    const next = nextBoardAt({ ...tokyo, board_time: "07:15" }, now, { todayBoardExists: false })!;
+    expect(describeBoardTime(next.at, now, tokyo.timezone)).toBe("today at 7:15am");
+  });
+});
+
+describe("board time parsing", () => {
+  it("reads the usual ways people say a time", () => {
+    expect(parseBoardTime("7am")).toBe("07:00");
+    expect(parseBoardTime("7 am")).toBe("07:00");
+    expect(parseBoardTime("10:30")).toBe("10:30");
+    expect(parseBoardTime("10.30am")).toBe("10:30");
+    expect(parseBoardTime("7:15pm")).toBe("19:15");
+    expect(parseBoardTime("12am")).toBe("00:00");
+    expect(parseBoardTime("noon")).toBe("12:00");
+    expect(parseBoardTime("19:00")).toBe("19:00");
+  });
+
+  it("refuses ambiguous or impossible times", () => {
+    expect(parseBoardTime("7")).toBeNull(); // am or pm?
+    expect(parseBoardTime("25:00")).toBeNull();
+    expect(parseBoardTime("13pm")).toBeNull();
+    expect(parseBoardTime("morning")).toBeNull();
+  });
+
+  it("formats times the way people write them", () => {
+    expect(formatBoardTime(DEFAULT_BOARD_TIME)).toBe("8am");
+    expect(formatBoardTime("10:30")).toBe("10:30am");
+    expect(formatBoardTime("19:00")).toBe("7pm");
+    expect(formatBoardTime("00:00")).toBe("12am");
+  });
+
+  it("recognises the board time command", () => {
+    expect(detectBoardTimeCommand("japlan board time 7am", "japlan")).toEqual({ time: "07:00" });
+    expect(detectBoardTimeCommand("japlan board time 10:30", "japlan")).toEqual({ time: "10:30" });
+    expect(detectBoardTimeCommand("japlan set board time to 9am", "japlan")).toEqual({ time: "09:00" });
+    expect(detectBoardTimeCommand("japlan board time whenever", "japlan")).toEqual({ time: null });
+    expect(detectBoardTimeCommand("board time 7am", "japlan")).toBeNull();
+    expect(detectBoardTimeCommand("japlan plans", "japlan")).toBeNull();
+  });
+});
+
+describe("which day a request means", () => {
+  const opts = { today: "2026-09-19", startDate: "2026-09-19" };
+  it("reads today, tomorrow, day N and weekdays", () => {
+    expect(parseBoardDay("japlan plans", opts).date).toBe("2026-09-19");
+    expect(parseBoardDay("japlan tomorrow", opts).date).toBe("2026-09-20");
+    expect(parseBoardDay("japlan day 3", opts).date).toBe("2026-09-21");
+    expect(parseBoardDay("japlan monday", opts).date).toBe("2026-09-21");
+    expect(parseBoardDay("japlan saturday", opts)).toEqual({ date: "2026-09-19", label: "today" });
+    expect(parseBoardDay("the day after tomorrow", opts).date).toBe("2026-09-21");
+    expect(tripDayForDate("2026-09-19", "2026-09-21")).toBe(3);
   });
 });
 
 describe("board requests", () => {
-  it("recognises asking for the day's plan", () => {
+  it("recognises asking for a day's board", () => {
     for (const text of [
+      "japlan plans",
+      "japlan tasks",
+      "japlan board",
+      "japlan what am i doing today",
+      "japlan give me the plans",
       "Please give me the first day plans",
+      "japlan tomorrow",
+      "japlan day 3",
+      "japlan friday",
       "what's on the board?",
-      "any tasks today",
-      "show me my tasks",
-      "japlan what's the plan for tomorrow",
     ]) {
       expect(isBoardRequest(text), text).toBe(true);
     }
   });
 
   it("leaves claims and chatter alone", () => {
-    for (const text of ["did the ramen task", "finished the board lol", "that plan was great", "hey"]) {
+    for (const text of [
+      "did the ramen task",
+      "finished the board lol",
+      "that plan was great",
+      "hey",
+      "japlan see you tomorrow at the hotel",
+    ]) {
       expect(isBoardRequest(text), text).toBe(false);
     }
   });

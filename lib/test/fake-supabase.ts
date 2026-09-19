@@ -17,6 +17,7 @@ const DEFAULTS: Record<string, () => Row> = {
   participants: () => ({ score: 0, sidequests_muted: false, survey_json: null, survey_state: null }),
   claims: () => ({ capped: false, primary_claim: true, photo_claimed_at: null, expires_at: null }),
   tasks: () => ({ source: "generated", expires_at: null }),
+  boards: () => ({ status: "generating", provisional: false, requested_by: null, delivered_at: null, updated_at: new Date().toISOString() }),
 };
 
 function key(row: Row, cols: string[]): string {
@@ -37,6 +38,8 @@ const UNIQUE: [string, string[], ((row: Row) => boolean)?][] = [
   ],
   ["tasks", ["trip_id", "day", "participant_id", "team_id", "code"]],
   ["trips", ["linq_chat_id"], (row) => row.state !== "complete"],
+  ["boards", ["trip_id", "day"]],
+  ["board_requests", ["trip_id", "participant_id", "requested_on"]],
 ];
 
 function compare(a: unknown, b: unknown): number | null {

@@ -193,9 +193,9 @@ describe("organizer setup", () => {
     await send(MIKE, MIKE_DM, "skip");
     await send(MIKE, MIKE_DM, "skip");
     expect(openTrip()!.state).toBe("active");
-    // Trip is Tokyo (UTC+9), so the cron really will post: tomorrow 8am local.
+    // Trip runs oct 17-20; boards start on its first morning, not before.
     expect(lastTo(GROUP)).toBe(
-      "we're live. every morning your tasks arrive by dm, and a code like A1 claims one. first board lands tomorrow at 8am.",
+      "we're live. every morning your tasks arrive by dm, and a code like A1 claims one. first board lands oct 17 at 8am.",
     );
   });
 

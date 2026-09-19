@@ -26,7 +26,7 @@ import {
   type SetupFields,
 } from "@/lib/game/setup";
 import { setupCompleteLine, setupPrompt } from "@/lib/game/copy";
-import { describeBoardTime, nextScheduledBoard } from "@/lib/game/board-schedule";
+import { describeBoardTime, nextBoardAt } from "@/lib/game/board-schedule";
 
 import { TRIP_COLS } from "@/lib/db/columns";
 
@@ -322,14 +322,8 @@ export async function maybeActivateTrip(
   // Group-safe fields only (DM stays in DM); the line names when the first
   // board really lands, from the same schedule the cron follows.
   const now = new Date();
-  const next = nextScheduledBoard({
-    state: "active",
-    destination: trip.destination,
-    timezone: trip.timezone,
-    now,
-    todayBoardExists: false,
-  });
-  const line = setupCompleteLine(next.at ? describeBoardTime(next.at, now, trip.timezone) : null);
+  const next = nextBoardAt(trip, now, { todayBoardExists: false });
+  const line = setupCompleteLine(next ? describeBoardTime(next.at, now, trip.timezone) : null);
   if (opts.announce !== false) await sendText(trip.linq_chat_id, line);
   const { error } = await getServiceClient()
     .from("trips")

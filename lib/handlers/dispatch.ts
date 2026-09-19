@@ -1,8 +1,8 @@
 import { getServiceClient } from "@/lib/db/client";
 import { evaluateAddress, findTaskCode } from "@/lib/game/addressing";
-import { detectTripCommand } from "@/lib/game/commands";
+import { detectBoardTimeCommand, detectTripCommand } from "@/lib/game/commands";
 import { DISPATCH_ERROR_LINE } from "@/lib/game/copy";
-import { handleTripCommand } from "@/lib/handlers/trip-lifecycle";
+import { handleBoardTimeCommand, handleTripCommand } from "@/lib/handlers/trip-lifecycle";
 import { routeSoloDm, soloModeEnabled } from "@/lib/game/solo";
 import { bootstrapGroupIfNeeded } from "@/lib/handlers/bootstrap";
 import {
@@ -235,6 +235,14 @@ async function onMessageReceivedInner(
   if (decision.intent === "help") {
     await dispatchAwait("help", { chatId, isDm }, () =>
       sendHelpGuide({ chatId, isDm }),
+    );
+    return;
+  }
+
+  const boardTime = detectBoardTimeCommand(text);
+  if (boardTime) {
+    await dispatchAwait("board_time", { chatId }, () =>
+      handleBoardTimeCommand({ chatId, isDm, phone, time: boardTime.time }),
     );
     return;
   }

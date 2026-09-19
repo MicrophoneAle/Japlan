@@ -8,12 +8,15 @@ import {
   SETUP_IN_DM_LINE,
   TRIP_ALREADY_RUNNING_LINE,
   TRIP_OVER_LINE,
+  BOARD_TIME_UNREADABLE_LINE,
+  boardTimeSetLine,
   finalStandingsLine,
   notOnTripLine,
   onlyOrganizerLine,
   tripNotReadyLine,
 } from "@/lib/game/copy";
 import { losersOf } from "@/lib/game/setup";
+import { formatBoardTime } from "@/lib/game/board-schedule";
 import { soloModeEnabled } from "@/lib/game/solo";
 import { sendDM, sendText } from "@/lib/linq/send";
 import {
@@ -46,7 +49,7 @@ async function authorize(opts: {
   trip: TripRow;
   participant: ParticipantRow;
   people: ParticipantRow[];
-  action: "change the setup" | "end the trip";
+  action: "change the setup" | "end the trip" | "change the board time";
 }): Promise<string | null> {
   const organizerId = opts.trip.organizer_participant_id;
   if (!organizerId) {
@@ -63,6 +66,47 @@ async function authorize(opts: {
   if (organizerId === opts.participant.id) return null;
   const organizer = opts.people.find((p) => p.id === organizerId);
   return onlyOrganizerLine(organizer?.display_name ?? "the organizer", opts.action);
+}
+
+// "japlan board time 7am": organizer-only. time is HH:MM, or null when the
+// command was recognised but the time was not.
+export async function handleBoardTimeCommand(opts: {
+  chatId: string;
+  isDm: boolean;
+  phone: string | null;
+  time: string | null;
+  send?: SendFn;
+}): Promise<void> {
+  const send = opts.send ?? sendText;
+  if (!opts.time) {
+    await send(opts.chatId, BOARD_TIME_UNREADABLE_LINE);
+    return;
+  }
+  const trip =
+    (await getTripByChatId(opts.chatId)) ??
+    (opts.isDm && opts.phone ? (await findOpenSurveyByPhone(opts.phone))?.trip ?? null : null);
+  if (!trip) {
+    await send(opts.chatId, NO_TRIP_RUNNING_LINE);
+    return;
+  }
+  const participant = opts.phone ? await findParticipantOnTrip(trip.id, opts.phone) : null;
+  if (!participant) {
+    await send(opts.chatId, notOnTripLine());
+    return;
+  }
+  const people = await listParticipants(trip.id);
+  const refusal = await authorize({ trip, participant, people, action: "change the board time" });
+  if (refusal) {
+    await send(opts.chatId, refusal);
+    return;
+  }
+  const { error } = await getServiceClient()
+    .from("trips")
+    .update({ board_time: opts.time })
+    .eq("id", trip.id);
+  if (error) throw error;
+  lifecycleStep("board_time.set", { tripId: trip.id, boardTime: opts.time });
+  await send(opts.chatId, boardTimeSetLine(formatBoardTime(opts.time)));
 }
 
 export async function handleTripCommand(opts: {

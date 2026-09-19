@@ -17,6 +17,8 @@ export type TripRow = {
   organizer_participant_id?: string | null;
   setup_state?: string | null;
   completed_at?: string | null;
+  // Local HH:MM the daily board posts. Default 08:00.
+  board_time?: string | null;
   created_at?: string;
 };
 

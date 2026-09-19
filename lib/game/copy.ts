@@ -83,30 +83,69 @@ export function setupNowAboutYouLine(finished: string, surveyPrompt: string): st
   return `${finished} ${surveyPrompt}`;
 }
 
-// Asking for the board / the day's plan.
+// Asking for the board / a day's plan. A request that finds no board makes
+// one; these lines cover the cases where it cannot.
 export function boardClearedLine(next: string | null): string {
   return next ? `you've cleared today's board. the next one lands ${next}.` : "you've cleared today's board.";
 }
 
-export function noBoardYetLine(
-  next: { when: string; first: boolean } | { reason: "not_active" | "no_destination" | "timezone_unscheduled" },
-): string {
-  if ("when" in next) {
-    return `no board yet. the ${next.first ? "first" : "next"} one lands ${next.when}.`;
-  }
-  switch (next.reason) {
-    case "not_active":
-      return "no board yet. it starts once setup and the surveys are done.";
-    case "no_destination":
-      return `no board yet. i still need where the trip is going: "japlan setup".`;
-    case "timezone_unscheduled":
-      return "no board yet, and the morning post isn't scheduled for this timezone yet.";
-  }
+export function boardRefillLine(board: string): string {
+  return `you cleared today's board, so here's a refill.\n${board}`;
 }
+
+export const PROVISIONAL_NOTE =
+  "provisional: it gets remade that morning with the latest weather, unless you claim something first.";
+
+export function provisionalBoard(board: string): string {
+  return `${board}\n${PROVISIONAL_NOTE}`;
+}
+
+export const BOARD_IN_DM_LINE = "your board's in your dm.";
+
+export const TRIP_NOT_ACTIVE_BOARD_LINE =
+  "no board yet. it starts once setup and the surveys are done.";
+
+export function tripNotStartedLine(start: string, when: string | null): string {
+  return when
+    ? `the trip starts ${start}. first board lands ${when}.`
+    : `the trip starts ${start}, so there's no board before then.`;
+}
+
+export function tripEndedForDayLine(end: string): string {
+  return `the trip ends ${end}, so there's no board for that day.`;
+}
+
+export const PAST_DAY_NO_BOARD_LINE = "that day's already gone, and no board was made for it.";
+
+export function boardRequestLimitLine(next: string | null): string {
+  return next
+    ? `you've already had one board made today. the next one lands ${next}.`
+    : "you've already had one board made today.";
+}
+
+export const BOARD_BEING_MADE_LINE = "that board's being made right now. ask again in a minute.";
+
+export const BOARD_MAKE_FAILED_LINE = "couldn't make that board just now. ask again in a minute.";
+
+export function noTasksForYouLine(label: string, next: string | null): string {
+  return next
+    ? `${label}'s board has nothing on it for you. the next one lands ${next}.`
+    : `${label}'s board has nothing on it for you.`;
+}
+
+// "japlan board time 7am"
+export function boardTimeSetLine(time: string): string {
+  return `boards now land at ${time} each morning.`;
+}
+
+export const BOARD_TIME_UNREADABLE_LINE = `couldn't read that time. try "japlan board time 7am" or "japlan board time 10:30".`;
 
 export const SETUP_IN_DM_LINE = "setup questions are in your dm.";
 
-export function onlyOrganizerLine(organizerName: string, action: "change the setup" | "end the trip"): string {
+export function onlyOrganizerLine(
+  organizerName: string,
+  action: "change the setup" | "end the trip" | "change the board time",
+): string {
   return `only ${organizerName} can ${action}.`;
 }
 
@@ -355,7 +394,7 @@ you only talk when addressed. you are not a general chatbot. having an opinion i
 
 tools:
 - get_standings: call this before stating anyone's score. never recall a score from memory or from the prompt.
-- get_open_tasks: only existing tasks, plus the board state. never invent one. if asked for a new task, point at an open one. if there are no open tasks, say when next_board lands, or why there is none (next_board_unavailable). never promise a board time it did not give you.
+- get_open_tasks: only existing tasks, plus the board state. never invent one. if asked for a new task, point at an open one. if there are no open tasks, tell them "japlan plans" makes today's board right now, or say when next_board lands. never promise a board time it did not give you.
 - propose_freeform_claim: they already did something you did not assign. return title and six axes (integers 1-5). never a point value. code will score it.
 - request_photo_bonus: a photo might add bonus to a recent claim.
 - no_action: when you just want to talk.

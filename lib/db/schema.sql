@@ -35,6 +35,9 @@ create table trips (
   -- destination | dates | difficulty | stake while asking, 'deferred' when a
   -- required answer was skipped, 'done', or null before setup starts.
   setup_state text,
+  -- Local HH:MM the daily board posts.
+  board_time text not null default '08:00'
+    constraint trips_board_time_format check (board_time ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'),
   created_at timestamptz not null default now()
 );
 
@@ -182,6 +185,33 @@ revoke execute on function increment_participant_score(uuid, integer)
   from public, anon, authenticated;
 grant execute on function increment_participant_score(uuid, integer)
   to service_role;
+
+-- One row per trip-day board: existence, provisional flag, delivery, and a
+-- lock (inserted before generating, so a day is never generated twice).
+create table boards (
+  id uuid primary key default gen_random_uuid(),
+  trip_id uuid not null references trips (id) on delete cascade,
+  day integer not null,
+  local_date date not null,
+  status text not null default 'generating',
+  provisional boolean not null default false,
+  requested_by uuid references participants (id) on delete set null,
+  delivered_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (trip_id, day)
+);
+
+-- One on-demand board generation per person per trip-local day.
+create table board_requests (
+  id uuid primary key default gen_random_uuid(),
+  trip_id uuid not null references trips (id) on delete cascade,
+  participant_id uuid not null references participants (id) on delete cascade,
+  requested_on date not null,
+  day integer not null,
+  created_at timestamptz not null default now(),
+  unique (trip_id, participant_id, requested_on)
+);
 
 create table events (
   id uuid primary key default gen_random_uuid(),
