@@ -1,13 +1,14 @@
 import { defaultWakeKeyword, stripWakeKeyword, wakeKeywordRe } from "./addressing";
 import { parseBoardTime } from "./board-schedule";
 
-export type TripCommand = "end_trip" | "end_trip_confirm" | "new_trip" | "setup" | "settings" | "resurvey" | "profile";
+export type TripCommand = "end_trip" | "end_trip_confirm" | "new_trip" | "setup" | "settings" | "resurvey" | "profile" | "survey_status";
 
 const COMMANDS: [TripCommand, RegExp][] = [
-  ["end_trip_confirm", /^end (the )?trip,? confirm(ed)?$/],
-  ["end_trip", /^end (the |this )?trip$/],
-  ["new_trip", /^(new|start a new|start another|another) trip$/],
+  ["end_trip_confirm", /^(?:end (?:the |this )?trip|trip end),? confirm(ed)?$/],
+  ["end_trip", /^(?:end (the |this )?trip|trip end)$/],
+  ["new_trip", /^(?:new|start|start a new|start another|another) trip$/],
   ["setup", /^(setup|set up|trip setup|change setup)$/],
+  ["survey_status", /^(survey status|who'?s done with (the )?survey|who hasn'?t (answered|finished)( the survey)?)$/],
   // Anyone's own answers: see them all, or go through the questions again.
   ["settings", /^(my )?(settings|preferences|prefs|profile)$/],
   ["resurvey", /^(resurvey|re-?survey|redo (my )?survey|survey again|retake (the )?survey)$/],

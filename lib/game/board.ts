@@ -52,6 +52,31 @@ function taskLine(task: BoardTask): string {
   );
 }
 
+const SLOT_LABEL: Record<string, string> = {
+  morning: "🌅 morning",
+  afternoon: "☀️ afternoon",
+  evening: "🌙 evening",
+  anytime: "✨ anytime",
+};
+
+function taskSections(
+  tasks: BoardTask[],
+  anchors: BoardAnchorItem[] = [],
+): string[] {
+  const sections: string[] = [];
+  for (const slot of ["morning", "afternoon", "evening", "anytime"]) {
+    const slotTasks = tasks.filter((task) => (task.slot ?? "anytime") === slot);
+    const slotAnchors = anchors.filter((anchor) => (anchor.slot ?? "anytime") === slot);
+    if (slotTasks.length === 0 && slotAnchors.length === 0) continue;
+    sections.push(SLOT_LABEL[slot]);
+    sections.push(...slotTasks.map(taskLine));
+    sections.push(...slotAnchors.map((anchor) => boardAnchorLine(anchor.name, anchor.by)));
+    sections.push("");
+  }
+  while (sections.at(-1) === "") sections.pop();
+  return sections;
+}
+
 export type BoardStanding = {
   display_name: string;
   score: number;
@@ -72,7 +97,7 @@ export function formatDailyBoard(opts: {
   const lines = [
     dailyBoardHeader(opts.day, opts.weatherLine, routeOf(tasks)),
     "",
-    ...tasks.map(taskLine),
+    ...taskSections(tasks),
     "",
     standingsLine(standings),
   ];
@@ -90,20 +115,10 @@ export function formatPersonalBoard(opts: {
 }): string {
   const tasks = boardOrder(opts.tasks);
   // Anchors sit in their time of day, after that slot's tasks.
-  const lines = [
-    ...tasks.map((t) => ({ slot: SLOT_ORDER[t.slot ?? ""] ?? 1, text: taskLine(t) })),
-    ...(opts.anchors ?? []).map((a) => ({
-      slot: (SLOT_ORDER[a.slot ?? ""] ?? 1) + 0.5,
-      text: boardAnchorLine(a.name, a.by, a.slot),
-    })),
-  ]
-    .map((l, i) => ({ ...l, i }))
-    .sort((a, b) => a.slot - b.slot || a.i - b.i)
-    .map((l) => l.text);
   return [
     dailyBoardHeader(opts.day, opts.weatherLine, routeOf(tasks)),
     "",
-    ...lines,
+    ...taskSections(tasks, opts.anchors),
   ].join("\n");
 }
 

@@ -27,7 +27,7 @@ import {
   setupReadyToActivate,
   type SetupFields,
 } from "@/lib/game/setup";
-import { setupCompleteLine, setupPrompt } from "@/lib/game/copy";
+import { setupCompleteLine, setupPrompt, surveyLaunchGroupLine } from "@/lib/game/copy";
 import { describeBoardTime, nextBoardAt } from "@/lib/game/board-schedule";
 import { formTeamsForTrip, teamsAnnouncement } from "@/lib/handlers/teams";
 
@@ -152,6 +152,7 @@ async function insertTrip(
       destination: null,
       start_date: null,
       end_date: null,
+      play_mode: null,
       state: "bootstrapping",
       difficulty: null,
       stake_text: null,
@@ -277,21 +278,24 @@ async function startSurveyDm(participant: ParticipantRow): Promise<boolean> {
   return true;
 }
 
-async function startSetupDm(
-  organizer: ParticipantRow,
-  trip: TripRow,
-): Promise<boolean> {
-  if (!isSetupQuestion(trip.setup_state)) return false;
-  const first = trip.setup_state === "destination" && !trip.destination;
-  const prompt = setupPrompt(trip.setup_state, null, { first });
-  try {
-    await sendDM(organizer.phone, prompt);
-    logStep("sendDM.setup", { phone: organizer.phone, ok: true, question: trip.setup_state });
-    return true;
-  } catch (err) {
-    logError("sendDM.setup", err, { phone: organizer.phone, ok: false });
-    return false;
+export async function startTripSurveys(stale: TripRow): Promise<void> {
+  const trip = (await getTripById(stale.id)) ?? stale;
+  if (trip.state === "active" || trip.state === "complete") return;
+  const people = await listParticipants(trip.id);
+  const sent: string[] = [];
+  const failed: string[] = [];
+  for (const person of people) {
+    if (person.survey_state === "done") continue;
+    const ok = await startSurveyDm(person);
+    (ok ? sent : failed).push(person.display_name);
   }
+  const { error } = await getServiceClient()
+    .from("trips")
+    .update({ state: "surveying" })
+    .eq("id", trip.id)
+    .in("state", ["setup", "bootstrapping"]);
+  if (error) throw error;
+  await sendText(trip.linq_chat_id, surveyLaunchGroupLine(sent, failed));
 }
 
 // A group member who was not in the chat at bootstrap (or was added later):
@@ -314,7 +318,9 @@ async function joinLateParticipant(
   const joined = await findParticipantOnTrip(trip.id, phone);
   if (!joined) return;
   logStep("participant.late_join", { tripId: trip.id, participantId: joined.id });
-  await startSurveyDm(joined);
+  if (trip.state !== "setup" && trip.state !== "bootstrapping") {
+    await startSurveyDm(joined);
+  }
 }
 
 export async function countSurveysPending(tripId: string): Promise<number> {
@@ -388,11 +394,11 @@ export async function maybeActivateTrip(
   // board really lands, from the same schedule the cron follows.
   const now = new Date();
   const next = nextBoardAt(trip, now, { todayBoardExists: false });
-  let line = setupCompleteLine(next ? describeBoardTime(next.at, now, trip.timezone) : null);
+  let line = setupCompleteLine(next ? describeBoardTime(next.at, now, trip.timezone) : null, trip.play_mode);
 
   // Teams are decided once, here, from the survey (team_preference,
   // social_with): a no-op for a solo trip or a group where nobody opted in.
-  if (!trip.is_solo) {
+  if (!trip.is_solo && !trip.play_mode) {
     const teams = await formTeamsForTrip(trip, people);
     const announcement = teamsAnnouncement(teams);
     if (announcement) line = `${line}\n\n${announcement}`;
@@ -546,13 +552,36 @@ export async function bootstrapGroupIfNeeded(
       return trip;
     }
 
+    step = "organizer.assign";
+    const organizer =
+      participants.find((p) => p.id === trip.organizer_participant_id) ??
+      participants.find((p) => opts.senderPhone && p.phone === opts.senderPhone) ??
+      participants[0];
+    const organizerId = trip.organizer_participant_id ?? organizer.id;
+    const setupState = isSetupQuestion(trip.setup_state) ? trip.setup_state : "destination";
+    if (!trip.organizer_participant_id || trip.setup_state !== setupState) {
+      const { error: orgErr } = await getServiceClient()
+        .from("trips")
+        .update({ organizer_participant_id: organizerId, setup_state: setupState })
+        .eq("id", trip.id);
+      if (orgErr) throw orgErr;
+      logStep("organizer.assign", {
+        chatId,
+        tripId: trip.id,
+        fromSender: organizer.phone === opts.senderPhone,
+      });
+    }
+
     step = "intro.send";
     const publicTrip = {
       id: trip.id,
       linq_chat_id: trip.linq_chat_id,
       name: displayName || trip.name,
       state: trip.state,
+      organizerName: organizer.display_name,
     };
+    const setup = setupPrompt(setupState, null, { first: true });
+    const firstPost = `${buildIntroGroupPost(publicTrip)}\n\n${setup}\nReply here with “japlan” + your answer.`;
     // At most once per chat, whatever state the trip is stuck in: claim the
     // intro atomically, and release the claim only if the send itself failed.
     const introClaim = await getServiceClient()
@@ -566,7 +595,7 @@ export async function bootstrapGroupIfNeeded(
       logStep("intro.skip", { chatId, reason: "already_sent" });
     } else {
       try {
-        await sendText(trip.linq_chat_id, buildIntroGroupPost(publicTrip));
+        await sendText(trip.linq_chat_id, firstPost);
         logStep("intro.send", { chatId, ok: true });
       } catch (err) {
         logError("intro.send", err, { chatId, ok: false });
@@ -579,59 +608,15 @@ export async function bootstrapGroupIfNeeded(
       }
     }
 
-    step = "organizer.assign";
-    let organizerId = trip.organizer_participant_id ?? null;
-    let setupState = trip.setup_state ?? null;
-    if (!organizerId) {
-      const organizer =
-        participants.find((p) => opts.senderPhone && p.phone === opts.senderPhone) ??
-        participants[0];
-      organizerId = organizer.id;
-      setupState = setupState ?? "destination";
-      const { error: orgErr } = await getServiceClient()
-        .from("trips")
-        .update({ organizer_participant_id: organizerId, setup_state: setupState })
-        .eq("id", trip.id)
-        .is("organizer_participant_id", null);
-      if (orgErr) throw orgErr;
-      logStep("organizer.assign", {
-        chatId,
-        tripId: trip.id,
-        fromSender: organizer.phone === opts.senderPhone,
-      });
-    }
-
-    step = "sendDM";
-    let dmOk = 0;
-    let dmFail = 0;
-    for (const person of participants) {
-      // The organizer answers the trip setup first; their own survey follows.
-      const ok =
-        person.id === organizerId && isSetupQuestion(setupState)
-          ? await startSetupDm(person, { ...trip, setup_state: setupState })
-          : await startSurveyDm(person);
-      if (ok) dmOk += 1;
-      else dmFail += 1;
-    }
-    logStep("sendDM.summary", { chatId, ok: dmOk, failed: dmFail });
-    if (dmOk === 0) {
-      logError(
-        "sendDM.none_succeeded",
-        new Error("every survey DM failed or was skipped"),
-        { chatId, tripId: trip.id, attempted: participants.length },
-      );
-      return trip;
-    }
-
-    step = "state.surveying";
+    step = "state.setup";
     const { error } = await getServiceClient()
       .from("trips")
-      .update({ state: "surveying" })
+      .update({ state: "setup" })
       .eq("id", trip.id)
       .eq("state", "bootstrapping");
     if (error) throw error;
-    logStep("state.surveying", { chatId, tripId: trip.id });
-    return { ...trip, state: "surveying" };
+    logStep("state.setup", { chatId, tripId: trip.id });
+    return { ...trip, organizer_participant_id: organizerId, setup_state: setupState, state: "setup" };
   } catch (err) {
     logError(step, err, { chatId });
     return (await getTripByChatId(chatId)) ?? null;

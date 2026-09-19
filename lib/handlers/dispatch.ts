@@ -22,6 +22,11 @@ import {
   soloTripForChat,
 } from "@/lib/handlers/solo";
 import { handleSurveyDm } from "@/lib/handlers/survey";
+import { handleGroupSetupMessage } from "@/lib/handlers/setup";
+import {
+  handleGroupDecisionMessage,
+  handleGroupDecisionReaction,
+} from "@/lib/handlers/group-decisions";
 import {
   chatIdFromData,
   isDirectChat,
@@ -304,6 +309,18 @@ async function onMessageReceivedInner(
     return;
   }
 
+  const decisionHandled = await dispatchAwait("group_decision_command", { chatId, isDm }, () =>
+    handleGroupDecisionMessage({ chatId, isDm, phone, text }),
+  );
+  if (decisionHandled) return;
+
+  if (!isDm && phone) {
+    const handled = await dispatchAwait("group_setup_answer", { chatId }, () =>
+      handleGroupSetupMessage({ chatId, senderPhone: phone, text }),
+    );
+    if (handled) return;
+  }
+
   if (!(isDm && phone)) {
     dispatchStep("group_or_no_phone.claim", {
       chatId,
@@ -422,9 +439,14 @@ export async function dispatchLinqEvent(envelope: LinqEnvelope): Promise<void> {
             : "none",
       });
       if (isRecord(envelope.data)) {
-        await dispatchAwait("peer_reaction", {}, () =>
-          handlePeerReaction(envelope.data as Record<string, unknown>),
+        const decisionHandled = await dispatchAwait("group_decision_reaction", {}, () =>
+          handleGroupDecisionReaction(envelope.data as Record<string, unknown>),
         );
+        if (!decisionHandled) {
+          await dispatchAwait("peer_reaction", {}, () =>
+            handlePeerReaction(envelope.data as Record<string, unknown>),
+          );
+        }
       } else {
         dispatchIdle("reaction_not_a_record");
       }

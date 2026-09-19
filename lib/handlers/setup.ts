@@ -12,6 +12,8 @@ import {
   setupNowAboutYouLine,
   setupPrompt,
   STAKE_SET_LINE,
+  groupSetupCompleteLine,
+  organizerOnlySetupLine,
   surveyReaskLine,
 } from "@/lib/game/copy";
 import { partialDestinationProfile } from "@/lib/game/destination";
@@ -22,9 +24,11 @@ import {
   checkDateRange,
   isSetupQuestion,
   isSetupSkip,
+  matchPlayMode,
   matchDifficulty,
   missingRequiredSetup,
   nextSetupQuestion,
+  playModeLabel,
   parseLooseDates,
   type SetupFields,
   type SetupQuestionId,
@@ -41,7 +45,17 @@ import {
 import type { LLMProvider } from "@/lib/llm";
 import { extractTripDates, inferPlaceTimezone } from "@/lib/llm/gemini";
 import { resolveNearArea } from "@/lib/places/foursquare";
-import { getTripById, maybeActivateTrip, persistSurveyProgress, sidequestPromptIfNew } from "./bootstrap";
+import {
+  findParticipantOnTrip,
+  getTripByChatId,
+  getTripById,
+  maybeActivateTrip,
+  persistSurveyProgress,
+  sidequestPromptIfNew,
+  startTripSurveys,
+} from "./bootstrap";
+import { sendText } from "@/lib/linq/send";
+import { defaultWakeKeyword, stripWakeKeyword } from "@/lib/game/addressing";
 
 export type SetupDeps = { provider?: LLMProvider; now?: Date };
 
@@ -57,6 +71,8 @@ function currentValue(trip: TripRow, id: SetupQuestionId): string | null {
       return trip.start_date && trip.end_date
         ? `${formatShortDate(trip.start_date)} to ${formatShortDate(trip.end_date)}`
         : null;
+    case "play_mode":
+      return trip.play_mode ? playModeLabel(trip.play_mode) : null;
     case "difficulty":
       return trip.difficulty ?? null;
     case "stake":
@@ -65,7 +81,8 @@ function currentValue(trip: TripRow, id: SetupQuestionId): string | null {
 }
 
 export function setupPromptFor(trip: TripRow, id: SetupQuestionId, first = false): string {
-  return setupPrompt(id, currentValue(trip, id), { first, isSolo: Boolean(trip.is_solo) });
+  const prompt = setupPrompt(id, currentValue(trip, id), { first, isSolo: Boolean(trip.is_solo) });
+  return trip.is_solo ? prompt : `${prompt} Reply here with “japlan” + your answer.`;
 }
 
 async function saveTrip(tripId: string, patch: Record<string, unknown>): Promise<void> {
@@ -180,8 +197,8 @@ async function surveyPromptAfterSetup(organizer: ParticipantRow): Promise<string
   return started.prompt;
 }
 
-// "japlan setup", or the first question at bootstrap. Walks all four with the
-// current value shown; skip keeps whatever is there.
+// "japlan setup", or the first question at bootstrap. Walks the shared trip
+// settings with the current value shown; optional skips keep what is there.
 export async function beginSetup(trip: TripRow, opts: { first?: boolean } = {}): Promise<string> {
   await saveTrip(trip.id, { setup_state: "destination" });
   setupStep("begin", { tripId: trip.id, first: Boolean(opts.first) });
@@ -277,6 +294,13 @@ async function setupChange(
       said = difficultySetLine(difficulty);
       break;
     }
+    case "play_mode": {
+      const mode = matchPlayMode(text);
+      if (!mode) return { retry: "reply 1 for individual, 2 for teams, or 3 for full group." };
+      patch.play_mode = mode;
+      said = `got it: ${playModeLabel(mode)}.`;
+      break;
+    }
     case "stake": {
       patch.stake_text = text.slice(0, 200);
       said = STAKE_SET_LINE;
@@ -293,6 +317,7 @@ export type TripSetting = SetupQuestionId | "board_time";
 
 export function tripSettingFor(name: string): TripSetting | null {
   const lower = name.toLowerCase();
+  if (/play ?mode|individual|full group|\bteams?\b/.test(lower)) return "play_mode";
   if (/board ?time|morning time|when .* board/.test(lower)) return "board_time";
   if (/destination|city|where|place/.test(lower)) return "destination";
   if (/date|when|day|length/.test(lower)) return "dates";
@@ -326,6 +351,7 @@ export async function answerSetup(opts: {
   organizer: ParticipantRow;
   text: string;
   deps?: SetupDeps;
+  viaGroup?: boolean;
 }): Promise<string> {
   const deps = opts.deps ?? {};
   const trip = opts.trip;
@@ -336,6 +362,11 @@ export async function answerSetup(opts: {
   let said = "";
 
   if (!text) return setupPromptFor(trip, id);
+
+  if (isSetupSkip(text) && (id === "destination" || id === "dates" || id === "play_mode")) {
+    const reason = id === "play_mode" ? "choose how the trip should run" : `set the ${id}`;
+    return `we need to ${reason} before i can send everyone's private survey.\n${setupPromptFor(trip, id)}`;
+  }
 
   if (!isSetupSkip(text)) {
     const change = await setupChange(trip, id, text, deps);
@@ -355,7 +386,7 @@ export async function answerSetup(opts: {
   await saveTrip(trip.id, { ...patch, setup_state: missing.length > 0 ? SETUP_DEFERRED : SETUP_DONE });
   setupStep("finish", { tripId: trip.id, missing });
   const finished = `${said} ${setupFinishedLine(missing)}`.trim();
-  const surveyPrompt = await surveyPromptAfterSetup(opts.organizer);
+  const surveyPrompt = opts.viaGroup ? null : await surveyPromptAfterSetup(opts.organizer);
   // Solo: the trip chat is this DM, so "we're live" rides in this reply.
   const live = await maybeActivateTrip((await getTripById(trip.id)) ?? updated, {
     announce: !trip.is_solo,
@@ -380,4 +411,68 @@ async function findParticipantById(id: string): Promise<ParticipantRow | null> {
   const { data, error } = await getServiceClient().from("participants").select("*").eq("id", id).maybeSingle();
   if (error) throw error;
   return (data as ParticipantRow | null) ?? null;
+}
+
+// Group trips use their group chat as the shared setup surface. Only the
+// named organizer may answer these questions; personal surveys remain in DMs.
+export async function handleGroupSetupMessage(opts: {
+  chatId: string;
+  senderPhone: string | null;
+  text: string;
+  deps?: SetupDeps;
+}): Promise<boolean> {
+  const trip = await getTripByChatId(opts.chatId);
+  if (!trip || trip.is_solo || !isSetupQuestion(trip.setup_state)) return false;
+
+  const answer = stripWakeKeyword(opts.text, defaultWakeKeyword());
+  if (!answer.trim()) return true;
+  if (/^(?:help|commands?|menu|lb|leaders?|leaderboards?|standings?|scores?|rankings?|board|plans?|today|day\s+\d+|setup|settings|preferences|profile)\??$/i.test(answer)) {
+    return false;
+  }
+
+  const sender = opts.senderPhone
+    ? await findParticipantOnTrip(trip.id, opts.senderPhone)
+    : null;
+  const organizer = sender && sender.id === trip.organizer_participant_id ? sender : null;
+  if (!organizer) {
+    const people = await getServiceClient()
+      .from("participants")
+      .select("id, display_name")
+      .eq("id", trip.organizer_participant_id ?? "");
+    if (people.error) throw people.error;
+    const name = (people.data?.[0] as { display_name?: string } | undefined)?.display_name ?? "the organizer";
+    await sendText(opts.chatId, organizerOnlySetupLine(name));
+    return true;
+  }
+
+  const reply = await answerSetup({
+    trip,
+    organizer,
+    text: answer,
+    deps: opts.deps,
+    viaGroup: true,
+  });
+  const updated = (await getTripById(trip.id)) ?? trip;
+  if (!isSetupQuestion(updated.setup_state)) {
+    const firstSetup = trip.state === "setup" || trip.state === "bootstrapping";
+    const missingRequired = missingRequiredSetup(updated as SetupFields);
+    if (firstSetup && (missingRequired.length > 0 || !updated.play_mode)) {
+      await sendText(opts.chatId, `${reply}\n${await resumeSetup(updated)}`);
+      return true;
+    }
+    const dateRange = updated.start_date && updated.end_date
+      ? `${formatShortDate(updated.start_date)} to ${formatShortDate(updated.end_date)}`
+      : null;
+    const summary = groupSetupCompleteLine({
+      destination: updated.destination,
+      dates: dateRange,
+      mode: playModeLabel(updated.play_mode),
+      organizer: organizer.display_name,
+    });
+    await sendText(opts.chatId, `${reply}\n\n${summary}`);
+    if (firstSetup) await startTripSurveys(updated);
+    return true;
+  }
+  await sendText(opts.chatId, reply);
+  return true;
 }

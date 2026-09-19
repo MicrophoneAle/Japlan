@@ -21,6 +21,41 @@ export type TeamPairing = {
   pairs: string[][];
 };
 
+export type PreferenceCandidate = { id: string; interests: string[] };
+
+// Pair people only when there is at least one real overlap. Remaining people
+// keep individual tasks. The caller runs this for each trip day, so partners
+// can change as the trip and their preferences change.
+export function pairBySharedInterests(people: PreferenceCandidate[]): string[][] {
+  const candidates = people.map((person) => ({
+    id: person.id,
+    interests: new Set(person.interests),
+  }));
+  const available = new Set(candidates.map((person) => person.id));
+  const pairs: string[][] = [];
+
+  while (true) {
+    let best: { left: string; right: string; overlap: number } | null = null;
+    for (let i = 0; i < candidates.length; i++) {
+      const left = candidates[i];
+      if (!available.has(left.id)) continue;
+      for (let j = i + 1; j < candidates.length; j++) {
+        const right = candidates[j];
+        if (!available.has(right.id)) continue;
+        const overlap = [...left.interests].filter((interest) => right.interests.has(interest)).length;
+        if (overlap === 0) continue;
+        if (!best || overlap > best.overlap) best = { left: left.id, right: right.id, overlap };
+      }
+    }
+    if (!best) break;
+    pairs.push([best.left, best.right]);
+    available.delete(best.left);
+    available.delete(best.right);
+  }
+
+  return pairs;
+}
+
 function mentions(text: string | null, name: string): boolean {
   const needle = name.trim().toLowerCase();
   if (!text || !needle) return false;
