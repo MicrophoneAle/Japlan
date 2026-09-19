@@ -39,9 +39,18 @@ export function setupReadyToActivate(trip: SetupFields): boolean {
   return missingRequiredSetup(trip).length === 0;
 }
 
-export function nextSetupQuestion(after: SetupQuestionId): SetupQuestionId | null {
-  const index = SETUP_ORDER.indexOf(after);
-  return SETUP_ORDER[index + 1] ?? null;
+// The stake is what the loser does; a solo trip has no loser.
+export function setupOrderFor(ctx: { isSolo?: boolean } = {}): SetupQuestionId[] {
+  return ctx.isSolo ? SETUP_ORDER.filter((id) => id !== "stake") : SETUP_ORDER;
+}
+
+export function nextSetupQuestion(
+  after: SetupQuestionId,
+  ctx: { isSolo?: boolean } = {},
+): SetupQuestionId | null {
+  const order = setupOrderFor(ctx);
+  const index = order.indexOf(after);
+  return order[index + 1] ?? null;
 }
 
 export function isSetupSkip(text: string): boolean {

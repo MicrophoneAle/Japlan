@@ -3,6 +3,7 @@ import { applyReply, type SurveyAnswers, type SurveyAwaiting } from "@/lib/game/
 import { QUESTIONS, type QuestionId } from "@/lib/game/survey-questions";
 import { isSetupQuestion, missingRequiredSetup, type SetupFields } from "@/lib/game/setup";
 import {
+  SURVEY_DONE_DM,
   dmClaimInGroupLine,
   dmUnknownPersonLine,
   surveyDoneLine,
@@ -92,6 +93,7 @@ export async function handleSurveyDm(opts: {
       answers: (participant.survey_json ?? {}) as SurveyAnswers,
     },
     opts.text,
+    { isSolo: Boolean(trip.is_solo) },
   );
 
   await persistSurveyProgress({
@@ -101,6 +103,14 @@ export async function handleSurveyDm(opts: {
   });
 
   if (step.completed) {
+    if (trip.is_solo) {
+      // Solo: this DM is also the trip chat, so "we're live" joins this reply.
+      const live = await maybeActivateTrip(trip, { announce: false });
+      if (live) {
+        await sendText(opts.chatId, `${SURVEY_DONE_DM} ${live}`);
+        return;
+      }
+    }
     const waitingOn = await countSurveysPending(trip.id);
     const setupPending = missingRequiredSetup(trip as SetupFields).length > 0;
     let reply = surveyDoneLine(waitingOn, setupPending);
@@ -111,7 +121,7 @@ export async function handleSurveyDm(opts: {
       reply = `${reply} ${setupPromptFor(trip, trip.setup_state)}`;
     }
     await sendText(opts.chatId, reply);
-    await maybeActivateTrip(trip);
+    if (!trip.is_solo) await maybeActivateTrip(trip);
     return;
   }
 

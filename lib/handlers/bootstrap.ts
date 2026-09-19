@@ -5,7 +5,6 @@ import {
   allParticipantsComplete,
   answerValue,
   buildIntroGroupPost,
-  buildSetupCompleteGroupPost,
   displayNameFromFirstName,
   startSurvey,
   type SurveyAnswers,
@@ -26,9 +25,14 @@ import {
   setupReadyToActivate,
   type SetupFields,
 } from "@/lib/game/setup";
-import { setupPrompt } from "@/lib/game/copy";
+import { setupCompleteLine, setupPrompt } from "@/lib/game/copy";
+import { describeBoardTime, nextScheduledBoard } from "@/lib/game/board-schedule";
 
 import { TRIP_COLS } from "@/lib/db/columns";
+
+// Until the group chat's own name is known.
+const UNNAMED_TRIP = "unnamed trip";
+
 const PARTICIPANT_COLS =
   "id, trip_id, phone, display_name, score, survey_json, survey_state, sidequests_muted, consented_at";
 
@@ -141,7 +145,7 @@ async function insertTrip(
     .from("trips")
     .insert({
       linq_chat_id: chatId,
-      name: displayName?.trim() || "PLACEHOLDER: unnamed trip",
+      name: displayName?.trim() || UNNAMED_TRIP,
       destination: null,
       start_date: null,
       end_date: null,
@@ -295,32 +299,45 @@ export async function countSurveysPending(tripId: string): Promise<number> {
 // Active needs every personal survey done AND the organizer setup's required
 // answers (destination, dates). Re-reads the trip: callers often hold a copy
 // from before the setup answer that just landed.
-export async function maybeActivateTrip(stale: TripRow): Promise<void> {
+// Returns the "we're live" line when the trip activated. announce (default)
+// posts it to the trip chat. A solo trip's chat is the player's DM, where the
+// caller is already replying: pass announce:false and fold the line into that
+// one reply rather than sending two messages.
+export async function maybeActivateTrip(
+  stale: TripRow,
+  opts: { announce?: boolean } = {},
+): Promise<string | null> {
   const trip = (await getTripById(stale.id)) ?? stale;
-  if (trip.state === "active" || trip.state === "complete") return;
+  if (trip.state === "active" || trip.state === "complete") return null;
   const people = await listParticipants(trip.id);
-  if (!allParticipantsComplete(people.map((p) => p.survey_state))) return;
+  if (!allParticipantsComplete(people.map((p) => p.survey_state))) return null;
   if (!setupReadyToActivate(trip as SetupFields)) {
     logStep("activate.blocked", {
       tripId: trip.id,
       missing: missingRequiredSetup(trip as SetupFields),
     });
-    return;
+    return null;
   }
 
-  const publicTrip = {
-    id: trip.id,
-    linq_chat_id: trip.linq_chat_id,
-    name: trip.name,
-    state: trip.state,
-  };
-  await sendText(trip.linq_chat_id, buildSetupCompleteGroupPost(publicTrip));
+  // Group-safe fields only (DM stays in DM); the line names when the first
+  // board really lands, from the same schedule the cron follows.
+  const now = new Date();
+  const next = nextScheduledBoard({
+    state: "active",
+    destination: trip.destination,
+    timezone: trip.timezone,
+    now,
+    todayBoardExists: false,
+  });
+  const line = setupCompleteLine(next.at ? describeBoardTime(next.at, now, trip.timezone) : null);
+  if (opts.announce !== false) await sendText(trip.linq_chat_id, line);
   const { error } = await getServiceClient()
     .from("trips")
     .update({ state: "active" })
     .eq("id", trip.id)
     .neq("state", "active");
   if (error) throw error;
+  return line;
 }
 
 export async function bootstrapGroupIfNeeded(
@@ -410,7 +427,8 @@ export async function bootstrapGroupIfNeeded(
     }
 
     const displayName = displayNameFromChatJson(raw);
-    if (displayName && trip.name.startsWith("PLACEHOLDER:")) {
+    // Legacy rows were named "PLACEHOLDER: unnamed trip".
+    if (displayName && (trip.name === UNNAMED_TRIP || trip.name.startsWith("PLACEHOLDER:"))) {
       await getServiceClient()
         .from("trips")
         .update({ name: displayName })

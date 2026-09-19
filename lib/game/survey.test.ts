@@ -144,7 +144,7 @@ describe("choice answers never store raw text", () => {
     expect(step.state.awaiting).toBe("dietary");
     expect(step.state.answers.dietary).toBeUndefined();
     expect(step.completed).toBe(false);
-    expect(step.prompt).toBe("didn't catch that. reply none / has_restriction, or skip.");
+    expect(step.prompt).toBe("didn't catch that. reply none / yes, or skip.");
   });
 
   it("then asks strictness once the restriction is picked", () => {

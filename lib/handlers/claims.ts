@@ -44,6 +44,7 @@ import {
   visionRejectedLine,
 } from "@/lib/game/copy";
 import { endOfLocalDayContaining } from "@/lib/game/time";
+import { isBoardRequest } from "@/lib/game/board-schedule";
 import {
   FREEFORM_PHOTO_BONUS_MAX,
   FREEFORM_SOURCE,
@@ -1771,6 +1772,12 @@ async function handleGroupClaimInner(
   }
 
   if (decision.type === "fuzzy") {
+    // "give me the first day plans" asks for the board; it is not a claim.
+    // Straight to the conversation layer, which answers without a model.
+    if (isBoardRequest(decision.text)) {
+      claimStep("fuzzy.skip", { reason: "board_request" });
+      return miss();
+    }
     const match = await claimAwait(
       "gemini.matchClaimText",
       { textPreview: decision.text.slice(0, 80) },

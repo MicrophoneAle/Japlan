@@ -60,7 +60,7 @@ function currentValue(trip: TripRow, id: SetupQuestionId): string | null {
 }
 
 export function setupPromptFor(trip: TripRow, id: SetupQuestionId, first = false): string {
-  return setupPrompt(id, currentValue(trip, id), { first });
+  return setupPrompt(id, currentValue(trip, id), { first, isSolo: Boolean(trip.is_solo) });
 }
 
 async function saveTrip(tripId: string, patch: Record<string, unknown>): Promise<void> {
@@ -287,7 +287,7 @@ export async function answerSetup(opts: {
   }
 
   const updated = { ...trip, ...patch } as TripRow;
-  const next = nextSetupQuestion(id);
+  const next = nextSetupQuestion(id, { isSolo: Boolean(trip.is_solo) });
   if (next) {
     await saveTrip(trip.id, { ...patch, setup_state: next });
     return `${said} ${setupPromptFor(updated, next)}`.trim();
@@ -298,6 +298,10 @@ export async function answerSetup(opts: {
   setupStep("finish", { tripId: trip.id, missing });
   const finished = `${said} ${setupFinishedLine(missing)}`.trim();
   const surveyPrompt = await surveyPromptAfterSetup(opts.organizer);
-  await maybeActivateTrip((await getTripById(trip.id)) ?? updated);
-  return surveyPrompt ? setupNowAboutYouLine(finished, surveyPrompt) : finished;
+  // Solo: the trip chat is this DM, so "we're live" rides in this reply.
+  const live = await maybeActivateTrip((await getTripById(trip.id)) ?? updated, {
+    announce: !trip.is_solo,
+  });
+  if (surveyPrompt) return setupNowAboutYouLine(finished, surveyPrompt);
+  return trip.is_solo && live ? `${finished} ${live}` : finished;
 }

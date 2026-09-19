@@ -146,7 +146,7 @@ describe("organizer setup", () => {
     expect(lastTo(MIKE_DM)).toBe(
       "trip setup, 4 quick ones. where are you going? a city is plenty. (skip and i'll ask again later)",
     );
-    expect(lastTo(SAM_DM)).toMatch(/first name/i); // Sam gets the personal survey
+    expect(lastTo(SAM_DM)).toMatch(/what should i call you\?$/); // Sam gets the personal survey
 
     await send(MIKE, MIKE_DM, "tokyo");
     expect(openTrip()!.destination).toBe("tokyo, japan");
@@ -165,7 +165,9 @@ describe("organizer setup", () => {
     await send(MIKE, MIKE_DM, "karaoke solo in shinjuku");
     expect(openTrip()!.stake_text).toBe("karaoke solo in shinjuku");
     expect(openTrip()!.setup_state).toBe("done");
-    expect(lastTo(MIKE_DM)).toMatch(/^got it\. setup's done\. now a few about you\. .*first name/i);
+    expect(lastTo(MIKE_DM)).toBe(
+      "got it. setup's done. a few quick ones so the tasks fit you. skip any of them by saying skip. what should i call you?",
+    );
     expect(person(MIKE)!.survey_state).toBe("first_name");
   });
 
@@ -191,7 +193,10 @@ describe("organizer setup", () => {
     await send(MIKE, MIKE_DM, "skip");
     await send(MIKE, MIKE_DM, "skip");
     expect(openTrip()!.state).toBe("active");
-    expect(lastTo(GROUP)).toMatch(/setup is complete/i);
+    // Trip is Tokyo (UTC+9), so the cron really will post: tomorrow 8am local.
+    expect(lastTo(GROUP)).toBe(
+      "we're live. every morning your tasks arrive by dm, and a code like A1 claims one. first board lands tomorrow at 8am.",
+    );
   });
 
   it("asks again on the organizer's next message, not on a timer", async () => {
@@ -355,7 +360,7 @@ describe("end trip and new trip", () => {
     expect(second.state).toBe("surveying");
     expect(second.organizer_participant_id).toBe(person(SAM)!.id); // whoever asked
     expect(lastTo(SAM_DM)).toMatch(/^trip setup, 4 quick ones\./);
-    expect(allTo(GROUP).filter((t) => /PLACEHOLDER: Japlan is in this chat/.test(t))).toHaveLength(2);
+    expect(allTo(GROUP).filter((t) => /^hi, i'm japlan\./.test(t))).toHaveLength(2);
 
     await send(MIKE, GROUP, "japlan new trip");
     expect(lastTo(GROUP)).toBe(`there's already a trip running. "japlan end trip" first.`);

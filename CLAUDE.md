@@ -46,6 +46,7 @@ Do not re-guess these.
 - Media is `data.parts[]`, `type=media`, fetchable `url`, `mime` / `mime_type`. **Unverified:** `.captures` holds no media part yet. `[japlan.dispatch] step photo.detect` logs every non-text part's keys; confirm against the first real photo. The declared mime is not trusted (`photoPartsFrom` drops only clear non-images); bytes are sniffed after fetch. iMessage photos are usually HEIC, which prebuilt `sharp` cannot decode: `imageFingerprint` falls back to an exact `sha256:` hash and EXIF is read from the raw bytes.
 - Foursquare venue id is **`fsq_place_id`**, not `fsq_id`. Drop results that only have the legacy field.
 - **Gemini: `gemini-3.5-flash-lite` rejects `thinkingBudget: 0`** with a bare 400 INVALID_ARGUMENT (verified 2026-09-19). Callers still pass `thinkingBudget: 0`; `thinkingConfigFor` in `lib/llm/gemini.ts` maps it to `thinkingLevel: minimal`, and a rejected thinking config is retried once without it. Never build a thinking config by hand.
+- **Gemini tool calls carry a `thoughtSignature`** that must be replayed with the call in the next turn, or the request 400s ("missing a thought_signature"). `completeTurn` reads calls from the raw parts to keep it; the conversation loop echoes calls exactly as made. `gemini-3.5-flash-lite` also ignores `functionCallingConfig: NONE`, so a forced text reply replays tool history as plain text with no tools declared (`flattenToolHistory`).
 - Prefer a deterministic parser before a model: dates go through `parseLooseDates` and destinations through `lookupCityTimezone` first; Gemini is only the fallback, and every path is logged `[japlan.setup] step`.
 - Task codes: `[A-Za-z]\d{1,2}` as a standalone token (`findTaskCode` in `lib/game/addressing.ts`). Strict: the whole message, or anywhere with the keyword. Loose: a token in a message of 6 words or fewer with no keyword; loose is tentative and stays silent unless it resolves to the sender's own task. Codes repeat per owner (everyone's personal board is A1-A3), unique on `(trip_id, day, participant_id, team_id, code)`; resolve with `findTaskByCodeFor`. Wake keyword: `japlan` (`JAPLAN_WAKE_KEYWORD`), case-insensitive, word boundary.
 
@@ -59,14 +60,13 @@ These are current, not intended.
 - **Foursquare is out of credits.** Destination profile is hand-seeded: `npx tsx scripts/seed-profile.ts` writes `TOKYO_HAND_PROFILE` from `lib/game/tokyo-profile.ts`. Setup destinations will not resolve until credits return: the raw string is stored and Gemini's timezone (validated) is still used. A destination changed via `japlan setup` stores a `partial` profile; boards generate from it until Foursquare answers.
 - **Organizer is a proxy.** Linq never reports who added the bot, so `trips.organizer_participant_id` is whoever sent the first group message (or ran `japlan new trip`). Legacy trips with no organizer: the first participant to run `japlan setup` / `japlan end trip` takes the role.
 - **RLS is off** on every public table. Service role only. Do not expose that key.
-- **Cron is daily**, `vercel.json` `0 23 * * *` (23:00 UTC). Correct for one timezone (Tokyo 08:00). Hobby plan blocks hourly. Daily board also checks local 8:00 unless `force=1`.
+- **Cron is daily**, `vercel.json` `0 23 * * *` (23:00 UTC). Correct for one timezone (Tokyo 08:00). Hobby plan blocks hourly. Daily board also checks local 8:00 unless `force=1`. So boards only post on their own for UTC+9 trips; `lib/game/board-schedule.ts` mirrors this exactly (a test pins it to `vercel.json`) so the bot never promises a board that will not come. The cron also ignores `start_date`: boards post before a trip starts.
 - **Foursquare PAYG storage:** do not cache names/hours in `places` indefinitely. Only `fsq_place_id`, photo ids, and address ids may be stored long-term. Current `places` rows still store names; do not add more cache of licensed fields.
 
 ## Placeholders that still need writing
 
 - Organizer setup covers destination, dates, difficulty, stake (`lib/handlers/setup.ts`). PLAN's arrival/departure times and team sizes are not asked yet. Setup copy (`SETUP_QUESTIONS` in `copy.ts`) is draft wording.
 - Wrapped is a fictional demo; `wrappedUrlFor` in `lib/handlers/trip-lifecycle.ts` returns null until a per-trip page exists.
-- `SETUP_COMPLETE` (and `GROUP_INTRO`, `SURVEY_DONE_DM`) in `lib/game/copy.ts` still literally say `PLACEHOLDER`.
 - 5 of the intended 20-30 templates exist in `lib/game/templates.ts`. Boards look repetitive until the bank is filled.
 
 ## Conventions
@@ -82,6 +82,8 @@ These are current, not intended.
 ## How to run and test
 
 Env: `.env.example` / Vercel project env. Solo flag: `JAPLAN_SOLO_MODE=true` (also `1` / `yes`). Group behaviour must not change when the flag is false.
+
+Solo trips skip group-only survey questions (`GROUP_ONLY_QUESTIONS`: social graph, competitiveness) and the stake setup question, get no morning standings post, and fold "we're live" into the reply they are already getting (their DM is the trip chat).
 
 Solo DM loop (does not exist unless the flag is on):
 

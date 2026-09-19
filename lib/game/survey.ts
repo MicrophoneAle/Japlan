@@ -61,10 +61,25 @@ export function answerValue(
   return entry.value;
 }
 
+export type SurveyContext = { isSolo?: boolean };
+
+// Questions that only mean something with other people on the trip: the
+// social graph (who to split with, who you have travelled with, couples) and
+// competitiveness (there is no one to beat). Hard constraints and preference
+// weights still apply to a solo trip.
+export const GROUP_ONLY_QUESTIONS: ReadonlySet<QuestionId> = new Set<QuestionId>([
+  "social_with",
+  "social_travelled",
+  "social_couples",
+  "competitiveness",
+]);
+
 export function includeQuestion(
   id: QuestionId,
   answers: SurveyAnswers,
+  ctx: SurveyContext = {},
 ): boolean {
+  if (ctx.isSolo && GROUP_ONLY_QUESTIONS.has(id)) return false;
   switch (id) {
     case "dietary_strictness":
       return answerValue(answers, "dietary") === "has_restriction";
@@ -86,11 +101,12 @@ export function includeQuestion(
 export function nextQuestion(
   answers: SurveyAnswers,
   after?: QuestionId,
+  ctx: SurveyContext = {},
 ): QuestionId | "done" {
   const start = after ? QUESTION_ORDER.indexOf(after) + 1 : 0;
   for (let i = start; i < QUESTION_ORDER.length; i++) {
     const id = QUESTION_ORDER[i];
-    if (includeQuestion(id, answers)) return id;
+    if (includeQuestion(id, answers, ctx)) return id;
   }
   return "done";
 }
@@ -145,6 +161,7 @@ export function startSurvey(): SurveyStep {
 export function applyReply(
   state: SurveyMachineState,
   text: string,
+  ctx: SurveyContext = {},
 ): SurveyStep {
   if (state.awaiting === "done") {
     return { state, prompt: null, completed: true };
@@ -165,7 +182,7 @@ export function applyReply(
       completed: false,
     };
   }
-  const next = nextQuestion(answers, state.awaiting);
+  const next = nextQuestion(answers, state.awaiting, ctx);
   if (next === "done") {
     return {
       state: { awaiting: "done", answers },

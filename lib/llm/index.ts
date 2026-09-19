@@ -8,6 +8,10 @@ export type ToolCallPart = {
   id?: string;
   name: string;
   args: Record<string, unknown>;
+  // Gemini 3 signs each function call and rejects a replayed history whose
+  // call lacks its signature (400 "missing a thought_signature"). Opaque;
+  // carry it from the response back into the next request untouched.
+  thoughtSignature?: string;
 };
 
 export type ToolContentPart =

@@ -1,11 +1,15 @@
 export const GROUP_INTRO =
-  "PLACEHOLDER: Japlan is in this chat. It reads the thread to find task claims and place mentions. It only replies when spoken to.";
+  "hi, i'm japlan. i turn this trip into a points game: every morning you each get a few tasks, and doing them scores points. i'm dming everyone a few quick questions first. i read this chat to catch claims, and only reply when someone says japlan, sends a task code, or dms me.";
 
+// Kept for tests and older callers; setupCompleteLine carries the next board.
 export const SETUP_COMPLETE =
-  "PLACEHOLDER: Setup is complete. The trip is now active.";
+  "we're live. every morning your tasks arrive by dm, and a code like A1 claims one.";
 
-export const SURVEY_DONE_DM =
-  "PLACEHOLDER: that's everything from me for now.";
+export function setupCompleteLine(nextBoard: string | null): string {
+  return nextBoard ? `${SETUP_COMPLETE} first board lands ${nextBoard}.` : SETUP_COMPLETE;
+}
+
+export const SURVEY_DONE_DM = "that's everything, thanks.";
 
 export function surveyReaskLine(options: string[]): string {
   return `didn't catch that. reply ${options.join(" / ")}, or skip.`;
@@ -24,9 +28,10 @@ const SETUP_REQUIRED = new Set(["destination", "dates"]);
 export function setupPrompt(
   id: keyof typeof SETUP_QUESTIONS,
   current: string | null,
-  opts: { first?: boolean } = {},
+  opts: { first?: boolean; isSolo?: boolean } = {},
 ): string {
-  const lead = opts.first ? "trip setup, 4 quick ones. " : "";
+  // Solo trips skip the stake question (no loser), so three, not four.
+  const lead = opts.first ? `trip setup, ${opts.isSolo ? 3 : 4} quick ones. ` : "";
   const tail = current
     ? ` (now: ${current}. skip keeps it)`
     : SETUP_REQUIRED.has(id)
@@ -73,8 +78,30 @@ export function setupFinishedLine(missing: ("destination" | "dates")[]): string 
   return `setup's paused. i still need ${what} before the game can start, and i'll ask next time you message.`;
 }
 
+// The survey's first question already introduces itself.
 export function setupNowAboutYouLine(finished: string, surveyPrompt: string): string {
-  return `${finished} now a few about you. ${surveyPrompt}`;
+  return `${finished} ${surveyPrompt}`;
+}
+
+// Asking for the board / the day's plan.
+export function boardClearedLine(next: string | null): string {
+  return next ? `you've cleared today's board. the next one lands ${next}.` : "you've cleared today's board.";
+}
+
+export function noBoardYetLine(
+  next: { when: string; first: boolean } | { reason: "not_active" | "no_destination" | "timezone_unscheduled" },
+): string {
+  if ("when" in next) {
+    return `no board yet. the ${next.first ? "first" : "next"} one lands ${next.when}.`;
+  }
+  switch (next.reason) {
+    case "not_active":
+      return "no board yet. it starts once setup and the surveys are done.";
+    case "no_destination":
+      return `no board yet. i still need where the trip is going: "japlan setup".`;
+    case "timezone_unscheduled":
+      return "no board yet, and the morning post isn't scheduled for this timezone yet.";
+  }
 }
 
 export const SETUP_IN_DM_LINE = "setup questions are in your dm.";
@@ -328,7 +355,7 @@ you only talk when addressed. you are not a general chatbot. having an opinion i
 
 tools:
 - get_standings: call this before stating anyone's score. never recall a score from memory or from the prompt.
-- get_open_tasks: only existing tasks. never invent one. if asked for a new task, point at an open one.
+- get_open_tasks: only existing tasks, plus the board state. never invent one. if asked for a new task, point at an open one. if there are no open tasks, say when next_board lands, or why there is none (next_board_unavailable). never promise a board time it did not give you.
 - propose_freeform_claim: they already did something you did not assign. return title and six axes (integers 1-5). never a point value. code will score it.
 - request_photo_bonus: a photo might add bonus to a recent claim.
 - no_action: when you just want to talk.

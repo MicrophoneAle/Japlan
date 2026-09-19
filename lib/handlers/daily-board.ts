@@ -160,8 +160,9 @@ async function loadAssignees(tripId: string, people: ParticipantRow[]): Promise<
   return assignees;
 }
 
-function scoreGapText(people: ParticipantRow[]): string {
+export function scoreGapText(people: ParticipantRow[]): string {
   if (people.length === 0) return "no scores yet";
+  if (people.length === 1) return `solo trip, ${people[0].score} points so far, no opponents`;
   const sorted = [...people].sort((a, b) => b.score - a.score);
   const lead = sorted[0];
   const trail = sorted[sorted.length - 1];
@@ -651,6 +652,9 @@ async function deliverMorningBoards(opts: {
     }
   }
 
+  // A solo trip's chat IS the player's DM, which just got their board: a
+  // one-person standings post would be a second message saying nothing.
+  if (opts.trip.is_solo) return;
   const standings = formatMorningStandings({
     day: opts.day,
     weatherLine: opts.weatherLine,

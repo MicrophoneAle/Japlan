@@ -21,9 +21,11 @@ import {
 import {
   CONVERSATION_FALLBACK,
   CONVERSATION_PRIVACY_LINE,
+  boardClearedLine,
   CONVERSATION_SYSTEM_PROMPT,
   conversationCapLine,
   conversationRedirect,
+  noBoardYetLine,
 } from "@/lib/game/copy";
 import type { FreeformExtraction } from "@/lib/game/freeform";
 import {
@@ -35,6 +37,12 @@ import {
 import type { Axes } from "@/lib/game/scoring";
 import type { SurveyAnswers } from "@/lib/game/survey";
 import { currentTripDay } from "@/lib/handlers/daily-board";
+import { formatPersonalBoard } from "@/lib/game/board";
+import {
+  describeBoardTime,
+  isBoardRequest,
+  nextScheduledBoard,
+} from "@/lib/game/board-schedule";
 import {
   applyLatePhotoBonus,
   submitFreeformClaim,
@@ -196,6 +204,55 @@ function userPrompt(opts: {
   ].join("\n");
 }
 
+// Today's board for this person, or when the next one lands. Deterministic:
+// the same schedule the cron follows (lib/game/board-schedule.ts).
+export function boardStatus(
+  miss: ClaimFallthrough,
+  now: number,
+): { reply: string; tool: Record<string, unknown> } {
+  const at = new Date(now);
+  const day = currentTripDay(miss.trip, at);
+  const todays = claimableTasks(miss).filter((task) => task.day === day);
+  const openToday = todays.filter((task) => isOpenTask(task.id, miss.claims));
+  const boardToday = miss.tasks.some((task) => task.day === day);
+  const next = nextScheduledBoard({
+    state: miss.trip.state,
+    destination: miss.trip.destination,
+    timezone: miss.trip.timezone,
+    now: at,
+    todayBoardExists: boardToday,
+  });
+  const when = next.at ? describeBoardTime(next.at, at, miss.trip.timezone) : null;
+  const tool = {
+    day,
+    today_open: openToday.map((task) => ({ code: task.code, title: task.title })),
+    today_cleared: todays.length > 0 && openToday.length === 0,
+    next_board: when,
+    next_board_unavailable: next.at === null ? next.reason : null,
+  };
+
+  let reply: string;
+  if (openToday.length > 0) {
+    reply = formatPersonalBoard({
+      day,
+      tasks: openToday.map((task) => ({
+        code: task.code,
+        title: task.title,
+        base_points: task.base_points,
+      })),
+    });
+  } else if (todays.length > 0) {
+    reply = boardClearedLine(when);
+  } else {
+    reply = noBoardYetLine(
+      next.at === null
+        ? { reason: next.reason }
+        : { when: describeBoardTime(next.at, at, miss.trip.timezone), first: miss.tasks.length === 0 },
+    );
+  }
+  return { reply, tool };
+}
+
 export async function handleConversation(
   miss: ClaimFallthrough,
   deps: { provider?: LLMProvider } = {},
@@ -209,6 +266,18 @@ export async function handleConversation(
 
   const now = miss.now ?? Date.now();
   const send = miss.send ?? sendText;
+
+  // "give me the first day plans": answer from the board, no model needed.
+  // Asking before a board exists is normal, not an error.
+  if (isBoardRequest(miss.text)) {
+    const status = boardStatus(miss, now);
+    console.info("[japlan.conversation] board request", {
+      chatId: miss.chatId,
+      ...status.tool,
+    });
+    await send(miss.chatId, status.reply);
+    return;
+  }
   if (conversationalCapReached(miss.chatId, now)) {
     console.info("[japlan.conversation] hourly cap", {
       chatId: miss.chatId,
@@ -283,13 +352,17 @@ export async function handleConversation(
     generate: async (input) => {
       const turn = await generate(input);
       if (turn.functionCalls.length > 0) {
+        // Echo the model's calls exactly as made, signature included: Gemini
+        // rejects a replayed call without its thought_signature. Point fields
+        // are stripped where the args are executed, below, not in history.
         contents.push({
           role: "model",
           parts: turn.functionCalls.map((call) => ({
             functionCall: {
               id: call.id,
               name: call.name,
-              args: stripPointFields(call.args ?? {}),
+              args: call.args ?? {},
+              ...(call.thoughtSignature ? { thoughtSignature: call.thoughtSignature } : {}),
             },
           })),
         });
@@ -338,7 +411,9 @@ export async function handleConversation(
   const next = nextOffTopicCount(getOffTopicCount(miss.chatId), !onTopic);
   setOffTopicCount(miss.chatId, next);
   const policy = offTopicPolicy(next);
-  const trailing = [...miss.people].sort((a, b) => a.score - b.score)[0];
+  // "X is still hunting" needs someone else to be X: no trailer on a solo trip.
+  const trailing =
+    miss.people.length > 1 ? [...miss.people].sort((a, b) => a.score - b.score)[0] : null;
   const redirect = conversationRedirect({
     task: open[0] ? { code: open[0].code } : null,
     nearby: open[0]?.neighborhood || miss.trip.destination,
@@ -379,7 +454,10 @@ async function executeConversationTool(
       title: task.title,
       neighborhood: task.neighborhood,
     }));
-    return { result: { tasks }, sent: false };
+    // The board state too, so "what's the plan" can say when the next board
+    // lands instead of guessing.
+    const board = boardStatus(miss, miss.now ?? Date.now()).tool;
+    return { result: { tasks, board }, sent: false };
   }
   if (name === "no_action") {
     return { result: { ok: true }, sent: false };

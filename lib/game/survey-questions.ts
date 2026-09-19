@@ -28,18 +28,20 @@ export type Question = {
   choices?: { id: string; label: string }[];
 };
 
+// Copy: lowercase, conversational, one message each. "skip" is explained once,
+// in the first question. Choice labels are what people see and can type; the
+// ids (stored, used by validate.ts) also match, so old answers still work.
 export const QUESTIONS: Record<QuestionId, Question> = {
   first_name: {
     id: "first_name",
     kind: "free_text",
     prompt:
-      "PLACEHOLDER: What first name should I use for you in standings? Reply skip to skip.",
+      "a few quick ones so the tasks fit you. skip any of them by saying skip. what should i call you?",
   },
   age_bracket: {
     id: "age_bracket",
     kind: "choice",
-    prompt:
-      "PLACEHOLDER: Age bracket? (18-24 / 25-34 / 35-44 / 45-54 / 55+) — 18+ only. Reply skip to skip.",
+    prompt: "age range? 18-24 / 25-34 / 35-44 / 45-54 / 55+",
     choices: [
       { id: "18-24", label: "18-24" },
       { id: "25-34", label: "25-34" },
@@ -51,29 +53,26 @@ export const QUESTIONS: Record<QuestionId, Question> = {
   dietary: {
     id: "dietary",
     kind: "choice",
-    prompt:
-      "PLACEHOLDER: Any dietary restrictions or allergies? (none / has_restriction). Reply skip to skip.",
+    prompt: "any dietary restrictions or allergies? none / yes",
     choices: [
       { id: "none", label: "none" },
-      { id: "has_restriction", label: "has_restriction" },
+      { id: "has_restriction", label: "yes" },
     ],
   },
   dietary_strictness: {
     id: "dietary_strictness",
     kind: "choice",
-    prompt:
-      "PLACEHOLDER: How strict is that dietary restriction? (allergy / preference / cheat_on_vacation). Reply skip to skip.",
+    prompt: "how strict is that? allergy / preference / flexible on vacation",
     choices: [
       { id: "allergy", label: "allergy" },
       { id: "preference", label: "preference" },
-      { id: "cheat_on_vacation", label: "cheat_on_vacation" },
+      { id: "cheat_on_vacation", label: "flexible on vacation" },
     ],
   },
   mobility: {
     id: "mobility",
     kind: "choice",
-    prompt:
-      "PLACEHOLDER: Any mobility or physical limits we should treat as hard constraints? (no limits / has limits). Reply skip to skip.",
+    prompt: "anything physical i should plan around, like stairs or long walks? no limits / has limits",
     choices: [
       { id: "no_limits", label: "no limits" },
       { id: "has_limits", label: "has limits" },
@@ -82,8 +81,7 @@ export const QUESTIONS: Record<QuestionId, Question> = {
   budget: {
     id: "budget",
     kind: "choice",
-    prompt:
-      "PLACEHOLDER: Budget band for this trip? (low / medium / high). Reply skip to skip.",
+    prompt: "budget for the trip? low / medium / high",
     choices: [
       { id: "low", label: "low" },
       { id: "medium", label: "medium" },
@@ -93,31 +91,27 @@ export const QUESTIONS: Record<QuestionId, Question> = {
   blackout: {
     id: "blackout",
     kind: "free_text",
-    prompt:
-      "PLACEHOLDER: Any blackout times (work calls, prayer, a defended nap)? Reply skip to skip.",
+    prompt: "any times you're off limits? work calls, prayer, a defended nap.",
   },
   interests: {
     id: "interests",
     kind: "choice",
-    prompt:
-      "PLACEHOLDER: Is your interest allocation food-heavy? (food_heavy / balanced / not_food). Reply skip to skip.",
+    prompt: "how much of this trip is about food? mostly food / a mix / not food",
     choices: [
-      { id: "food_heavy", label: "food_heavy" },
-      { id: "balanced", label: "balanced" },
-      { id: "not_food", label: "not_food" },
+      { id: "food_heavy", label: "mostly food" },
+      { id: "balanced", label: "a mix" },
+      { id: "not_food", label: "not food" },
     ],
   },
   food_adventure: {
     id: "food_adventure",
     kind: "free_text",
-    prompt:
-      "PLACEHOLDER: Spice tolerance, street food, adventurousness? Reply skip to skip.",
+    prompt: "how adventurous are you with food? spice, street food, mystery meat, say whatever.",
   },
   nightlife: {
     id: "nightlife",
     kind: "choice",
-    prompt:
-      "PLACEHOLDER: Did you put points on nightlife? (yes / no). Reply skip to skip.",
+    prompt: "into nightlife this trip? yes / no",
     choices: [
       { id: "yes", label: "yes" },
       { id: "no", label: "no" },
@@ -126,8 +120,7 @@ export const QUESTIONS: Record<QuestionId, Question> = {
   drinking: {
     id: "drinking",
     kind: "choice",
-    prompt:
-      "PLACEHOLDER: Drinking on this trip? (yes / no / sometimes). Reply skip to skip.",
+    prompt: "drinking? yes / no / sometimes",
     choices: [
       { id: "yes", label: "yes" },
       { id: "no", label: "no" },
@@ -137,24 +130,21 @@ export const QUESTIONS: Record<QuestionId, Question> = {
   paid_attractions: {
     id: "paid_attractions",
     kind: "free_text",
-    prompt:
-      "PLACEHOLDER: Any paid attractions you already want? Reply skip to skip.",
+    prompt: "any paid attractions you already know you want?",
   },
   pace: {
     id: "pace",
     kind: "choice",
-    prompt:
-      "PLACEHOLDER: Pace? (early_and_moving / two_things_and_lunch). Reply skip to skip.",
+    prompt: "what's your pace? early and moving / two things and lunch",
     choices: [
-      { id: "early_and_moving", label: "early_and_moving" },
-      { id: "two_things_and_lunch", label: "two_things_and_lunch" },
+      { id: "early_and_moving", label: "early and moving" },
+      { id: "two_things_and_lunch", label: "two things and lunch" },
     ],
   },
   chaos: {
     id: "chaos",
     kind: "choice",
-    prompt:
-      "PLACEHOLDER: Chaos tolerance? (high / low). Reply skip to skip.",
+    prompt: "how much chaos can you handle? high / low",
     choices: [
       { id: "high", label: "high" },
       { id: "low", label: "low" },
@@ -163,48 +153,41 @@ export const QUESTIONS: Record<QuestionId, Question> = {
   chaos_dares: {
     id: "chaos_dares",
     kind: "free_text",
-    prompt:
-      "PLACEHOLDER: Which dare categories are ok: strangers, public singing, unidentifiable food? Reply skip to skip.",
+    prompt: "which dares are fair game? strangers, singing in public, unidentifiable food, anything else.",
   },
   chaos_alternative: {
     id: "chaos_alternative",
     kind: "free_text",
-    prompt:
-      "PLACEHOLDER: Low chaos — what would you rather do instead of dares? Reply skip to skip.",
+    prompt: "low chaos, noted. what would you rather do instead of dares?",
   },
   competitiveness: {
     id: "competitiveness",
     kind: "choice",
-    prompt:
-      "PLACEHOLDER: Competitiveness? (want_to_win / along_for_the_ride). Reply skip to skip.",
+    prompt: "here to win, or along for the ride? win / ride",
     choices: [
-      { id: "want_to_win", label: "want_to_win" },
-      { id: "along_for_the_ride", label: "along_for_the_ride" },
+      { id: "want_to_win", label: "win" },
+      { id: "along_for_the_ride", label: "ride" },
     ],
   },
   attractions: {
     id: "attractions",
     kind: "free_text",
-    prompt:
-      "PLACEHOLDER: Any attractions you already want on the itinerary? Reply skip to skip.",
+    prompt: "anything you already want on the itinerary?",
   },
   social_with: {
     id: "social_with",
     kind: "free_text",
-    prompt:
-      "PLACEHOLDER: Who would you like to be with if the group splits up for an afternoon? Reply skip to skip.",
+    prompt: "if the group splits up for an afternoon, who do you want to end up with?",
   },
   social_travelled: {
     id: "social_travelled",
     kind: "free_text",
-    prompt:
-      "PLACEHOLDER: Who have you already travelled with a lot? Reply skip to skip.",
+    prompt: "who have you already travelled with a lot?",
   },
   social_couples: {
     id: "social_couples",
     kind: "choice",
-    prompt:
-      "PLACEHOLDER: If you are a couple on this trip, split or keep together? (split / together / n/a). Reply skip to skip.",
+    prompt: "here as a couple? split up for tasks or stay together? split / together / n/a",
     choices: [
       { id: "split", label: "split" },
       { id: "together", label: "together" },

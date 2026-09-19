@@ -42,9 +42,12 @@ export function thinkingConfigFor(budget: number | undefined): ThinkingConfig | 
   return { thinkingBudget: budget };
 }
 
-function isInvalidArgument(err: unknown): boolean {
+// Only the bare "Request contains an invalid argument." is the thinking-config
+// rejection. A 400 that names its problem (e.g. a missing thought_signature)
+// is a different bug and must surface, not be retried and mislabelled.
+function isBareInvalidArgument(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
-  return /INVALID_ARGUMENT|"code":\s*400/.test(message);
+  return /INVALID_ARGUMENT/.test(message) && /Request contains an invalid argument/.test(message);
 }
 
 // If a model rejects the thinking config, retry once without it rather than
@@ -56,7 +59,7 @@ async function generateWithThinkingFallback(
   try {
     return await ai.models.generateContent(request);
   } catch (err) {
-    if (!request.config?.thinkingConfig || !isInvalidArgument(err)) throw err;
+    if (!request.config?.thinkingConfig || !isBareInvalidArgument(err)) throw err;
     console.error("[japlan.llm] model rejected thinkingConfig; retrying without it", {
       model: request.model,
       thinkingConfig: request.config.thinkingConfig,
@@ -115,7 +118,14 @@ export class GeminiProvider implements LLMProvider {
     thinkingBudget?: number;
   }): Promise<ToolTurn> {
     const ai = new GoogleGenAI({ apiKey: apiKey() });
-    const contents = opts.contents.map((entry) => contentFromTurn(entry));
+    const forceText = opts.toolMode === "none";
+    // Forcing a text reply: gemini-3.5-flash-lite ignores functionCallingConfig
+    // NONE and answers a tool-laden history with another call and no text
+    // (verified 2026-09-19, with and without tools declared). So the history
+    // is replayed as plain text and no tools are offered; nothing to call.
+    const contents = (forceText ? flattenToolHistory(opts.contents) : opts.contents).map(
+      (entry) => contentFromTurn(entry),
+    );
     const thinkingConfig = thinkingConfigFor(opts.thinkingBudget);
     const response = await generateWithThinkingFallback(ai, {
       model: modelForTier(opts.tier),
@@ -123,12 +133,8 @@ export class GeminiProvider implements LLMProvider {
       config: {
         systemInstruction: opts.system,
         ...(thinkingConfig ? { thinkingConfig } : {}),
-        ...(opts.toolMode === "none"
-          ? {
-              toolConfig: {
-                functionCallingConfig: { mode: FunctionCallingConfigMode.NONE },
-              },
-            }
+        ...(forceText
+          ? {}
           : {
               tools: [
                 {
@@ -145,16 +151,41 @@ export class GeminiProvider implements LLMProvider {
             }),
       },
     });
-    const calls = (response.functionCalls ?? []).map((call) => ({
-      id: call.id,
-      name: call.name ?? "",
-      args: (call.args ?? {}) as Record<string, unknown>,
-    }));
+    // Read calls from the raw parts, not response.functionCalls: only the part
+    // carries the thoughtSignature that must be sent back next turn.
+    const parts = response.candidates?.[0]?.content?.parts ?? [];
+    const calls = parts
+      .filter((part) => part.functionCall?.name)
+      .map((part) => ({
+        id: part.functionCall?.id,
+        name: part.functionCall?.name ?? "",
+        args: (part.functionCall?.args ?? {}) as Record<string, unknown>,
+        ...(part.thoughtSignature ? { thoughtSignature: part.thoughtSignature } : {}),
+      }));
     return {
       text: response.text?.trim() ?? "",
-      functionCalls: calls.filter((call) => call.name),
+      functionCalls: calls,
     };
   }
+}
+
+// Tool calls and results rewritten as text, so a final reply can be produced
+// without offering tools. Keeps what was looked up; drops the call mechanics.
+export function flattenToolHistory(contents: ToolContent[]): ToolContent[] {
+  return contents.map((entry) => ({
+    role: entry.role,
+    parts: entry.parts.map((part) => {
+      if ("functionCall" in part) {
+        return { text: `(looked up ${part.functionCall.name})` };
+      }
+      if ("functionResponse" in part) {
+        return {
+          text: `${part.functionResponse.name} result: ${JSON.stringify(part.functionResponse.response)}`,
+        };
+      }
+      return part;
+    }),
+  }));
 }
 
 function contentFromTurn(entry: ToolContent): Content {
@@ -169,6 +200,9 @@ function contentFromTurn(entry: ToolContent): Content {
           name: part.functionCall.name,
           args: part.functionCall.args,
         },
+        ...(part.functionCall.thoughtSignature
+          ? { thoughtSignature: part.functionCall.thoughtSignature }
+          : {}),
       });
     } else {
       parts.push({
