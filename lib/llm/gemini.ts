@@ -5,6 +5,7 @@ import {
   type Part,
 } from "@google/genai";
 import type { LLMProvider, Msg, ToolContent, ToolTurn } from "./index";
+import { withTimeout } from "@/lib/timeout";
 
 function modelForTier(tier: "fast" | "smart"): string {
   const name =
@@ -223,14 +224,25 @@ export async function matchClaimText(opts: {
   }
 }
 
+export const DEFAULT_VISION_TIMEOUT_MS = 20_000;
+
+export function visionTimeoutMs(value = process.env.JAPLAN_VISION_TIMEOUT_MS): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_VISION_TIMEOUT_MS;
+}
+
+// Each vision call is bounded: a hung Gemini request throws TimeoutError
+// instead of holding the claim until the function is killed.
 export async function scorePhotoFidelity(opts: {
   provider?: LLMProvider;
   title: string;
   photoBonusMax: number;
   image: { data: string; mime: string };
+  timeoutMs?: number;
 }): Promise<PhotoFidelityJson | null> {
   const provider = opts.provider ?? new GeminiProvider();
-  const shownRaw = await provider.complete({
+  const timeoutMs = opts.timeoutMs ?? visionTimeoutMs();
+  const shownRaw = await withTimeout(provider.complete({
     system:
       "Answer one question: does this photo show the task. Return JSON only. Classification, not reasoning.",
     messages: [
@@ -243,7 +255,7 @@ export async function scorePhotoFidelity(opts: {
     schema: PHOTO_SHOWS_SCHEMA,
     tier: "fast",
     thinkingBudget: 0,
-  });
+  }), timeoutMs, "gemini.vision.shows_task");
   if (!shownRaw) return null;
   let showsTask = false;
   try {
@@ -254,7 +266,7 @@ export async function scorePhotoFidelity(opts: {
   }
   if (!showsTask) return { shows_task: false, fidelity: 0 };
 
-  const scoreRaw = await provider.complete({
+  const scoreRaw = await withTimeout(provider.complete({
     system:
       "Score only how completely the photo shows the tasked thing, 0 through the given ceiling. Do not score photo quality. Return JSON only.",
     messages: [
@@ -267,7 +279,7 @@ export async function scorePhotoFidelity(opts: {
     schema: PHOTO_FIDELITY_SCHEMA,
     tier: "fast",
     thinkingBudget: 0,
-  });
+  }), timeoutMs, "gemini.vision.fidelity");
   if (!scoreRaw) return { shows_task: true, fidelity: 0 };
   try {
     const parsed = JSON.parse(scoreRaw) as { fidelity?: number };
@@ -315,6 +327,103 @@ export const FREEFORM_EXTRACT_SCHEMA = {
   },
   required: ["is_completed_activity", "title", "axes"],
 };
+
+export const SETUP_LLM_TIMEOUT_MS = 10_000;
+
+function parseJsonObject(raw: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export const TRIP_DATES_SCHEMA = {
+  type: "object",
+  properties: {
+    understood: { type: "boolean" },
+    start_date: { type: "string" },
+    end_date: { type: "string" },
+  },
+  required: ["understood", "start_date", "end_date"],
+};
+
+// Loose dates ("march 14-19", "next weekend") to ISO. The result is only a
+// proposal: checkDateRange in lib/game/setup.ts validates it in code.
+export async function extractTripDates(opts: {
+  provider?: LLMProvider;
+  text: string;
+  today: string;
+}): Promise<{ start: string; end: string } | null> {
+  const provider = opts.provider ?? new GeminiProvider();
+  const raw = await withTimeout(
+    provider.complete({
+      system:
+        "Convert a trip's travel dates to ISO YYYY-MM-DD. Today's date is given. Resolve relative phrases against today. A range with no year is the next occurrence on or after today. A weekend is Saturday to Sunday. If the message does not describe dates, understood is false and both dates are empty strings. JSON only.",
+      messages: [{ role: "user", content: `today: ${opts.today}\nmessage: ${opts.text}` }],
+      schema: TRIP_DATES_SCHEMA,
+      tier: "fast",
+      thinkingBudget: 0,
+    }),
+    SETUP_LLM_TIMEOUT_MS,
+    "gemini.trip_dates",
+  );
+  const parsed = raw ? parseJsonObject(raw) : null;
+  if (!parsed || parsed.understood !== true) return null;
+  const start = typeof parsed.start_date === "string" ? parsed.start_date.trim() : "";
+  const end = typeof parsed.end_date === "string" ? parsed.end_date.trim() : "";
+  return start && end ? { start, end } : null;
+}
+
+export const PLACE_TIMEZONE_SCHEMA = {
+  type: "object",
+  properties: {
+    display_name: { type: "string" },
+    timezone: { type: "string" },
+  },
+  required: ["display_name", "timezone"],
+};
+
+// Names the destination and its IANA timezone from what Foursquare resolved
+// (or, when it could not, the organizer's raw text). The caller rejects any
+// zone that is not a real IANA name or does not fit the longitude.
+export async function inferPlaceTimezone(opts: {
+  provider?: LLMProvider;
+  text: string;
+  area: {
+    lat: number | null;
+    lng: number | null;
+    locality: string | null;
+    region: string | null;
+    country: string | null;
+  } | null;
+}): Promise<{ display: string; timezone: string } | null> {
+  const provider = opts.provider ?? new GeminiProvider();
+  const evidence = opts.area
+    ? `resolved by places search: locality ${opts.area.locality ?? "?"}, region ${opts.area.region ?? "?"}, country ${opts.area.country ?? "?"}, lat ${opts.area.lat ?? "?"}, lng ${opts.area.lng ?? "?"}`
+    : "not resolved by places search";
+  const raw = await withTimeout(
+    provider.complete({
+      system:
+        "Given a travel destination, return a short lowercase display name (city, country) and the IANA timezone name, such as Asia/Tokyo. Never an abbreviation or UTC offset. If you cannot tell where it is, return empty strings. JSON only.",
+      messages: [{ role: "user", content: `destination: ${opts.text}\n${evidence}` }],
+      schema: PLACE_TIMEZONE_SCHEMA,
+      tier: "fast",
+      thinkingBudget: 0,
+    }),
+    SETUP_LLM_TIMEOUT_MS,
+    "gemini.place_timezone",
+  );
+  const parsed = raw ? parseJsonObject(raw) : null;
+  if (!parsed) return null;
+  const display = typeof parsed.display_name === "string" ? parsed.display_name.trim() : "";
+  const timezone = typeof parsed.timezone === "string" ? parsed.timezone.trim() : "";
+  if (!timezone) return null;
+  return { display: display || opts.text.trim(), timezone };
+}
 
 export async function extractFreeformActivity(opts: {
   provider?: LLMProvider;

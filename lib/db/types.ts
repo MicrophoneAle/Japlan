@@ -14,6 +14,9 @@ export type TripRow = {
   destination_profile_json?: unknown | null;
   is_solo?: boolean;
   daily_points_cap?: number;
+  organizer_participant_id?: string | null;
+  setup_state?: string | null;
+  completed_at?: string | null;
   created_at?: string;
 };
 

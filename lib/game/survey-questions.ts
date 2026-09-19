@@ -239,10 +239,7 @@ export const QUESTION_ORDER: QuestionId[] = [
 
 export const FIRST_QUESTION_ID: QuestionId = "first_name";
 
-export const ORGANIZER_QUESTIONS_PLACEHOLDER = [
-  "PLACEHOLDER (group-level, organizer only, not yet asked): destination and dates",
-  "PLACEHOLDER (group-level, organizer only, not yet asked): arrival and departure times",
-  "PLACEHOLDER (group-level, organizer only, not yet asked): team sizes and counts",
-  "PLACEHOLDER (group-level, organizer only, not yet asked): task difficulty",
-  "PLACEHOLDER (group-level, organizer only, not yet asked): what is the loser doing?",
-] as const;
+// The organizer's trip-level questions (destination, dates, difficulty, stake)
+// live in lib/game/setup.ts and lib/handlers/setup.ts.
+// TODO: PLAN also lists arrival/departure times and team sizes/counts for the
+// organizer; not asked yet.

@@ -29,7 +29,28 @@ export type DestinationProfile = {
   landmarks: ProfileLandmark[];
   price_bands: number[];
   center: { lat: number; lng: number } | null;
+  // Set by the organizer setup when the destination changes: only the name
+  // and centre are known. assembleDestinationProfile treats it as a cache miss
+  // and tries Foursquare, and falls back to it if that fails.
+  partial?: boolean;
 };
+
+export function partialDestinationProfile(
+  destination: string,
+  center: { lat: number; lng: number } | null,
+): DestinationProfile {
+  return {
+    assembled_at: new Date().toISOString(),
+    destination,
+    neighborhoods: [],
+    transit_lines: [],
+    dishes: [],
+    landmarks: [],
+    price_bands: [],
+    center,
+    partial: true,
+  };
+}
 
 function interestBuckets(people: ParticipantRow[]): InterestBucket[] {
   const buckets = new Set<InterestBucket>(["outdoors", "culture"]);
@@ -211,7 +232,7 @@ export async function assembleDestinationProfile(opts: {
   people: ParticipantRow[];
 }): Promise<DestinationProfile> {
   const cached = await loadDestinationProfile(opts.trip);
-  if (cached) {
+  if (cached && !cached.partial) {
     console.info("[japlan.destination] using cached profile", {
       tripId: opts.trip.id,
     });
@@ -228,18 +249,33 @@ export async function assembleDestinationProfile(opts: {
   const categoryIds = categoryIdsForBuckets(buckets);
 
   // Two batched searches at trip-profile time. Never call this from the webhook.
-  const [byInterest, landmarks] = await Promise.all([
-    searchPlaces({
-      near: destination,
-      fsq_category_ids: categoryIds.join(","),
-      limit: 20,
-    }),
-    searchPlaces({
-      near: destination,
-      query: "landmark",
-      limit: 10,
-    }),
-  ]);
+  let byInterest: FoursquarePlace[];
+  let landmarks: FoursquarePlace[];
+  try {
+    [byInterest, landmarks] = await Promise.all([
+      searchPlaces({
+        near: destination,
+        fsq_category_ids: categoryIds.join(","),
+        limit: 20,
+      }),
+      searchPlaces({
+        near: destination,
+        query: "landmark",
+        limit: 10,
+      }),
+    ]);
+  } catch (err) {
+    // A destination changed mid-trip must not stop the board: generate from
+    // the name and centre alone until Foursquare answers.
+    if (cached?.partial) {
+      console.error("[japlan.destination] refresh failed; using partial profile", {
+        tripId: opts.trip.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return cached;
+    }
+    throw err;
+  }
 
   const byId = new Map<string, FoursquarePlace>();
   for (const place of [...byInterest, ...landmarks]) {

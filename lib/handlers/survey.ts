@@ -1,11 +1,13 @@
 import { sendText } from "@/lib/linq/send";
 import { applyReply, type SurveyAnswers, type SurveyAwaiting } from "@/lib/game/survey";
 import { QUESTIONS, type QuestionId } from "@/lib/game/survey-questions";
+import { isSetupQuestion, missingRequiredSetup, type SetupFields } from "@/lib/game/setup";
 import {
   dmClaimInGroupLine,
   dmUnknownPersonLine,
   surveyDoneLine,
 } from "@/lib/game/copy";
+import type { LLMProvider } from "@/lib/llm";
 import {
   countSurveysPending,
   findOpenSurveyByPhone,
@@ -13,12 +15,16 @@ import {
   persistSurveyProgress,
 } from "./bootstrap";
 import { nextStepForParticipant } from "./claims";
+import { answerSetup, needsSetupResume, resumeSetup, setupPromptFor } from "./setup";
 
 // Every DM is addressed, so every branch here sends exactly one message.
+// Order: the organizer's trip setup, then the personal survey, then claims
+// guidance once both are done.
 export async function handleSurveyDm(opts: {
   phone: string;
   chatId: string;
   text: string;
+  provider?: LLMProvider;
 }): Promise<void> {
   console.log("[japlan.dispatch] step", {
     step: "survey.lookup.before",
@@ -31,25 +37,44 @@ export async function handleSurveyDm(opts: {
     found: Boolean(match),
     tripId: match?.trip.id ?? null,
     surveyState: match?.participant.survey_state ?? null,
+    setupState: match?.trip.setup_state ?? null,
   });
   if (!match) {
-    console.log("[japlan.dispatch] step", {
-      step: "survey.no_participant_for_chat",
-      chatId: opts.chatId,
-    });
     await sendText(opts.chatId, dmUnknownPersonLine());
     return;
   }
 
-  const state = match.participant.survey_state;
+  const { trip, participant } = match;
+  const isOrganizer = trip.organizer_participant_id === participant.id;
+  const state = participant.survey_state;
+  const surveyInProgress = Boolean(state && state !== "done" && state !== "not_started");
+
+  if (isOrganizer && isSetupQuestion(trip.setup_state)) {
+    const reply = await answerSetup({
+      trip,
+      organizer: participant,
+      text: opts.text,
+      deps: { provider: opts.provider },
+    });
+    await sendText(opts.chatId, reply);
+    return;
+  }
+
+  // Skipped setup is asked again on the organizer's next message, never on a
+  // timer. Not mid-survey, so a survey answer is never swallowed.
+  if (isOrganizer && !surveyInProgress && needsSetupResume(trip)) {
+    await sendText(opts.chatId, await resumeSetup(trip));
+    return;
+  }
+
   if (!state || state === "done") {
     // Survey finished and solo mode is off: claims belong in the group.
     console.log("[japlan.dispatch] step", {
       step: "survey.already_done",
       chatId: opts.chatId,
-      tripId: match.trip.id,
+      tripId: trip.id,
     });
-    const next = await nextStepForParticipant(match.trip, match.participant.id);
+    const next = await nextStepForParticipant(trip, participant.id);
     await sendText(opts.chatId, dmClaimInGroupLine(next));
     return;
   }
@@ -64,21 +89,29 @@ export async function handleSurveyDm(opts: {
   const step = applyReply(
     {
       awaiting: state as SurveyAwaiting,
-      answers: (match.participant.survey_json ?? {}) as SurveyAnswers,
+      answers: (participant.survey_json ?? {}) as SurveyAnswers,
     },
     opts.text,
   );
 
   await persistSurveyProgress({
-    participantId: match.participant.id,
+    participantId: participant.id,
     awaiting: step.state.awaiting,
     answers: step.state.answers,
   });
 
   if (step.completed) {
-    const waitingOn = await countSurveysPending(match.trip.id);
-    await sendText(opts.chatId, surveyDoneLine(waitingOn));
-    await maybeActivateTrip(match.trip);
+    const waitingOn = await countSurveysPending(trip.id);
+    const setupPending = missingRequiredSetup(trip as SetupFields).length > 0;
+    let reply = surveyDoneLine(waitingOn, setupPending);
+    if (isOrganizer && needsSetupResume(trip)) {
+      // The organizer owes setup answers: ask the next one in the same message.
+      reply = `${reply} ${await resumeSetup(trip)}`;
+    } else if (isOrganizer && isSetupQuestion(trip.setup_state)) {
+      reply = `${reply} ${setupPromptFor(trip, trip.setup_state)}`;
+    }
+    await sendText(opts.chatId, reply);
+    await maybeActivateTrip(trip);
     return;
   }
 

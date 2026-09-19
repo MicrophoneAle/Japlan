@@ -20,9 +20,15 @@ import {
   type HandleLike,
 } from "@/lib/linq/payload";
 import { sendDM, sendText } from "@/lib/linq/send";
+import {
+  isSetupQuestion,
+  missingRequiredSetup,
+  setupReadyToActivate,
+  type SetupFields,
+} from "@/lib/game/setup";
+import { setupPrompt } from "@/lib/game/copy";
 
-const TRIP_COLS =
-  "id, linq_chat_id, name, destination, start_date, end_date, state, difficulty, stake_text, timezone, destination_profile_json, is_solo, daily_points_cap";
+import { TRIP_COLS } from "@/lib/db/columns";
 const PARTICIPANT_COLS =
   "id, trip_id, phone, display_name, score, survey_json, survey_state, sidequests_muted, consented_at";
 
@@ -63,12 +69,17 @@ function logError(
   });
 }
 
+// The chat's current trip: the newest one that is not complete. A chat can
+// hold many trips over time; trips_one_open_trip_per_chat allows only one open.
 export async function getTripByChatId(chatId: string): Promise<TripRow | null> {
   console.log("[japlan.dispatch] step", { step: "getTripByChatId.before", chatId });
   const { data, error } = await getServiceClient()
     .from("trips")
     .select(TRIP_COLS)
     .eq("linq_chat_id", chatId)
+    .neq("state", "complete")
+    .order("created_at", { ascending: false })
+    .limit(1)
     .maybeSingle();
   if (error) {
     console.error("[japlan.dispatch] step", {
@@ -90,7 +101,30 @@ export async function getTripByChatId(chatId: string): Promise<TripRow | null> {
   return data ? asTrip(data) : null;
 }
 
-async function listParticipants(tripId: string): Promise<ParticipantRow[]> {
+// The most recent trip for a chat in any state, for "this trip is over".
+export async function getLatestTripByChatId(chatId: string): Promise<TripRow | null> {
+  const { data, error } = await getServiceClient()
+    .from("trips")
+    .select(TRIP_COLS)
+    .eq("linq_chat_id", chatId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? asTrip(data) : null;
+}
+
+export async function getTripById(tripId: string): Promise<TripRow | null> {
+  const { data, error } = await getServiceClient()
+    .from("trips")
+    .select(TRIP_COLS)
+    .eq("id", tripId)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? asTrip(data) : null;
+}
+
+export async function listParticipants(tripId: string): Promise<ParticipantRow[]> {
   const { data, error } = await getServiceClient()
     .from("participants")
     .select(PARTICIPANT_COLS)
@@ -236,15 +270,43 @@ async function startSurveyDm(participant: ParticipantRow): Promise<boolean> {
   return true;
 }
 
+async function startSetupDm(
+  organizer: ParticipantRow,
+  trip: TripRow,
+): Promise<boolean> {
+  if (!isSetupQuestion(trip.setup_state)) return false;
+  const first = trip.setup_state === "destination" && !trip.destination;
+  const prompt = setupPrompt(trip.setup_state, null, { first });
+  try {
+    await sendDM(organizer.phone, prompt);
+    logStep("sendDM.setup", { phone: organizer.phone, ok: true, question: trip.setup_state });
+    return true;
+  } catch (err) {
+    logError("sendDM.setup", err, { phone: organizer.phone, ok: false });
+    return false;
+  }
+}
+
 export async function countSurveysPending(tripId: string): Promise<number> {
   const people = await listParticipants(tripId);
   return people.filter((p) => p.survey_state !== "done").length;
 }
 
-export async function maybeActivateTrip(trip: TripRow): Promise<void> {
+// Active needs every personal survey done AND the organizer setup's required
+// answers (destination, dates). Re-reads the trip: callers often hold a copy
+// from before the setup answer that just landed.
+export async function maybeActivateTrip(stale: TripRow): Promise<void> {
+  const trip = (await getTripById(stale.id)) ?? stale;
+  if (trip.state === "active" || trip.state === "complete") return;
   const people = await listParticipants(trip.id);
   if (!allParticipantsComplete(people.map((p) => p.survey_state))) return;
-  if (trip.state === "active") return;
+  if (!setupReadyToActivate(trip as SetupFields)) {
+    logStep("activate.blocked", {
+      tripId: trip.id,
+      missing: missingRequiredSetup(trip as SetupFields),
+    });
+    return;
+  }
 
   const publicTrip = {
     id: trip.id,
@@ -263,7 +325,14 @@ export async function maybeActivateTrip(trip: TripRow): Promise<void> {
 
 export async function bootstrapGroupIfNeeded(
   chatId: string,
-  opts: { isGroup: boolean } = { isGroup: true },
+  opts: {
+    isGroup: boolean;
+    // Sender of the triggering message. Linq never reports who added the bot,
+    // so the first person to message the group becomes the organizer.
+    senderPhone?: string | null;
+    // "japlan new trip": allowed to start a trip in a chat whose last trip ended.
+    explicitNewTrip?: boolean;
+  } = { isGroup: true },
 ): Promise<TripRow | null> {
   let step = "triggered";
   try {
@@ -282,6 +351,16 @@ export async function bootstrapGroupIfNeeded(
         state: existing.state,
       });
       return existing;
+    }
+
+    if (!existing && !opts.explicitNewTrip) {
+      // After "japlan end trip" the chat stays quiet until someone asks for a
+      // new one; ordinary messages must not silently start trip two.
+      const latest = await getLatestTripByChatId(chatId);
+      if (latest?.state === "complete") {
+        logStep("skip.completed_trip_needs_new_trip_command", { chatId, tripId: latest.id });
+        return null;
+      }
     }
 
     step = "trip.ensure";
@@ -390,11 +469,37 @@ export async function bootstrapGroupIfNeeded(
       }
     }
 
+    step = "organizer.assign";
+    let organizerId = trip.organizer_participant_id ?? null;
+    let setupState = trip.setup_state ?? null;
+    if (!organizerId) {
+      const organizer =
+        participants.find((p) => opts.senderPhone && p.phone === opts.senderPhone) ??
+        participants[0];
+      organizerId = organizer.id;
+      setupState = setupState ?? "destination";
+      const { error: orgErr } = await getServiceClient()
+        .from("trips")
+        .update({ organizer_participant_id: organizerId, setup_state: setupState })
+        .eq("id", trip.id)
+        .is("organizer_participant_id", null);
+      if (orgErr) throw orgErr;
+      logStep("organizer.assign", {
+        chatId,
+        tripId: trip.id,
+        fromSender: organizer.phone === opts.senderPhone,
+      });
+    }
+
     step = "sendDM";
     let dmOk = 0;
     let dmFail = 0;
     for (const person of participants) {
-      const ok = await startSurveyDm(person);
+      // The organizer answers the trip setup first; their own survey follows.
+      const ok =
+        person.id === organizerId && isSetupQuestion(setupState)
+          ? await startSetupDm(person, { ...trip, setup_state: setupState })
+          : await startSurveyDm(person);
       if (ok) dmOk += 1;
       else dmFail += 1;
     }
@@ -458,21 +563,55 @@ export async function findOpenSurveyByPhone(
     }
   }
 
+  // Two flat queries rather than a participants->trips embed: nested embeds
+  // are a suspect in the isolate hang, and completed trips must be skipped.
   const { data, error } = await getServiceClient()
     .from("participants")
-    .select(`${PARTICIPANT_COLS}, trips (${TRIP_COLS})`)
+    .select(PARTICIPANT_COLS)
     .eq("phone", phone);
   if (error) throw error;
-  const rows = (data ?? []) as Array<
-    ParticipantRow & { trips: TripRow | TripRow[] | null }
-  >;
-  const mapped = rows.flatMap((row) => {
-    const trip = Array.isArray(row.trips) ? row.trips[0] : row.trips;
-    if (!trip) return [];
-    return [{ trip, participant: row, survey_state: row.survey_state }];
+  const rows = asParticipants(data);
+  if (rows.length === 0) return null;
+  const tripsRes = await getServiceClient()
+    .from("trips")
+    .select(TRIP_COLS)
+    .in("id", [...new Set(rows.map((row) => row.trip_id))])
+    .neq("state", "complete");
+  if (tripsRes.error) throw tripsRes.error;
+  const trips = new Map(
+    ((tripsRes.data ?? []) as TripRow[]).map((trip) => [trip.id, trip]),
+  );
+  const candidates = rows.flatMap((participant) => {
+    const trip = trips.get(participant.trip_id);
+    return trip ? [{ trip, participant }] : [];
   });
-  const picked = pickOpenSurveyMatch(mapped);
-  return picked ? { trip: picked.trip, participant: picked.participant } : null;
+  return pickDmTrip(candidates);
+}
+
+// Which open trip a DM is about, for someone on more than one: an organizer
+// mid-setup first, then an in-progress survey, then an organizer who still
+// owes setup answers, then the newest trip.
+export function pickDmTrip<
+  T extends {
+    trip: Pick<TripRow, "organizer_participant_id" | "setup_state" | "destination" | "start_date" | "end_date"> & { created_at?: string };
+    participant: Pick<ParticipantRow, "id" | "survey_state">;
+  },
+>(candidates: T[]): T | null {
+  const rank = (c: T): number => {
+    const organizer = c.trip.organizer_participant_id === c.participant.id;
+    if (organizer && isSetupQuestion(c.trip.setup_state)) return 0;
+    const state = c.participant.survey_state;
+    if (state && state !== "done" && state !== "not_started") return 1;
+    if (organizer && missingRequiredSetup(c.trip as SetupFields).length > 0) return 2;
+    return 3;
+  };
+  return (
+    [...candidates].sort(
+      (a, b) =>
+        rank(a) - rank(b) ||
+        String(b.trip.created_at ?? "").localeCompare(String(a.trip.created_at ?? "")),
+    )[0] ?? null
+  );
 }
 
 export async function persistSurveyProgress(opts: {

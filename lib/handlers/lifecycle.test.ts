@@ -1,0 +1,339 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { FakeSupabase } from "@/lib/test/fake-supabase";
+
+// End to end through dispatchLinqEvent for the organizer setup and the trip
+// lifecycle. Faked edges only: Supabase (in memory), Linq (sends and the
+// chat member lookup), Foursquare `near`, and the two Gemini setup calls.
+
+const MIKE = "+15550000001";
+const SAM = "+15550000002";
+const BOT = "+15559999999";
+const GROUP = "chat-group";
+const MIKE_DM = "dm-mike";
+const SAM_DM = "dm-sam";
+
+const h = vi.hoisted(() => ({
+  db: null as unknown as FakeSupabase,
+  sent: [] as { chatId: string; text: string }[],
+  near: vi.fn(),
+  tz: vi.fn(),
+  dates: vi.fn(),
+}));
+
+vi.mock("@/lib/db/client", () => ({ getServiceClient: () => h.db }));
+vi.mock("@/lib/linq/send", () => ({
+  sendText: vi.fn(async (chatId: string, text: string) => {
+    h.sent.push({ chatId, text });
+    return { chatId, messageId: `out-${h.sent.length}` };
+  }),
+  sendDM: vi.fn(async (phone: string, text: string) => {
+    const chatId = phone === MIKE ? MIKE_DM : phone === SAM ? SAM_DM : `dm:${phone}`;
+    h.sent.push({ chatId, text });
+    return { chatId, messageId: `out-${h.sent.length}` };
+  }),
+  markRead: vi.fn(async () => {}),
+  sendTyping: vi.fn(async () => {}),
+}));
+vi.mock("@/lib/linq/client", () => ({
+  getLinqClient: () => ({
+    chats: {
+      retrieve: () => ({
+        asResponse: async () =>
+          new Response(
+            JSON.stringify({
+              display_name: "tokyo crew",
+              handles: [
+                { handle: MIKE, is_me: false, display_name: "Mike" },
+                { handle: SAM, is_me: false, display_name: "Sam" },
+                { handle: BOT, is_me: true },
+              ],
+            }),
+            { status: 200 },
+          ),
+      }),
+    },
+  }),
+}));
+vi.mock("@/lib/places/foursquare", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/places/foursquare")>()),
+  resolveNearArea: h.near,
+}));
+vi.mock("@/lib/llm/gemini", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/llm/gemini")>();
+  class NoNetworkProvider {
+    async complete() {
+      return "";
+    }
+  }
+  return {
+    ...actual,
+    GeminiProvider: NoNetworkProvider,
+    inferPlaceTimezone: h.tz,
+    extractTripDates: h.dates,
+    matchClaimText: vi.fn(async () => null),
+    scorePhotoFidelity: vi.fn(),
+  };
+});
+
+import { dispatchLinqEvent } from "./dispatch";
+
+let n = 0;
+function msg(from: string, chatId: string, text: string) {
+  n += 1;
+  const isGroup = chatId === GROUP;
+  return {
+    event_id: `evt-${n}`,
+    event_type: "message.received",
+    data: {
+      id: `msg-${n}`,
+      chat_id: chatId,
+      chat: { id: chatId, is_group: isGroup },
+      sender_handle: { handle: from, is_me: false, display_name: from === MIKE ? "Mike" : "Sam" },
+      parts: [{ type: "text", value: text }],
+    },
+  };
+}
+const send = (from: string, chatId: string, text: string) =>
+  dispatchLinqEvent(msg(from, chatId, text));
+
+const trips = () => h.db.table("trips");
+const openTrip = () => trips().find((t) => t.state !== "complete");
+const person = (phone: string) =>
+  h.db.table("participants").find((p) => p.phone === phone && p.trip_id === openTrip()?.id);
+const lastTo = (chatId: string) => [...h.sent].reverse().find((m) => m.chatId === chatId)?.text;
+const allTo = (chatId: string) => h.sent.filter((m) => m.chatId === chatId).map((m) => m.text);
+
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-09-19T03:00:00Z"));
+  process.env.LINQ_FROM_NUMBER = BOT;
+  process.env.JAPLAN_SOLO_MODE = "false";
+  h.db = new FakeSupabase();
+  h.sent.length = 0;
+  h.near.mockReset().mockResolvedValue({
+    lat: 35.68,
+    lng: 139.76,
+    locality: "Chiyoda",
+    region: "Tokyo",
+    country: "JP",
+  });
+  h.tz.mockReset().mockResolvedValue({ display: "tokyo, japan", timezone: "Asia/Tokyo" });
+  h.dates.mockReset().mockResolvedValue({ start: "2026-10-17", end: "2026-10-20" });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+async function bootstrapGroup() {
+  await send(MIKE, GROUP, "we're doing this");
+}
+
+async function finishSurvey(phone: string, dm: string) {
+  // Jump to the last question, then answer it for real.
+  const p = person(phone)!;
+  p.survey_state = "social_couples";
+  p.survey_json = {};
+  await send(phone, dm, "n/a");
+}
+
+describe("organizer setup", () => {
+  it("asks the first group messager the four setup questions, then their survey", async () => {
+    await bootstrapGroup();
+    const trip = openTrip()!;
+    expect(trip.organizer_participant_id).toBe(person(MIKE)!.id);
+    expect(trip.setup_state).toBe("destination");
+    expect(lastTo(MIKE_DM)).toBe(
+      "trip setup, 4 quick ones. where are you going? a city is plenty. (skip and i'll ask again later)",
+    );
+    expect(lastTo(SAM_DM)).toMatch(/first name/i); // Sam gets the personal survey
+
+    await send(MIKE, MIKE_DM, "tokyo");
+    expect(openTrip()!.destination).toBe("tokyo, japan");
+    expect(openTrip()!.timezone).toBe("Asia/Tokyo");
+    expect(h.near).toHaveBeenCalledWith("tokyo");
+    expect(lastTo(MIKE_DM)).toMatch(/^got it: tokyo, japan\. when\?/);
+
+    await send(MIKE, MIKE_DM, "oct 17-20");
+    expect(openTrip()!.start_date).toBe("2026-10-17");
+    expect(openTrip()!.end_date).toBe("2026-10-20");
+    expect(lastTo(MIKE_DM)).toMatch(/^got it: oct 17 to oct 20\. how hard/);
+
+    await send(MIKE, MIKE_DM, "unhinged");
+    expect(openTrip()!.difficulty).toBe("unhinged");
+
+    await send(MIKE, MIKE_DM, "karaoke solo in shinjuku");
+    expect(openTrip()!.stake_text).toBe("karaoke solo in shinjuku");
+    expect(openTrip()!.setup_state).toBe("done");
+    expect(lastTo(MIKE_DM)).toMatch(/^got it\. setup's done\. now a few about you\. .*first name/i);
+    expect(person(MIKE)!.survey_state).toBe("first_name");
+  });
+
+  it("does not go active until destination and dates are set, then does", async () => {
+    await bootstrapGroup();
+    await send(MIKE, MIKE_DM, "skip");
+    await send(MIKE, MIKE_DM, "skip");
+    await send(MIKE, MIKE_DM, "chill");
+    await send(MIKE, MIKE_DM, "skip");
+    expect(openTrip()!.setup_state).toBe("deferred");
+    expect(lastTo(MIKE_DM)).toMatch(/setup's paused\. i still need where and when/);
+
+    await finishSurvey(SAM, SAM_DM);
+    expect(lastTo(SAM_DM)).toContain("waiting on 1 more person and the trip setup");
+    await finishSurvey(MIKE, MIKE_DM);
+    expect(openTrip()!.state).toBe("surveying"); // every survey done, still blocked
+    // Asked again on his next message, in the same reply as the survey end.
+    expect(lastTo(MIKE_DM)).toMatch(/where are you going\?/);
+    expect(openTrip()!.setup_state).toBe("destination");
+
+    await send(MIKE, MIKE_DM, "tokyo");
+    await send(MIKE, MIKE_DM, "oct 17-20");
+    await send(MIKE, MIKE_DM, "skip");
+    await send(MIKE, MIKE_DM, "skip");
+    expect(openTrip()!.state).toBe("active");
+    expect(lastTo(GROUP)).toMatch(/setup is complete/i);
+  });
+
+  it("asks again on the organizer's next message, not on a timer", async () => {
+    await bootstrapGroup();
+    for (const answer of ["skip", "skip", "skip", "skip"]) await send(MIKE, MIKE_DM, answer);
+    person(MIKE)!.survey_state = "done";
+    const before = h.sent.length;
+    vi.setSystemTime(new Date("2026-09-20T03:00:00Z")); // a day passes: nothing sent
+    expect(h.sent.length).toBe(before);
+    await send(MIKE, MIKE_DM, "hey");
+    expect(lastTo(MIKE_DM)).toBe("where are you going? a city is plenty. (skip and i'll ask again later)");
+  });
+
+  it("stores the raw string when the places layer cannot resolve it", async () => {
+    h.near.mockResolvedValue(null);
+    h.tz.mockResolvedValue({ display: "somewhere", timezone: "JST" });
+    await bootstrapGroup();
+    await send(MIKE, MIKE_DM, "that island my cousin went to");
+    expect(openTrip()!.destination).toBe("that island my cousin went to");
+    expect(openTrip()!.timezone ?? null).toBeNull(); // "JST" is not an IANA zone
+    expect(lastTo(MIKE_DM)).toMatch(/couldn't pin it on a map, so times run on utc/);
+  });
+
+  it("re-asks unreadable dates and difficulty instead of storing them", async () => {
+    await bootstrapGroup();
+    await send(MIKE, MIKE_DM, "tokyo");
+    h.dates.mockResolvedValue(null);
+    await send(MIKE, MIKE_DM, "sometime soon");
+    expect(lastTo(MIKE_DM)).toBe(`couldn't read those dates. try something like "oct 17-20".`);
+    await send(MIKE, MIKE_DM, "2026-10-20 to 2026-10-17");
+    expect(lastTo(MIKE_DM)).toMatch(/ends before it starts/);
+    expect(openTrip()!.setup_state).toBe("dates");
+    await send(MIKE, MIKE_DM, "2026-10-17 to 2026-10-20");
+    await send(MIKE, MIKE_DM, "medium-ish");
+    expect(lastTo(MIKE_DM)).toBe("didn't catch that. reply chill / normal / unhinged, or skip.");
+    expect(openTrip()!.setup_state).toBe("difficulty");
+  });
+});
+
+describe("japlan setup mid-trip", () => {
+  async function activeTrip() {
+    await bootstrapGroup();
+    for (const answer of ["tokyo", "oct 17-20", "normal", "buys ramen"]) {
+      await send(MIKE, MIKE_DM, answer);
+    }
+    await finishSurvey(MIKE, MIKE_DM);
+    await finishSurvey(SAM, SAM_DM);
+    expect(openTrip()!.state).toBe("active");
+    openTrip()!.destination_profile_json = { destination: "tokyo, japan", neighborhoods: [{ name: "Asakusa" }] };
+  }
+
+  it("lets the organizer change the destination and refreshes the profile", async () => {
+    await activeTrip();
+    await send(MIKE, GROUP, "japlan setup");
+    expect(lastTo(GROUP)).toBe("setup questions are in your dm.");
+    expect(lastTo(MIKE_DM)).toContain("(now: tokyo, japan. skip keeps it)");
+
+    h.tz.mockResolvedValue({ display: "osaka, japan", timezone: "Asia/Tokyo" });
+    await send(MIKE, MIKE_DM, "osaka");
+    const trip = openTrip()!;
+    expect(trip.destination).toBe("osaka, japan");
+    expect((trip.destination_profile_json as { partial?: boolean }).partial).toBe(true);
+    expect((trip.destination_profile_json as { destination: string }).destination).toBe("osaka, japan");
+
+    for (const answer of ["skip", "skip", "skip"]) await send(MIKE, MIKE_DM, answer);
+    expect(openTrip()!.setup_state).toBe("done");
+    expect(openTrip()!.state).toBe("active");
+    expect(openTrip()!.start_date).toBe("2026-10-17"); // skip kept it
+    expect(lastTo(MIKE_DM)).toBe("setup's done.");
+  });
+
+  it("keeps the profile when the destination is unchanged", async () => {
+    await activeTrip();
+    await send(MIKE, MIKE_DM, "japlan setup");
+    await send(MIKE, MIKE_DM, "tokyo");
+    expect((openTrip()!.destination_profile_json as { partial?: boolean }).partial).toBeUndefined();
+  });
+
+  it("refuses anyone but the organizer", async () => {
+    await activeTrip();
+    await send(SAM, GROUP, "japlan setup");
+    expect(lastTo(GROUP)).toBe("only Mike can change the setup.");
+  });
+});
+
+describe("end trip and new trip", () => {
+  async function activeTripWithScores() {
+    await bootstrapGroup();
+    for (const answer of ["tokyo", "oct 17-20", "normal", "karaoke solo"]) {
+      await send(MIKE, MIKE_DM, answer);
+    }
+    await finishSurvey(MIKE, MIKE_DM);
+    await finishSurvey(SAM, SAM_DM);
+    person(MIKE)!.score = 120;
+    person(SAM)!.score = 40;
+  }
+
+  it("ends only after confirmation and posts final standings with the stake", async () => {
+    await activeTripWithScores();
+    await send(SAM, GROUP, "japlan end trip");
+    expect(lastTo(GROUP)).toBe("only Mike can end the trip.");
+    await send(MIKE, GROUP, "japlan end trip");
+    expect(lastTo(GROUP)).toBe(
+      "this ends the trip and the scores are final. send 'japlan end trip confirm'",
+    );
+    expect(openTrip()?.state).toBe("active");
+
+    await send(MIKE, GROUP, "japlan end trip confirm");
+    expect(trips()[0].state).toBe("complete");
+    expect(trips()[0].completed_at).toBeTruthy();
+    expect(lastTo(GROUP)).toBe("final: Mike 120 · Sam 40\nSam is on the hook: karaoke solo");
+  });
+
+  it("keeps the chat quiet after the end until someone asks for a new trip", async () => {
+    await activeTripWithScores();
+    await send(MIKE, GROUP, "japlan end trip confirm");
+    const sentBefore = h.sent.length;
+
+    await send(SAM, GROUP, "lol good trip");
+    expect(trips()).toHaveLength(1); // no silent trip two
+    expect(h.sent.length).toBe(sentBefore);
+
+    await send(SAM, GROUP, "A1");
+    expect(lastTo(GROUP)).toBe(`this trip is over. "japlan new trip" starts another.`);
+
+    await send(SAM, GROUP, "japlan new trip");
+    expect(trips()).toHaveLength(2);
+    const second = openTrip()!;
+    expect(second.state).toBe("surveying");
+    expect(second.organizer_participant_id).toBe(person(SAM)!.id); // whoever asked
+    expect(lastTo(SAM_DM)).toMatch(/^trip setup, 4 quick ones\./);
+    expect(allTo(GROUP).filter((t) => /PLACEHOLDER: Japlan is in this chat/.test(t))).toHaveLength(2);
+
+    await send(MIKE, GROUP, "japlan new trip");
+    expect(lastTo(GROUP)).toBe(`there's already a trip running. "japlan end trip" first.`);
+    expect(trips()).toHaveLength(2);
+  });
+
+  it("answers end trip with nothing running", async () => {
+    await activeTripWithScores();
+    await send(MIKE, GROUP, "japlan end trip confirm");
+    await send(MIKE, GROUP, "japlan end trip");
+    expect(lastTo(GROUP)).toBe(`this trip is over. "japlan new trip" starts another.`);
+  });
+});

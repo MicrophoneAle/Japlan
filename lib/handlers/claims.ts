@@ -33,9 +33,11 @@ import {
   peerConfirmLine,
   photoAlreadyBonusedLine,
   photoBonusLine,
+  photoCheckFailedLine,
   photoOutsideTripLine,
   reusedPhotoLine,
   teamTaskExpiredLine,
+  TRIP_OVER_LINE,
   tripNotReadyLine,
   twoMatchAskLine,
   unknownCodeLine,
@@ -51,7 +53,8 @@ import {
   parseFreeformExtraction,
   type FreeformExtraction,
 } from "@/lib/game/freeform";
-import { perceptualHash, imageTakenAt } from "@/lib/game/image-hash";
+import { imageFingerprint, imageTakenAt, sniffImageMime } from "@/lib/game/image-hash";
+import { fetchWithTimeout, withTimeout } from "@/lib/timeout";
 import { nextFreeformCode } from "@/lib/game/generate";
 import {
   applyDailyPointsCap,
@@ -63,7 +66,11 @@ import { resetOffTopicOnClaim } from "@/lib/game/conversation";
 import { verificationForSolo } from "@/lib/game/solo";
 import type { SurveyAnswers } from "@/lib/game/survey";
 import { validateGeneratedTask } from "@/lib/game/validate";
-import { findParticipantOnTrip, getTripByChatId } from "@/lib/handlers/bootstrap";
+import {
+  findParticipantOnTrip,
+  getLatestTripByChatId,
+  getTripByChatId,
+} from "@/lib/handlers/bootstrap";
 import {
   currentTripDay,
   refillPersonalTasksIfNeeded,
@@ -77,7 +84,7 @@ import {
 import {
   chatIdFromData,
   isDirectChat,
-  mediaFromParts,
+  photoPartsFrom,
   senderFromData,
   textFromParts,
 } from "@/lib/linq/payload";
@@ -162,6 +169,9 @@ export type ClaimHandlerDeps = {
   send?: SendFn;
   provider?: LLMProvider;
   now?: number;
+  // Dispatch found an awarded claim still inside the photo bonus window, so a
+  // bare photo from this sender is addressed.
+  photoBonusOpen?: boolean;
 };
 
 export type ClaimFallthrough = {
@@ -373,11 +383,111 @@ async function existingClaimsForTask(taskId: string): Promise<ClaimRow[]> {
   return asClaims(data);
 }
 
-async function fetchPhoto(url: string): Promise<Buffer> {
-  const res = await claimAwait("photo.fetch", { url }, () => fetch(url));
+export const DEFAULT_PHOTO_FETCH_TIMEOUT_MS = 10_000;
+
+function photoFetchTimeoutMs(value = process.env.JAPLAN_PHOTO_FETCH_TIMEOUT_MS): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_PHOTO_FETCH_TIMEOUT_MS;
+}
+
+// Media URLs are signed and can carry tokens; log the host and path only.
+function safeUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.host}${parsed.pathname}`;
+  } catch {
+    return "(unparseable url)";
+  }
+}
+
+async function fetchPhoto(url: string, reason: string): Promise<Buffer> {
+  const ms = photoFetchTimeoutMs();
+  const res = await claimAwait("photo.fetch", { reason, url: safeUrl(url), timeoutMs: ms }, () =>
+    fetchWithTimeout(url, ms, "photo.fetch"),
+  );
+  claimStep("photo.fetch.response", {
+    reason,
+    status: res.status,
+    contentType: res.headers.get("content-type"),
+    contentLength: res.headers.get("content-length"),
+  });
   if (!res.ok) throw new Error(`photo fetch HTTP ${res.status}`);
-  const bytes = await claimAwait("photo.bytes", { url }, () => res.arrayBuffer());
+  const bytes = await claimAwait("photo.bytes", { reason }, () =>
+    withTimeout(res.arrayBuffer(), ms, "photo.bytes"),
+  );
   return Buffer.from(bytes);
+}
+
+type LoadedPhoto = {
+  bytes: Buffer;
+  hash: string;
+  mime: string;
+  takenAt: Date | null;
+};
+
+// fetch -> sniff -> fingerprint -> EXIF, each step logged .before/.after.
+// Undecodable images (HEIC) get an exact hash and a raw-bytes EXIF read
+// rather than throwing, so a photo can never sink the claim it rides on.
+async function loadPhoto(
+  photo: { url: string; mime: string },
+  reason: string,
+): Promise<LoadedPhoto> {
+  const bytes = await fetchPhoto(photo.url, reason);
+  const sniffed = sniffImageMime(bytes);
+  const mime = sniffed ?? (photo.mime.startsWith("image/") ? photo.mime : "image/jpeg");
+  claimStep("photo.sniff", {
+    reason,
+    bytes: bytes.length,
+    declaredMime: photo.mime || null,
+    sniffedMime: sniffed,
+    usingMime: mime,
+  });
+  const fingerprint = await claimAwait("photo.hash", { reason }, () =>
+    imageFingerprint(bytes),
+  );
+  claimStep("photo.hash.kind", { reason, kind: fingerprint.kind });
+  const takenAt = await claimAwait("photo.exif", { reason }, () => imageTakenAt(bytes));
+  claimStep("photo.exif.result", { reason, takenAt: takenAt?.toISOString() ?? null });
+  return { bytes, hash: fingerprint.hash, mime, takenAt };
+}
+
+type VisionResult =
+  | { status: "scored"; showsTask: boolean; fidelity: number }
+  | { status: "failed"; error: string };
+
+// A vision failure or timeout costs the bonus, never the claim.
+async function scoreVision(opts: {
+  provider?: LLMProvider;
+  title: string;
+  photoBonusMax: number;
+  photo: LoadedPhoto;
+  code: string;
+  reason: string;
+}): Promise<VisionResult> {
+  try {
+    const scored = await claimAwait(
+      "gemini.vision",
+      { code: opts.code, reason: opts.reason, mime: opts.photo.mime },
+      () =>
+        scorePhotoFidelity({
+          provider: opts.provider,
+          title: opts.title,
+          photoBonusMax: opts.photoBonusMax,
+          image: { data: opts.photo.bytes.toString("base64"), mime: opts.photo.mime },
+        }),
+    );
+    const result: VisionResult = {
+      status: "scored",
+      showsTask: Boolean(scored?.shows_task),
+      fidelity: scored?.fidelity ?? 0,
+    };
+    claimStep("gemini.vision.result", { code: opts.code, ...result });
+    return result;
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    claimStep("gemini.vision.failed", { code: opts.code, reason: opts.reason, error });
+    return { status: "failed", error };
+  }
 }
 
 // score = score + delta in one statement; concurrent claims cannot lose a bump.
@@ -765,15 +875,24 @@ async function resolveKnownTask(opts: {
   let imageHash: string | null = null;
   let photoBonus = 0;
   let evidenceUrl: string | null = null;
-  let bytes: Buffer | null = null;
-  let takenAt: Date | null = null;
+  let loaded: LoadedPhoto | null = null;
   let photoClaimedAt: string | null = null;
 
   if (opts.withPhoto && opts.photo) {
+    try {
+      loaded = await loadPhoto(opts.photo, "code_with_photo");
+    } catch (err) {
+      // The code alone is a valid claim; a photo we cannot fetch only costs
+      // the bonus.
+      claimStep("photo.load_failed", {
+        code: opts.task.code,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  if (loaded && opts.photo) {
     evidenceUrl = opts.photo.url;
-    bytes = await fetchPhoto(opts.photo.url);
-    imageHash = await claimAwait("photo.hash", {}, () => perceptualHash(bytes as Buffer));
-    takenAt = await claimAwait("photo.exif", {}, () => imageTakenAt(bytes as Buffer));
+    imageHash = loaded.hash;
     const hashes = await tripHashes(opts.trip.id);
     if (hashAlreadyUsed(hashes, imageHash)) {
       await claimAwait("outbound.send", { reason: "reused_photo" }, () =>
@@ -835,40 +954,44 @@ async function resolveKnownTask(opts: {
     return;
   }
 
-  if (opts.withPhoto && opts.photo && opts.task.photo_bonus_max > 0 && bytes) {
+  if (loaded && opts.task.photo_bonus_max > 0) {
     const priorReject = existing.find(
       (c) =>
         c.participant_id === opts.claimant.id &&
         c.status === "rejected" &&
         c.resolved_by === "vision",
     );
-    if (!priorReject) {
+    if (priorReject) {
+      claimStep("photo_bonus.skip", { code: opts.task.code, reason: "prior_vision_reject" });
+    } else {
       let scoredFidelity = opts.photoBonusOverride;
       if (scoredFidelity === undefined) {
-        const scored = await claimAwait(
-          "gemini.scorePhotoFidelity",
-          { code: opts.task.code },
-          () =>
-            scorePhotoFidelity({
-              provider: opts.provider,
-              title: opts.task.title,
-              photoBonusMax: opts.task.photo_bonus_max,
-              image: {
-                data: bytes.toString("base64"),
-                mime: opts.photo?.mime || "image/jpeg",
-              },
-            }),
-        );
-        if (scored?.shows_task) scoredFidelity = scored.fidelity;
+        const vision = await scoreVision({
+          provider: opts.provider,
+          title: opts.task.title,
+          photoBonusMax: opts.task.photo_bonus_max,
+          photo: loaded,
+          code: opts.task.code,
+          reason: "code_with_photo",
+        });
+        if (vision.status === "scored" && vision.showsTask) {
+          scoredFidelity = vision.fidelity;
+        }
       }
       if (scoredFidelity !== undefined) {
         const bonus = applyPhotoBonusRules({
           fidelity: scoredFidelity,
-          hasExif: Boolean(takenAt),
-          takenAt,
+          hasExif: Boolean(loaded.takenAt),
+          takenAt: loaded.takenAt,
           tripStart: opts.trip.start_date,
           tripEnd: opts.trip.end_date,
           photoBonusMax: opts.task.photo_bonus_max,
+        });
+        claimStep("photo_bonus.rules", {
+          code: opts.task.code,
+          fidelity: scoredFidelity,
+          bonus: bonus.bonus,
+          reject: bonus.reject,
         });
         if (!bonus.reject) {
           photoBonus = bonus.bonus;
@@ -996,33 +1119,37 @@ async function tryHandleFreeform(opts: {
   let imageHash: string | null = null;
   let evidenceUrl: string | null = null;
   let photoBonus = 0;
+  let loaded: LoadedPhoto | null = null;
   if (opts.hasPhoto && opts.photo) {
+    try {
+      loaded = await loadPhoto(opts.photo, "freeform");
+    } catch (err) {
+      claimStep("photo.load_failed", {
+        reason: "freeform",
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  if (loaded && opts.photo) {
     evidenceUrl = opts.photo.url;
-    const bytes = await fetchPhoto(opts.photo.url);
-    imageHash = await perceptualHash(bytes);
+    imageHash = loaded.hash;
     const hashes = await tripHashes(opts.trip.id);
     if (hashAlreadyUsed(hashes, imageHash)) {
       await opts.send(opts.trip.linq_chat_id, reusedPhotoLine());
       return true;
     }
-    const takenAt = await imageTakenAt(bytes);
-    const scoredPhoto = await claimAwait(
-      "gemini.scorePhotoFidelity",
-      { reason: "freeform" },
-      () =>
-        scorePhotoFidelity({
-          provider: opts.provider,
-          title: extracted.title,
-          photoBonusMax: FREEFORM_PHOTO_BONUS_MAX,
-          image: {
-            data: bytes.toString("base64"),
-            mime: opts.photo?.mime || "image/jpeg",
-          },
-        }),
-    );
-    if (scoredPhoto?.shows_task) {
+    const takenAt = loaded.takenAt;
+    const vision = await scoreVision({
+      provider: opts.provider,
+      title: extracted.title,
+      photoBonusMax: FREEFORM_PHOTO_BONUS_MAX,
+      photo: loaded,
+      code: "freeform",
+      reason: "freeform",
+    });
+    if (vision.status === "scored" && vision.showsTask) {
       const bonus = applyPhotoBonusRules({
-        fidelity: scoredPhoto.fidelity,
+        fidelity: vision.fidelity,
         hasExif: Boolean(takenAt),
         takenAt,
         tripStart: opts.trip.start_date,
@@ -1187,10 +1314,21 @@ export async function applyLatePhotoBonus(opts: {
     );
     return;
   }
-  const bytes = await fetchPhoto(opts.photo.url);
-  const imageHash = await claimAwait("photo.hash", { reason: "late_bonus" }, () =>
-    perceptualHash(bytes),
-  );
+  let loaded: LoadedPhoto;
+  try {
+    loaded = await loadPhoto(opts.photo, "late_bonus");
+  } catch (err) {
+    claimStep("photo.load_failed", {
+      code: opts.task.code,
+      reason: "late_bonus",
+      error: err instanceof Error ? err.message : String(err),
+    });
+    await claimAwait("outbound.send", { reason: "photo_unreadable" }, () =>
+      opts.send(opts.trip.linq_chat_id, photoCheckFailedLine(opts.task.code)),
+    );
+    return;
+  }
+  const imageHash = loaded.hash;
   const hashes = await tripHashes(opts.trip.id);
   if (hashAlreadyUsed(hashes, imageHash)) {
     await claimAwait("outbound.send", { reason: "reused_photo" }, () =>
@@ -1198,24 +1336,22 @@ export async function applyLatePhotoBonus(opts: {
     );
     return;
   }
-  const takenAt = await claimAwait("photo.exif", { reason: "late_bonus" }, () =>
-    imageTakenAt(bytes),
-  );
-  const scored = await claimAwait(
-    "gemini.scorePhotoFidelity",
-    { code: opts.task.code, reason: "late_bonus" },
-    () =>
-      scorePhotoFidelity({
-        provider: opts.provider,
-        title: opts.task.title,
-        photoBonusMax: opts.task.photo_bonus_max,
-        image: {
-          data: bytes.toString("base64"),
-          mime: opts.photo.mime || "image/jpeg",
-        },
-      }),
-  );
-  if (!scored?.shows_task) {
+  const takenAt = loaded.takenAt;
+  const vision = await scoreVision({
+    provider: opts.provider,
+    title: opts.task.title,
+    photoBonusMax: opts.task.photo_bonus_max,
+    photo: loaded,
+    code: opts.task.code,
+    reason: "late_bonus",
+  });
+  if (vision.status === "failed") {
+    await claimAwait("outbound.send", { reason: "vision_failed" }, () =>
+      opts.send(opts.trip.linq_chat_id, photoCheckFailedLine(opts.task.code)),
+    );
+    return;
+  }
+  if (!vision.showsTask) {
     claimStep("photo_bonus.no_match", { code: opts.task.code });
     await claimAwait("outbound.send", { reason: "photo_no_match" }, () =>
       opts.send(opts.trip.linq_chat_id, visionRejectedLine(opts.task.code)),
@@ -1223,7 +1359,7 @@ export async function applyLatePhotoBonus(opts: {
     return;
   }
   const bonus = applyPhotoBonusRules({
-    fidelity: scored.fidelity,
+    fidelity: vision.fidelity,
     hasExif: Boolean(takenAt),
     takenAt,
     tripStart: opts.trip.start_date,
@@ -1271,25 +1407,30 @@ export async function applyLatePhotoBonus(opts: {
       .maybeSingle();
     if (lookupErr) throw lookupErr;
     const prior = (memberClaim as ClaimRow | null)?.awarded_points ?? 0;
-    const { error } = await getServiceClient()
-      .from("claims")
-      .update({
-        awarded_points: prior + capped.awarded_points,
-        evidence_url: opts.photo.url,
-        image_hash: imageHash,
-        photo_claimed_at: claimedAt,
-        capped: Boolean((memberClaim as ClaimRow | null)?.capped) || capped.capped,
-        resolution_json: {
-          ...(((memberClaim as ClaimRow | null)?.resolution_json as
-            | Record<string, unknown>
-            | null) ?? {}),
-          photo_bonus: capped.awarded_points,
-          photo_capped: capped.capped,
-        },
-      })
-      .eq("task_id", opts.task.id)
-      .eq("participant_id", participantId)
-      .eq("status", "awarded");
+    const { error } = await claimAwait(
+      "photo_bonus.write",
+      { code: opts.task.code, participantId, bonus: capped.awarded_points },
+      async () =>
+        await getServiceClient()
+          .from("claims")
+          .update({
+            awarded_points: prior + capped.awarded_points,
+            evidence_url: opts.photo.url,
+            image_hash: imageHash,
+            photo_claimed_at: claimedAt,
+            capped: Boolean((memberClaim as ClaimRow | null)?.capped) || capped.capped,
+            resolution_json: {
+              ...(((memberClaim as ClaimRow | null)?.resolution_json as
+                | Record<string, unknown>
+                | null) ?? {}),
+              photo_bonus: capped.awarded_points,
+              photo_capped: capped.capped,
+            },
+          })
+          .eq("task_id", opts.task.id)
+          .eq("participant_id", participantId)
+          .eq("status", "awarded"),
+    );
     if (error) throw error;
     if (capped.awarded_points > 0) {
       const total = await bumpScore(participantId, capped.awarded_points);
@@ -1317,6 +1458,54 @@ export async function applyLatePhotoBonus(opts: {
       }),
     ),
   );
+}
+
+// Whether a bare photo from this sender should count as addressed: they have
+// an awarded claim, inside the bonus window, on a task that pays a photo
+// bonus, with no photo yet. This replaces the 60s in-memory code binding for
+// the late-photo case; that memory is per isolate and far shorter than the
+// bonus window, so a photo sent minutes later used to be dropped as chat.
+export async function photoBonusOpenFor(
+  chatId: string,
+  phone: string,
+  now = Date.now(),
+): Promise<boolean> {
+  const trip = await claimAwait("photo_bonus.window.trip", { chatId }, () =>
+    getTripByChatId(chatId),
+  );
+  if (!trip) return false;
+  const participant = await claimAwait("photo_bonus.window.participant", { tripId: trip.id }, () =>
+    findParticipantOnTrip(trip.id, phone),
+  );
+  if (!participant) return false;
+  const since = new Date(now - photoBonusWindowMs()).toISOString();
+  const { data: claimRows, error } = await claimAwait(
+    "photo_bonus.window.claims",
+    { participantId: participant.id, since },
+    async () =>
+      await getServiceClient()
+        .from("claims")
+        .select("task_id")
+        .eq("participant_id", participant.id)
+        .eq("status", "awarded")
+        .is("photo_claimed_at", null)
+        .gte("created_at", since),
+  );
+  if (error) throw error;
+  const taskIds = (claimRows ?? []).map((row) => (row as { task_id: string }).task_id);
+  if (taskIds.length === 0) return false;
+  const { data: bonusTasks, error: taskErr } = await claimAwait(
+    "photo_bonus.window.tasks",
+    { count: taskIds.length },
+    async () =>
+      await getServiceClient()
+        .from("tasks")
+        .select("id")
+        .in("id", taskIds)
+        .gt("photo_bonus_max", 0),
+  );
+  if (taskErr) throw taskErr;
+  return (bonusTasks ?? []).length > 0;
 }
 
 export async function handleGroupClaim(
@@ -1350,11 +1539,14 @@ async function handleGroupClaimInner(
     return;
   }
   const text = textFromParts(data.parts);
-  const media = mediaFromParts(data.parts).filter(
-    (part) => !part.mime || part.mime.startsWith("image/"),
-  );
+  const media = photoPartsFrom(data.parts);
   const hasPhoto = media.length > 0;
   const photo = media[0] ?? null;
+  claimStep("photo.detect", {
+    hasPhoto,
+    mime: photo?.mime ?? null,
+    photoBonusOpen: Boolean(deps.photoBonusOpen),
+  });
   const isDm = isDirectChat(data);
   const recentCode = recentCodeFor(chatId, sender.handle, deps.now);
   const codeMatch = findTaskCode(text);
@@ -1366,7 +1558,7 @@ async function handleGroupClaimInner(
   const address = evaluateAddress({
     text,
     isDm,
-    openTaskContext: hasPhoto && Boolean(recentCode),
+    openTaskContext: hasPhoto && (Boolean(recentCode) || Boolean(deps.photoBonusOpen)),
   });
   // Addressed only by a loose code: silent unless it is the sender's own task.
   const tentative = address.reason === "loose_task_code";
@@ -1384,9 +1576,11 @@ async function handleGroupClaimInner(
   if (!ctx) {
     claimStep("trip.context.miss", { chatId, tentative });
     if (!tentative) {
-      await claimAwait("outbound.send", { reason: "trip_not_ready" }, () =>
-        send(chatId, tripNotReadyLine()),
+      const latest = await claimAwait("trip.latest", { chatId }, () =>
+        getLatestTripByChatId(chatId),
       );
+      const line = latest?.state === "complete" ? TRIP_OVER_LINE : tripNotReadyLine();
+      await claimAwait("outbound.send", { reason: "no_open_trip" }, () => send(chatId, line));
     }
     return null;
   }
@@ -1617,36 +1811,35 @@ async function handleGroupClaimInner(
 
   if (decision.type === "vision") {
     if (!photo) return miss();
-    const bytes = await fetchPhoto(photo.url);
-    const imageHash = await claimAwait("photo.hash", { reason: "vision" }, () =>
-      perceptualHash(bytes),
-    );
+    let loaded: LoadedPhoto;
+    try {
+      loaded = await loadPhoto(photo, "vision_scan");
+    } catch (err) {
+      claimStep("photo.load_failed", {
+        reason: "vision_scan",
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return miss();
+    }
     const hashes = await tripHashes(ctx.trip.id);
-    if (hashAlreadyUsed(hashes, imageHash)) {
+    if (hashAlreadyUsed(hashes, loaded.hash)) {
       await claimAwait("outbound.send", { reason: "reused_photo" }, () =>
         send(chatId, reusedPhotoLine()),
       );
       return;
     }
-    const image = { data: bytes.toString("base64"), mime: photo.mime || "image/jpeg" };
     const scored: { code: string; fidelity: number }[] = [];
     for (const task of openTasks.filter((t) => t.photo_bonus_max > 0)) {
-      const result = await claimAwait(
-        "gemini.scorePhotoFidelity",
-        { code: task.code, reason: "vision_scan" },
-        () =>
-          scorePhotoFidelity({
-            provider: deps.provider,
-            title: task.title,
-            photoBonusMax: task.photo_bonus_max,
-            image,
-          }),
-      );
-      if (result?.shows_task) {
-        scored.push({
-          code: task.code,
-          fidelity: result.fidelity,
-        });
+      const result = await scoreVision({
+        provider: deps.provider,
+        title: task.title,
+        photoBonusMax: task.photo_bonus_max,
+        photo: loaded,
+        code: task.code,
+        reason: "vision_scan",
+      });
+      if (result.status === "scored" && result.showsTask) {
+        scored.push({ code: task.code, fidelity: result.fidelity });
       }
     }
     if (scored.length === 0) {

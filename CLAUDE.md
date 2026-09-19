@@ -31,7 +31,8 @@ Scoring unit is the individual. Teams are time-bounded, not a score holder. A te
 - **DM stays in DM.** Budget, diet, allergies, social graph never appear in a group message. Enforce in the prompt and with a test. Group conversation context gets a public survey slice only.
 - **Addressed messages always get a reply.** Silence is only for unaddressed traffic (no keyword, not a DM, no task code, no open task context). A valid code that used to die on photo-verification was a bug: photos are a **bonus**, not a gate. Honor and photo resolve on code; only `peer` still needs someone else's tapback.
 - **Browserbase never runs on the webhook path.**
-- **Foursquare is never called from the webhook path.** Batch at trip creation, or not at all.
+- **Foursquare is never called from the webhook path.** Batch at trip creation, or not at all. One narrow exception: the organizer setup resolves the destination answer with one `near` search (`resolveNearArea`, 6s timeout), which is trip creation.
+- **No new external APIs.** Gemini, Supabase, Browserbase, Vercel, Foursquare. (Weather in `lib/game/weather.ts` predates this rule and still calls Open-Meteo.)
 
 Validation after generation (code, not prompt): booking, over lowest budget ceiling, diet/allergy/mobility conflict, unsafe/illegal/permanent, duplicate completed, cannot finish before expiry.
 
@@ -42,7 +43,7 @@ Do not re-guess these.
 - `participant.added` and `chat.created` **never fire** when the bot is added to an iMessage group. Bootstrap is first human `message.received` with `chat.is_group === true` (`lib/handlers/bootstrap.ts`). Ignore `is_me` and outbound.
 - Chat id is **both** `data.chat.id` and `data.chat_id`. `chatIdFromData` checks both.
 - Sender is `data.sender_handle.handle` (E.164). The object has `is_me`. `is_me` events are ignored. Display name is on the handle object, not the phone string; survey `first_name` can replace it.
-- Media is `data.parts[]`, `type=media`, fetchable `url`, `mime` / `mime_type`.
+- Media is `data.parts[]`, `type=media`, fetchable `url`, `mime` / `mime_type`. **Unverified:** `.captures` holds no media part yet. `[japlan.dispatch] step photo.detect` logs every non-text part's keys; confirm against the first real photo. The declared mime is not trusted (`photoPartsFrom` drops only clear non-images); bytes are sniffed after fetch. iMessage photos are usually HEIC, which prebuilt `sharp` cannot decode: `imageFingerprint` falls back to an exact `sha256:` hash and EXIF is read from the raw bytes.
 - Foursquare venue id is **`fsq_place_id`**, not `fsq_id`. Drop results that only have the legacy field.
 - Task codes: `[A-Za-z]\d{1,2}` as a standalone token (`findTaskCode` in `lib/game/addressing.ts`). Strict: the whole message, or anywhere with the keyword. Loose: a token in a message of 6 words or fewer with no keyword; loose is tentative and stays silent unless it resolves to the sender's own task. Codes repeat per owner (everyone's personal board is A1-A3), unique on `(trip_id, day, participant_id, team_id, code)`; resolve with `findTaskByCodeFor`. Wake keyword: `japlan` (`JAPLAN_WAKE_KEYWORD`), case-insensitive, word boundary.
 
@@ -53,14 +54,16 @@ These are current, not intended.
 - **Second Supabase call in an isolate hangs; the first succeeds.** Suspected client-per-request / PostgREST. `getServiceClient()` is a module singleton, still hangs. Nested embeds (`claims` with `tasks!inner`) were a suspect. Every DB call needs a **timeout**; a hang must not look like silence. `claimAwait` / `dispatchAwait` log `.before` then `.after`; the last `.before` with no `.after` is the hang. `claimAwait` yields once after `.before` so the log can flush.
 - Use `.maybeSingle()`, never `.single()` (PGRST116 on 0 or 2 rows). Participant uniqueness is `(trip_id, phone)`. Same phone on two trips: always query with `trip_id`.
 - **`reaction.added` has never been seen in a capture.** Peer confirmation is implemented and untested against live Linq.
-- **Foursquare is out of credits.** Destination profile is hand-seeded: `npx tsx scripts/seed-profile.ts` writes `TOKYO_HAND_PROFILE` from `lib/game/tokyo-profile.ts`.
+- **Foursquare is out of credits.** Destination profile is hand-seeded: `npx tsx scripts/seed-profile.ts` writes `TOKYO_HAND_PROFILE` from `lib/game/tokyo-profile.ts`. Setup destinations will not resolve until credits return: the raw string is stored and Gemini's timezone (validated) is still used. A destination changed via `japlan setup` stores a `partial` profile; boards generate from it until Foursquare answers.
+- **Organizer is a proxy.** Linq never reports who added the bot, so `trips.organizer_participant_id` is whoever sent the first group message (or ran `japlan new trip`). Legacy trips with no organizer: the first participant to run `japlan setup` / `japlan end trip` takes the role.
 - **RLS is off** on every public table. Service role only. Do not expose that key.
 - **Cron is daily**, `vercel.json` `0 23 * * *` (23:00 UTC). Correct for one timezone (Tokyo 08:00). Hobby plan blocks hourly. Daily board also checks local 8:00 unless `force=1`.
 - **Foursquare PAYG storage:** do not cache names/hours in `places` indefinitely. Only `fsq_place_id`, photo ids, and address ids may be stored long-term. Current `places` rows still store names; do not add more cache of licensed fields.
 
 ## Placeholders that still need writing
 
-- Organizer survey (destination, dates, timezone, stake, team sizes): `ORGANIZER_QUESTIONS_PLACEHOLDER` in `lib/game/survey-questions.ts`. This is why trips need **manual SQL** (or `seed-profile.ts`) after bootstrap.
+- Organizer setup covers destination, dates, difficulty, stake (`lib/handlers/setup.ts`). PLAN's arrival/departure times and team sizes are not asked yet. Setup copy (`SETUP_QUESTIONS` in `copy.ts`) is draft wording.
+- Wrapped is a fictional demo; `wrappedUrlFor` in `lib/handlers/trip-lifecycle.ts` returns null until a per-trip page exists.
 - `SETUP_COMPLETE` (and `GROUP_INTRO`, `SURVEY_DONE_DM`) in `lib/game/copy.ts` still literally say `PLACEHOLDER`.
 - 5 of the intended 20-30 templates exist in `lib/game/templates.ts`. Boards look repetitive until the bank is filled.
 
@@ -80,18 +83,22 @@ Env: `.env.example` / Vercel project env. Solo flag: `JAPLAN_SOLO_MODE=true` (al
 
 Solo DM loop (does not exist unless the flag is on):
 
-1. DM `japlan solo` -> creates `trips.is_solo` row, starts survey.
-2. `japlan skipsurvey` -> default answers, activates.
-3. `npx tsx scripts/seed-profile.ts` -> Tokyo profile + `start_date` today JST. Set `TRIP_ID` if more than one solo trip.
+1. DM `japlan solo` -> creates `trips.is_solo` row, asks the organizer setup (you are the organizer), then the survey.
+2. `japlan skipsurvey` -> default survey answers. A trip only activates once setup has a destination and dates, so answer those or run step 3.
+3. `npx tsx scripts/seed-profile.ts` -> Tokyo profile, dates (today JST + 4 days), `setup_state=done`, activates if surveys are done. Set `TRIP_ID` if more than one solo trip.
 4. Trigger the board:
    `curl -H "Authorization: Bearer $CRON_SECRET" "https://<host>/api/cron/daily-board?force=1&trip_id=<uuid>"`
 5. Claim by sending a code (`A1`). Photo is optional bonus.
-6. Wipe board, keep profile: `TRIP_ID=<uuid> npx tsx scripts/reset-trip.ts`
+6. Wipe board, keep profile: `TRIP_ID=<uuid> npx tsx scripts/reset-trip.ts`. Delete the trip and everything under it: add `--hard` (needs the cascade migration).
+
+Trip lifecycle (organizer only, keyword required): `japlan setup` (re-run setup mid-trip), `japlan end trip` then `japlan end trip confirm` (state `complete`, final standings + stake), `japlan new trip` (only when no open trip; bootstraps the same chat again). One open trip per chat: `getTripByChatId` returns the newest non-complete trip.
+
+Migrations live in `lib/db/migrations/`, run in filename order in the Supabase SQL editor. `lib/db/checks/one-open-trip-per-chat.sql` verifies the partial index and cascades inside a rolled-back transaction.
 
 `japlan resurvey` is **not implemented**. To re-run the survey, set `participants.survey_state` / `survey_json` in SQL.
 
 Hand-written day-1 board: `npx tsx scripts/seed-tasks.ts`.
 
-Local: `npm test` (vitest). Capture inspector: `npx tsx scripts/inspect-captures.ts`. Claim-query probe: `npx tsx scripts/probe-claim-queries.ts`.
+Local: `npm test` (vitest). End-to-end handler tests run against `lib/test/fake-supabase.ts`, which enforces the schema's unique constraints. Capture inspector: `npx tsx scripts/inspect-captures.ts`. Claim-query probe: `npx tsx scripts/probe-claim-queries.ts`.
 
 Logs: `vercel logs --follow` drops lines under concurrency. **Vercel dashboard logs are the source of truth.** Prefixes: `[japlan.webhook]`, `[japlan.dispatch]`, `[japlan.claim]`, `[japlan.solo]`, `[japlan.conversation]`.

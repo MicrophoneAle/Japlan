@@ -1,13 +1,17 @@
 import { getServiceClient } from "@/lib/db/client";
 import { evaluateAddress, findTaskCode } from "@/lib/game/addressing";
+import { detectTripCommand } from "@/lib/game/commands";
 import { DISPATCH_ERROR_LINE } from "@/lib/game/copy";
+import { handleTripCommand } from "@/lib/handlers/trip-lifecycle";
 import { routeSoloDm, soloModeEnabled } from "@/lib/game/solo";
 import { bootstrapGroupIfNeeded } from "@/lib/handlers/bootstrap";
 import {
   handleGroupClaim,
   handlePeerReaction,
+  photoBonusOpenFor,
   recentCodeFor,
   rememberTaskMention,
+  type ClaimHandlerDeps,
 } from "@/lib/handlers/claims";
 import { sendHelpGuide } from "@/lib/handlers/help";
 import { handleConversation } from "@/lib/handlers/conversation";
@@ -22,7 +26,8 @@ import {
   isDirectChat,
   isFromMe,
   isGroupChat,
-  mediaFromParts,
+  describeNonTextParts,
+  photoPartsFrom,
   senderFromData,
   textFromParts,
   type LinqEnvelope,
@@ -96,8 +101,9 @@ async function markProcessed(eventId: string | undefined, tripId?: string) {
 
 async function runClaimThenConversation(
   data: Record<string, unknown>,
+  deps: ClaimHandlerDeps = {},
 ): Promise<void> {
-  const miss = await handleGroupClaim(data);
+  const miss = await handleGroupClaim(data, deps);
   if (!miss) return;
   await handleConversation(miss);
 }
@@ -143,13 +149,23 @@ async function onMessageReceivedInner(
 
   const isGroup = isGroupChat(data);
   if (isGroup) {
+    const bootstrapSender = senderFromData(data)?.handle ?? null;
     await dispatchAwait("bootstrap_group", { chatId }, () =>
-      bootstrapGroupIfNeeded(chatId, { isGroup }),
+      bootstrapGroupIfNeeded(chatId, { isGroup, senderPhone: bootstrapSender }),
     );
   }
 
   const text = textFromParts(data.parts);
-  const media = mediaFromParts(data.parts);
+  const nonText = describeNonTextParts(data.parts);
+  const media = photoPartsFrom(data.parts);
+  if (nonText.length > 0) {
+    // No real photo capture exists yet; this confirms the live media shape.
+    dispatchStep("photo.detect", {
+      chatId,
+      parts: nonText,
+      photoCount: media.length,
+    });
+  }
   const isDm = isDirectChat(data);
   const sender = senderFromData(data);
   const phone = sender?.handle ?? null;
@@ -160,11 +176,24 @@ async function onMessageReceivedInner(
   if (chatId && phone && codeMatch?.strict) {
     rememberTaskMention(chatId, phone, codeMatch.code);
   }
-  const decision = evaluateAddress({
+  let decision = evaluateAddress({
     text,
     isDm,
     openTaskContext: media.length > 0 && Boolean(recentCode),
   });
+
+  // A bare group photo is addressed when the sender has a claim still open
+  // for a photo bonus. Checked only for photos that would otherwise be dropped.
+  let photoBonusOpen = false;
+  if (!decision.respond && media.length > 0 && phone && !isDm) {
+    photoBonusOpen = await dispatchAwait("photo_bonus.window", { chatId }, () =>
+      photoBonusOpenFor(chatId, phone),
+    );
+    dispatchStep("photo_bonus.window.result", { chatId, photoBonusOpen });
+    if (photoBonusOpen) {
+      decision = evaluateAddress({ text, isDm, openTaskContext: true });
+    }
+  }
 
   if (!decision.respond) {
     dispatchIdle("addressing_silent", {
@@ -210,6 +239,14 @@ async function onMessageReceivedInner(
     return;
   }
 
+  const command = detectTripCommand(text);
+  if (command) {
+    await dispatchAwait("trip_command", { chatId, command }, () =>
+      handleTripCommand({ command, chatId, isDm, phone, displayName: senderName }),
+    );
+    return;
+  }
+
   if (!(isDm && phone)) {
     dispatchStep("group_or_no_phone.claim", {
       chatId,
@@ -217,7 +254,7 @@ async function onMessageReceivedInner(
       hasPhone: Boolean(phone),
     });
     await dispatchAwait("group_claim", { chatId }, () =>
-      runClaimThenConversation(data as Record<string, unknown>),
+      runClaimThenConversation(data as Record<string, unknown>, { photoBonusOpen }),
     );
     return;
   }

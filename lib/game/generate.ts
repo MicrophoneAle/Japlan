@@ -8,6 +8,7 @@ import {
   type TaskTemplate,
 } from "./templates";
 import type { SurveyAnswers } from "./survey";
+import { difficultyGuidance } from "./setup";
 import {
   validateGeneratedTask,
   type ProposedTask,
@@ -196,6 +197,8 @@ export type GenerationInput = {
   scoreGap: string;
   day: number;
   count?: number;
+  // Organizer setup answer: chill / normal / unhinged.
+  difficulty?: string | null;
 };
 
 export function buildGenerationPrompt(input: GenerationInput): string {
@@ -216,6 +219,7 @@ export function buildGenerationPrompt(input: GenerationInput): string {
     `Price bands seen: ${input.profile.price_bands.join(", ") || "(unknown)"}`,
     `Weather: ${input.weather.summary}; ${indoor}`,
     `Preferences: ${input.preferenceText}`,
+    ...(difficultyGuidance(input.difficulty) ? [difficultyGuidance(input.difficulty) as string] : []),
     `Already completed (do not repeat): ${input.completedTitles.join("; ") || "(none)"}`,
     `Yesterday's ratings: ${input.yesterdayRatings || "(none)"}`,
     `Score gap: ${input.scoreGap}`,

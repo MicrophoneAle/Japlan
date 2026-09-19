@@ -34,8 +34,7 @@ import { applySoloVerification } from "@/lib/game/solo";
 // Plan does not specify the exact expiry instant; tasks end with the trip's local day.
 import { endOfLocalDay, localDateString, localHour } from "@/lib/game/time";
 
-const TRIP_COLS =
-  "id, linq_chat_id, name, destination, start_date, end_date, state, difficulty, stake_text, timezone, destination_profile_json, is_solo, daily_points_cap";
+import { TRIP_COLS } from "@/lib/db/columns";
 
 // Matches tasks_owner_code_key: codes are unique per owner per day, not per trip.
 const TASK_CODE_CONFLICT = "trip_id,day,participant_id,team_id,code";
@@ -207,6 +206,7 @@ async function proposalsForAssignee(opts: {
   ratings: string;
   gap: string;
   day: number;
+  difficulty?: string | null;
 }): Promise<ProposedTask[]> {
   const answers = (opts.assignee.people[0]?.survey_json ?? {}) as SurveyAnswers;
   return generateTasksForAssignee({
@@ -217,6 +217,7 @@ async function proposalsForAssignee(opts: {
     yesterdayRatings: opts.ratings,
     scoreGap: opts.gap,
     day: opts.day,
+    difficulty: opts.difficulty,
   });
 }
 
@@ -294,6 +295,7 @@ export async function generateValidatedBoard(opts: {
           ratings,
           gap,
           day,
+          difficulty: opts.trip.difficulty,
         });
       } catch (err) {
         console.error("[japlan.generate] llm failed", {
@@ -730,6 +732,7 @@ export async function refillPersonalTasksIfNeeded(opts: {
       ratings,
       gap,
       day,
+      difficulty: opts.trip.difficulty,
     });
   } catch (err) {
     console.error("[japlan.generate] refill llm failed", err);

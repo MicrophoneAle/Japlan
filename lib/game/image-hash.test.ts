@@ -1,23 +1,12 @@
 import { describe, expect, it } from "vitest";
-import sharp from "sharp";
-import { exifTakenAtFromBuffer, perceptualHash } from "./image-hash";
-
-async function patternJpeg(kind: "vertical" | "horizontal"): Promise<Buffer> {
-  const width = 32;
-  const height = 32;
-  const raw = Buffer.alloc(width * height * 3);
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const on = kind === "vertical" ? x >= 16 : y >= 16;
-      const i = (y * width + x) * 3;
-      const v = on ? 255 : 0;
-      raw[i] = v;
-      raw[i + 1] = v;
-      raw[i + 2] = v;
-    }
-  }
-  return sharp(raw, { raw: { width, height, channels: 3 } }).jpeg().toBuffer();
-}
+import { fakeHeic, patternJpeg } from "@/lib/test/images";
+import {
+  exifTakenAtFromBuffer,
+  imageFingerprint,
+  imageTakenAt,
+  perceptualHash,
+  sniffImageMime,
+} from "./image-hash";
 
 describe("perceptualHash", () => {
   it("is stable for the same image and different across images", async () => {
@@ -28,6 +17,32 @@ describe("perceptualHash", () => {
     const c = await perceptualHash(horizontal);
     expect(a).toBe(b);
     expect(a).not.toBe(c);
+  });
+});
+
+describe("undecodable photos (HEIC)", () => {
+  it("sniffs the real type from bytes", async () => {
+    expect(sniffImageMime(fakeHeic())).toBe("image/heic");
+    expect(sniffImageMime(await patternJpeg("vertical"))).toBe("image/jpeg");
+    expect(sniffImageMime(Buffer.from("not an image"))).toBeNull();
+  });
+
+  it("falls back to an exact hash instead of throwing", async () => {
+    await expect(perceptualHash(fakeHeic())).rejects.toThrow();
+    const a = await imageFingerprint(fakeHeic());
+    const b = await imageFingerprint(fakeHeic());
+    expect(a.kind).toBe("exact");
+    expect(a.hash).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(a.hash).toBe(b.hash);
+    expect((await imageFingerprint(fakeHeic(9))).hash).not.toBe(a.hash);
+    const jpeg = await imageFingerprint(await patternJpeg("vertical"));
+    expect(jpeg.kind).toBe("perceptual");
+  });
+
+  it("still reads the EXIF timestamp from the raw bytes", async () => {
+    expect((await imageTakenAt(fakeHeic()))?.toISOString()).toBe(
+      "2026-09-19T08:15:00.000Z",
+    );
   });
 });
 

@@ -11,6 +11,109 @@ export function surveyReaskLine(options: string[]): string {
   return `didn't catch that. reply ${options.join(" / ")}, or skip.`;
 }
 
+// Organizer setup. Draft wording; edit freely.
+export const SETUP_QUESTIONS = {
+  destination: "where are you going? a city is plenty.",
+  dates: `when? something like "march 14-19" or "next weekend" works.`,
+  difficulty: "how hard should the tasks be? chill / normal / unhinged",
+  stake: "what's the loser doing at the end of this?",
+} as const;
+
+const SETUP_REQUIRED = new Set(["destination", "dates"]);
+
+export function setupPrompt(
+  id: keyof typeof SETUP_QUESTIONS,
+  current: string | null,
+  opts: { first?: boolean } = {},
+): string {
+  const lead = opts.first ? "trip setup, 4 quick ones. " : "";
+  const tail = current
+    ? ` (now: ${current}. skip keeps it)`
+    : SETUP_REQUIRED.has(id)
+      ? " (skip and i'll ask again later)"
+      : " (skip is fine)";
+  return `${lead}${SETUP_QUESTIONS[id]}${tail}`;
+}
+
+export function destinationSetLine(display: string, resolved: boolean): string {
+  return resolved
+    ? `got it: ${display}.`
+    : `got it: ${display}. couldn't pin it on a map, so times run on utc for now.`;
+}
+
+export function formatShortDate(iso: string): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }).toLowerCase();
+}
+
+export function datesSetLine(start: string, end: string): string {
+  return start === end
+    ? `got it: ${formatShortDate(start)}.`
+    : `got it: ${formatShortDate(start)} to ${formatShortDate(end)}.`;
+}
+
+export function datesRetryLine(
+  reason: "invalid" | "backwards" | "too_long" | "in_the_past" | "unclear",
+): string {
+  switch (reason) {
+    case "backwards":
+      return `that ends before it starts. try again, like "oct 17-20".`;
+    case "too_long":
+      return "that's longer than 26 days, more than i can run. try a shorter range.";
+    case "in_the_past":
+      return "those dates are already over. try again.";
+    default:
+      return `couldn't read those dates. try something like "oct 17-20".`;
+  }
+}
+
+export function setupFinishedLine(missing: ("destination" | "dates")[]): string {
+  if (missing.length === 0) return "setup's done.";
+  const what = missing.length === 2 ? "where and when" : missing[0] === "destination" ? "where" : "when";
+  return `setup's paused. i still need ${what} before the game can start, and i'll ask next time you message.`;
+}
+
+export function setupNowAboutYouLine(finished: string, surveyPrompt: string): string {
+  return `${finished} now a few about you. ${surveyPrompt}`;
+}
+
+export const SETUP_IN_DM_LINE = "setup questions are in your dm.";
+
+export function onlyOrganizerLine(organizerName: string, action: "change the setup" | "end the trip"): string {
+  return `only ${organizerName} can ${action}.`;
+}
+
+// Trip lifecycle.
+export const END_TRIP_CONFIRM_LINE =
+  "this ends the trip and the scores are final. send 'japlan end trip confirm'";
+
+export const NO_TRIP_RUNNING_LINE = `no trip running here. "japlan new trip" starts one.`;
+
+export const TRIP_ALREADY_RUNNING_LINE = `there's already a trip running. "japlan end trip" first.`;
+
+export const TRIP_OVER_LINE = `this trip is over. "japlan new trip" starts another.`;
+
+export const NEW_TRIP_DM_LINE = `new trips start in a group chat. add me to one and say "japlan new trip".`;
+
+export function finalStandingsLine(opts: {
+  standings: { name: string; score: number }[];
+  losers: string[];
+  stake: string | null;
+  wrappedUrl: string | null;
+}): string {
+  const lines = [`final: ${opts.standings.map((s) => `${s.name} ${s.score}`).join(" · ")}`];
+  const stake = opts.stake?.trim();
+  if (stake && opts.losers.length > 0) {
+    const who =
+      opts.losers.length === 1
+        ? `${opts.losers[0]} is`
+        : `${opts.losers.slice(0, -1).join(", ")} and ${opts.losers.at(-1)} are`;
+    lines.push(`${who} on the hook: ${stake}`);
+  }
+  if (opts.wrappedUrl) lines.push(`the recap: ${opts.wrappedUrl}`);
+  return lines.join("\n");
+}
+
 export function dailyBoardHeader(
   day: number,
   weatherLine?: string | null,
@@ -110,6 +213,10 @@ export function visionRejectedLine(code: string): string {
   return `doesn't look like ${code}, so no photo bonus. a clearer shot still counts.`;
 }
 
+export function photoCheckFailedLine(code: string): string {
+  return `couldn't check that photo for ${code}. send it again in a minute.`;
+}
+
 export function photoOutsideTripLine(code: string): string {
   return `that photo is from outside the trip, so no bonus on ${code}. a new shot still counts.`;
 }
@@ -141,10 +248,12 @@ export function conversationCapLine(next: string): string {
 export const DISPATCH_ERROR_LINE =
   "something broke on my end. send that again in a minute.";
 
-export function surveyDoneLine(waitingOn: number): string {
-  if (waitingOn > 0) {
-    const people = waitingOn === 1 ? "1 more person" : `${waitingOn} more people`;
-    return `${SURVEY_DONE_DM} waiting on ${people}, then your first board lands in the morning.`;
+export function surveyDoneLine(waitingOn: number, setupPending = false): string {
+  const waits: string[] = [];
+  if (waitingOn > 0) waits.push(waitingOn === 1 ? "1 more person" : `${waitingOn} more people`);
+  if (setupPending) waits.push("the trip setup");
+  if (waits.length > 0) {
+    return `${SURVEY_DONE_DM} waiting on ${waits.join(" and ")}, then your first board lands in the morning.`;
   }
   return `${SURVEY_DONE_DM} your first board lands in the morning.`;
 }

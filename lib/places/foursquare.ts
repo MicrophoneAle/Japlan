@@ -1,3 +1,5 @@
+import { fetchWithTimeout } from "@/lib/timeout";
+
 export const PLACES_API_BASE = "https://places-api.foursquare.com";
 
 // Core fields only. photos, tips, rating, popularity, price, tastes, and
@@ -95,6 +97,70 @@ export function parseFoursquarePlace(raw: unknown): FoursquarePlace | null {
     hours_json: raw.hours ?? null,
     raw,
   };
+}
+
+export type NearArea = {
+  lat: number | null;
+  lng: number | null;
+  locality: string | null;
+  region: string | null;
+  country: string | null;
+};
+
+// Pure. A search with `near` returns the geocoded area as context.geo_bounds
+// plus places inside it; either proves Foursquare understood the place.
+export function parseNearArea(payload: unknown): NearArea | null {
+  if (!isRecord(payload)) return null;
+  const context = isRecord(payload.context) ? payload.context : null;
+  const bounds = context && isRecord(context.geo_bounds) ? context.geo_bounds : null;
+  const circle = bounds && isRecord(bounds.circle) ? bounds.circle : null;
+  const center = circle && isRecord(circle.center) ? circle.center : null;
+  const first = Array.isArray(payload.results) && isRecord(payload.results[0])
+    ? payload.results[0]
+    : null;
+  const location = first && isRecord(first.location) ? first.location : null;
+  const lat = numberField(center?.latitude) ?? numberField(first?.latitude);
+  const lng = numberField(center?.longitude) ?? numberField(first?.longitude);
+  if (lat === null && lng === null && !location) return null;
+  return {
+    lat,
+    lng,
+    locality: stringField(location?.locality),
+    region: stringField(location?.region),
+    country: stringField(location?.country),
+  };
+}
+
+export const NEAR_TIMEOUT_MS = 6_000;
+
+// Resolve a free-text destination ("tokyo") to an area, for the organizer
+// setup. One request per destination answer, at trip setup time. Null when
+// Foursquare cannot place it or the call fails (including no credits); the
+// caller then stores the raw string.
+export async function resolveNearArea(text: string): Promise<NearArea | null> {
+  const url = new URL("/places/search", PLACES_API_BASE);
+  url.searchParams.set("near", text.trim().slice(0, 100));
+  url.searchParams.set("limit", "1");
+  url.searchParams.set("fields", "latitude,longitude,location");
+  try {
+    const res = await fetchWithTimeout(url, NEAR_TIMEOUT_MS, "foursquare.near", {
+      headers: placesHeaders(),
+    });
+    const bodyText = await res.text();
+    if (!res.ok) {
+      console.error("[japlan.places] near did not resolve", {
+        status: res.status,
+        body: bodyText.slice(0, 200),
+      });
+      return null;
+    }
+    return parseNearArea(JSON.parse(bodyText));
+  } catch (err) {
+    console.error("[japlan.places] near failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
 }
 
 export async function searchPlaces(

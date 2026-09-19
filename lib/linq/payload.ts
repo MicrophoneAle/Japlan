@@ -67,6 +67,37 @@ export function mediaFromParts(parts: unknown): MediaPart[] {
   return out;
 }
 
+// No capture has shown a real media part yet, so the declared type is not
+// trusted to be image/*: iMessage HEIC can arrive as public.heic, an
+// octet-stream, or with no type at all. Only clearly non-image types are
+// dropped; the bytes are sniffed after the fetch.
+const NON_IMAGE_MIME = /^(video|audio|text)\/|^application\/(pdf|zip|json)|vcard|pkpass/i;
+
+export function isLikelyImageMime(mime: string): boolean {
+  if (!mime) return true;
+  return !NON_IMAGE_MIME.test(mime);
+}
+
+export function photoPartsFrom(parts: unknown): MediaPart[] {
+  return mediaFromParts(parts).filter((part) => isLikelyImageMime(part.mime));
+}
+
+// Keys and types only (no URLs), for confirming the live media shape.
+export function describeNonTextParts(parts: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(parts)) return [];
+  return parts
+    .filter((part) => isRecord(part) && part.type !== "text")
+    .map((part) => {
+      const record = part as Record<string, unknown>;
+      return {
+        type: record.type ?? null,
+        keys: Object.keys(record),
+        mime: record.mime ?? record.mime_type ?? null,
+        hasUrl: typeof record.url === "string",
+      };
+    });
+}
+
 export function looksLikePhone(value: string): boolean {
   return /^\+?\d[\d\s().-]{6,}$/.test(value.trim());
 }

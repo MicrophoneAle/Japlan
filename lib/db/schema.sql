@@ -2,14 +2,17 @@
 --
 -- TODO: plan does not specify id types; using uuid + gen_random_uuid() (Supabase default).
 -- created_at is on every game table except teams (which already has formed_at).
--- TODO: plan does not specify FK delete/update behaviour; using the Postgres default (NO ACTION).
+-- FKs cascade down the trip tree so "delete from trips where id = ..." removes
+-- everything beneath it. events.trip_id is SET NULL: event rows are the
+-- idempotency guard and must outlive the trip.
 -- TODO: events.trip_id is nullable because inbound webhooks can arrive before a trip row exists.
 -- TODO: a `channel` field is required later for RCS/WhatsApp, but is not in the Data model; omitted.
 -- TODO: enum values for trips.state, trips.difficulty, tasks.tier, tasks.verification, claims.status are unspecified; stored as text.
 
 create table trips (
   id uuid primary key default gen_random_uuid(),
-  linq_chat_id text not null unique,
+  -- One open trip per chat: see trips_one_open_trip_per_chat below.
+  linq_chat_id text not null,
   name text not null,
   -- TODO: destination/dates/difficulty/timezone are unknown at bot-added bootstrap.
   destination text,
@@ -24,12 +27,25 @@ create table trips (
   daily_points_cap integer not null default 120,
   -- Set when the group intro goes out; it is posted at most once per chat.
   intro_sent_at timestamptz,
+  completed_at timestamptz,
+  -- Answers the organizer setup. Linq never says who added the bot, so this is
+  -- whoever sent the first group message (or the solo participant). FK added
+  -- after participants exists, below.
+  organizer_participant_id uuid,
+  -- destination | dates | difficulty | stake while asking, 'deferred' when a
+  -- required answer was skipped, 'done', or null before setup starts.
+  setup_state text,
   created_at timestamptz not null default now()
 );
 
+-- A completed trip frees the chat for "japlan new trip".
+create unique index trips_one_open_trip_per_chat on trips (linq_chat_id)
+  where state <> 'complete';
+create index trips_linq_chat_id_idx on trips (linq_chat_id);
+
 create table participants (
   id uuid primary key default gen_random_uuid(),
-  trip_id uuid not null references trips (id),
+  trip_id uuid not null references trips (id) on delete cascade,
   phone text not null,
   display_name text not null,
   score integer not null default 0,
@@ -41,12 +57,15 @@ create table participants (
   unique (trip_id, phone)
 );
 
+alter table trips add constraint trips_organizer_participant_id_fkey
+  foreign key (organizer_participant_id) references participants (id) on delete set null;
+
 create index participants_phone_idx on participants (phone);
 create index participants_trip_id_idx on participants (trip_id);
 
 create table teams (
   id uuid primary key default gen_random_uuid(),
-  trip_id uuid not null references trips (id),
+  trip_id uuid not null references trips (id) on delete cascade,
   name text not null,
   color text not null,
   formed_at timestamptz not null,
@@ -55,14 +74,14 @@ create table teams (
 
 create table team_members (
   id uuid primary key default gen_random_uuid(),
-  team_id uuid not null references teams (id),
-  participant_id uuid not null references participants (id),
+  team_id uuid not null references teams (id) on delete cascade,
+  participant_id uuid not null references participants (id) on delete cascade,
   created_at timestamptz not null default now()
 );
 
 create table places (
   id uuid primary key default gen_random_uuid(),
-  trip_id uuid not null references trips (id),
+  trip_id uuid not null references trips (id) on delete cascade,
   fsq_place_id text,
   name text not null,
   lat double precision,
@@ -80,19 +99,19 @@ create table places (
 
 create table itinerary (
   id uuid primary key default gen_random_uuid(),
-  trip_id uuid not null references trips (id),
+  trip_id uuid not null references trips (id) on delete cascade,
   day integer not null,
   anchor_order integer not null,
-  place_id uuid not null references places (id),
+  place_id uuid not null references places (id) on delete cascade,
   planned_time timestamptz,
   created_at timestamptz not null default now()
 );
 
 create table tasks (
   id uuid primary key default gen_random_uuid(),
-  trip_id uuid not null references trips (id),
-  participant_id uuid references participants (id),
-  team_id uuid references teams (id),
+  trip_id uuid not null references trips (id) on delete cascade,
+  participant_id uuid references participants (id) on delete cascade,
+  team_id uuid references teams (id) on delete cascade,
   code text not null,
   title text not null,
   tier text not null,
@@ -120,8 +139,8 @@ create index tasks_trip_id_day_idx on tasks (trip_id, day);
 
 create table claims (
   id uuid primary key default gen_random_uuid(),
-  task_id uuid not null references tasks (id),
-  participant_id uuid not null references participants (id),
+  task_id uuid not null references tasks (id) on delete cascade,
+  participant_id uuid not null references participants (id) on delete cascade,
   evidence_url text,
   image_hash text,
   status text not null,
@@ -166,7 +185,7 @@ grant execute on function increment_participant_score(uuid, integer)
 
 create table events (
   id uuid primary key default gen_random_uuid(),
-  trip_id uuid references trips (id),
+  trip_id uuid references trips (id) on delete set null,
   linq_event_id text not null unique,
   type text not null,
   payload jsonb not null,
@@ -176,8 +195,8 @@ create table events (
 
 create table ratings (
   id uuid primary key default gen_random_uuid(),
-  participant_id uuid not null references participants (id),
-  place_id uuid not null references places (id),
+  participant_id uuid not null references participants (id) on delete cascade,
+  place_id uuid not null references places (id) on delete cascade,
   score integer not null,
   created_at timestamptz not null default now()
 );

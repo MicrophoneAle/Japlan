@@ -54,6 +54,34 @@ function zoneOffsetMs(instant: Date, zone: string): number {
   return asUtc - Math.floor(instant.getTime() / 1000) * 1000;
 }
 
+// A real IANA zone the runtime knows ("Asia/Tokyo"), not "JST" or "UTC+9".
+export function isValidTimeZone(zone: string | null | undefined): zone is string {
+  if (!zone || !/^[A-Za-z]+(?:\/[A-Za-z0-9_+-]+)+$/.test(zone)) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: zone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function zoneOffsetHours(zone: string, at: Date = new Date()): number {
+  return zoneOffsetMs(at, safeZone(zone)) / 3_600_000;
+}
+
+// Sanity check a derived zone against the place's longitude: solar time is
+// lng/15 hours from UTC, and real zones sit within a few hours of it (China
+// and western Spain are the far cases). Catches a model naming the wrong
+// continent; says nothing when the longitude is unknown.
+export function zonePlausibleForLongitude(
+  zone: string,
+  lng: number | null,
+  at: Date = new Date(),
+): boolean {
+  if (lng === null) return true;
+  return Math.abs(zoneOffsetHours(zone, at) - lng / 15) <= 3.5;
+}
+
 // The UTC instant of a wall-clock time in a zone. Two passes settle DST edges.
 export function zonedTimeToUtc(
   date: string,
