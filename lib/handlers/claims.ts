@@ -34,6 +34,7 @@ import {
   isClaimantTapback,
   openPersonalTaskIds,
   parseFreeformExtraction,
+  type FreeformExtraction,
 } from "@/lib/game/freeform";
 import { perceptualHash, imageTakenAt } from "@/lib/game/image-hash";
 import { nextFreeformCode } from "@/lib/game/generate";
@@ -43,6 +44,7 @@ import {
   pointsForFreeform,
   tripLengthDays,
 } from "@/lib/game/scoring";
+import { resetOffTopicOnClaim } from "@/lib/game/conversation";
 import { verificationForSolo } from "@/lib/game/solo";
 import type { SurveyAnswers } from "@/lib/game/survey";
 import { validateGeneratedTask } from "@/lib/game/validate";
@@ -143,6 +145,23 @@ type SendFn = (chatId: string, text: string) => Promise<{ messageId: string }>;
 
 export type ClaimHandlerDeps = {
   send?: SendFn;
+  provider?: LLMProvider;
+  now?: number;
+};
+
+export type ClaimFallthrough = {
+  data: Record<string, unknown>;
+  text: string;
+  hasPhoto: boolean;
+  photo: { url: string; mime: string } | null;
+  claimant: ParticipantRow;
+  people: ParticipantRow[];
+  trip: TripRow;
+  tasks: TaskRow[];
+  claims: ClaimRow[];
+  chatId: string;
+  isDm: boolean;
+  send: SendFn;
   provider?: LLMProvider;
   now?: number;
 };
@@ -510,6 +529,7 @@ async function applyAwards(opts: {
     photo: Boolean(opts.evidenceUrl),
     at: new Date().toISOString(),
   });
+  resetOffTopicOnClaim(confirmChatId);
 
   if (
     opts.task.participant_id === opts.claimant.id &&
@@ -727,8 +747,8 @@ async function tryHandleFreeform(opts: {
   claims: ClaimRow[];
   send: SendFn;
   provider?: LLMProvider;
-}): Promise<void> {
-  if (!opts.text.trim()) return;
+  extraction?: FreeformExtraction | null;
+}): Promise<boolean> {
   const day = currentTripDay(opts.trip, new Date());
   if (
     hasFreeformClaimToday({
@@ -739,17 +759,21 @@ async function tryHandleFreeform(opts: {
     })
   ) {
     await opts.send(opts.trip.linq_chat_id, freeformAlreadyUsedLine());
-    return;
+    return true;
   }
 
-  const raw = await claimAwait("gemini.extractFreeform", {}, () =>
-    extractFreeformActivity({
-      provider: opts.provider,
-      text: opts.text,
-    }),
-  );
-  const extracted = parseFreeformExtraction(raw);
-  if (!extracted) return;
+  let extracted = opts.extraction ?? null;
+  if (!extracted) {
+    if (!opts.text.trim()) return false;
+    const raw = await claimAwait("gemini.extractFreeform", {}, () =>
+      extractFreeformActivity({
+        provider: opts.provider,
+        text: opts.text,
+      }),
+    );
+    extracted = parseFreeformExtraction(raw);
+  }
+  if (!extracted) return false;
 
   const completed = opts.tasks
     .filter((task) =>
@@ -780,7 +804,7 @@ async function tryHandleFreeform(opts: {
   });
   if (reason === "unsafe" || reason === "illegal" || reason === "duplicate") {
     await opts.send(opts.trip.linq_chat_id, freeformRejectedLine());
-    return;
+    return true;
   }
 
   const tripDays = tripLengthDays(opts.trip.start_date, opts.trip.end_date);
@@ -843,7 +867,7 @@ async function tryHandleFreeform(opts: {
     const hashes = await tripHashes(opts.trip.id);
     if (hashAlreadyUsed(hashes, imageHash)) {
       await opts.send(opts.trip.linq_chat_id, reusedPhotoLine());
-      return;
+      return true;
     }
     const takenAt = await imageTakenAt(bytes);
     const scoredPhoto = await claimAwait(
@@ -893,7 +917,7 @@ async function tryHandleFreeform(opts: {
       resolved_by: "peer",
       resolution_json: { peer_message_id: sent.messageId, photoBonus },
     });
-    return;
+    return true;
   }
 
   await applyAwards({
@@ -908,9 +932,26 @@ async function tryHandleFreeform(opts: {
     trip: opts.trip,
     send: opts.send,
   });
+  return true;
 }
 
-async function applyLatePhotoBonus(opts: {
+export async function submitFreeformClaim(opts: {
+  text: string;
+  hasPhoto: boolean;
+  photo: { url: string; mime: string } | null;
+  claimant: ParticipantRow;
+  people: ParticipantRow[];
+  trip: TripRow;
+  tasks: TaskRow[];
+  claims: ClaimRow[];
+  send: SendFn;
+  provider?: LLMProvider;
+  extraction?: FreeformExtraction | null;
+}): Promise<boolean> {
+  return tryHandleFreeform(opts);
+}
+
+export async function applyLatePhotoBonus(opts: {
   task: TaskRow;
   claim: ClaimRow;
   claimant: ParticipantRow;
@@ -1054,11 +1095,12 @@ async function applyLatePhotoBonus(opts: {
 export async function handleGroupClaim(
   data: Record<string, unknown>,
   deps: ClaimHandlerDeps = {},
-): Promise<void> {
+): Promise<ClaimFallthrough | null> {
   claimStep("handler.enter");
   try {
-    await handleGroupClaimInner(data, deps);
+    const fallthrough = await handleGroupClaimInner(data, deps);
     claimStep("handler.exit");
+    return fallthrough ?? null;
   } catch (err) {
     claimThrow("handler.throw", err);
   }
@@ -1067,7 +1109,7 @@ export async function handleGroupClaim(
 async function handleGroupClaimInner(
   data: Record<string, unknown>,
   deps: ClaimHandlerDeps,
-): Promise<void> {
+): Promise<ClaimFallthrough | null | undefined> {
   const send = deps.send ?? sendText;
   const chatId = chatIdFromData(data);
   if (!chatId) {
@@ -1115,6 +1157,23 @@ async function handleGroupClaimInner(
     });
     return;
   }
+
+  const miss = (): ClaimFallthrough => ({
+    data,
+    text,
+    hasPhoto,
+    photo,
+    claimant,
+    people: ctx.people,
+    trip: ctx.trip,
+    tasks: ctx.tasks,
+    claims: ctx.claims,
+    chatId,
+    isDm: isDirectChat(data),
+    send,
+    provider: deps.provider,
+    now: deps.now,
+  });
 
   if (hasPhoto && photo) {
     const bind = pickLatePhotoTarget({
@@ -1170,7 +1229,8 @@ async function handleGroupClaimInner(
     claimStep("decision.silent", {
       reason: decision.reason,
     });
-    return;
+    if (decision.reason === "no_match") return miss();
+    return null;
   }
 
   if (decision.type === "code") {
@@ -1225,19 +1285,7 @@ async function handleGroupClaimInner(
       match.confidence < CLAIM_MATCH_CONFIDENCE_MIN ||
       !match.task_code
     ) {
-      await tryHandleFreeform({
-        text,
-        hasPhoto,
-        photo,
-        claimant,
-        people: ctx.people,
-        trip: ctx.trip,
-        tasks: ctx.tasks,
-        claims: ctx.claims,
-        send,
-        provider: deps.provider,
-      });
-      return;
+      return miss();
     }
     const task = openTasks.find(
       (t) => t.code.toUpperCase() === match.task_code.toUpperCase(),
@@ -1293,19 +1341,7 @@ async function handleGroupClaimInner(
       }
     }
     if (scored.length === 0) {
-      await tryHandleFreeform({
-        text,
-        hasPhoto,
-        photo,
-        claimant,
-        people: ctx.people,
-        trip: ctx.trip,
-        tasks: ctx.tasks,
-        claims: ctx.claims,
-        send,
-        provider: deps.provider,
-      });
-      return;
+      return miss();
     }
     if (scored.length > 1) {
       await claimAwait("outbound.send", { reason: "two_match" }, () =>
@@ -1328,7 +1364,10 @@ async function handleGroupClaimInner(
       decision,
       photoBonusOverride: scored[0].fidelity,
     });
+    return null;
   }
+
+  return miss();
 }
 
 export async function handlePeerReaction(

@@ -10,6 +10,7 @@ import {
   rememberTaskMention,
 } from "@/lib/handlers/claims";
 import { sendHelpGuide } from "@/lib/handlers/help";
+import { handleConversation } from "@/lib/handlers/conversation";
 import {
   bootstrapSoloIfNeeded,
   skipSoloSurvey,
@@ -87,6 +88,14 @@ async function markProcessed(eventId: string | undefined, tripId?: string) {
   if (error) {
     console.error("[japlan.dispatch] failed to mark processed", error);
   }
+}
+
+async function runClaimThenConversation(
+  data: Record<string, unknown>,
+): Promise<void> {
+  const miss = await handleGroupClaim(data);
+  if (!miss) return;
+  await handleConversation(miss);
 }
 
 async function onMessageReceived(data: unknown): Promise<void> {
@@ -186,7 +195,9 @@ async function onMessageReceivedInner(data: unknown): Promise<void> {
       isDm,
       hasPhone: Boolean(phone),
     });
-    await dispatchAwait("group_claim", { chatId }, () => handleGroupClaim(data));
+    await dispatchAwait("group_claim", { chatId }, () =>
+      runClaimThenConversation(data as Record<string, unknown>),
+    );
     return;
   }
 
@@ -242,7 +253,7 @@ async function onMessageReceivedInner(data: unknown): Promise<void> {
   if (soloRoute === "solo_claim") {
     console.log("[japlan.claim] step", { step: "solo_claim.before", chatId });
     try {
-      await handleGroupClaim(data);
+      await runClaimThenConversation(data);
     } finally {
       console.log("[japlan.claim] step", { step: "solo_claim.after", chatId });
     }

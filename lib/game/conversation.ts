@@ -1,0 +1,356 @@
+import type { ClaimDecision } from "./claims";
+import type { QuestionId } from "./survey-questions";
+import type { SurveyAnswers } from "./survey";
+import { answerValue } from "./survey";
+
+export const CONVERSATION_REPLY_CAP = 6;
+export const CONVERSATION_WINDOW_MS = 60 * 60 * 1000;
+export const CONVERSATION_MAX_TOOL_ITERS = 3;
+export const CONVERSATION_HISTORY_LIMIT = 15;
+
+export const CONVERSATION_TOOLS = [
+  "get_standings",
+  "get_open_tasks",
+  "propose_freeform_claim",
+  "request_photo_bonus",
+  "no_action",
+] as const;
+
+export type ConversationToolName = (typeof CONVERSATION_TOOLS)[number];
+
+export const POINT_FIELD_KEYS = [
+  "points",
+  "base_points",
+  "awarded_points",
+  "score",
+  "total",
+  "photo_bonus",
+  "photoBonus",
+] as const;
+
+export const PRIVATE_SURVEY_IDS: QuestionId[] = [
+  "budget",
+  "dietary",
+  "dietary_strictness",
+  "mobility",
+  "blackout",
+  "social_with",
+  "social_travelled",
+  "social_couples",
+];
+
+const PUBLIC_SURVEY_IDS: QuestionId[] = [
+  "first_name",
+  "interests",
+  "pace",
+  "chaos",
+  "nightlife",
+  "competitiveness",
+  "attractions",
+];
+
+const GAME_TOOLS = new Set<string>([
+  "get_standings",
+  "get_open_tasks",
+  "propose_freeform_claim",
+  "request_photo_bonus",
+]);
+
+export type ConversationStore = {
+  offTopic: Map<string, number>;
+  replies: Map<string, number[]>;
+};
+
+const defaultStore: ConversationStore = {
+  offTopic: new Map(),
+  replies: new Map(),
+};
+
+export function getConversationStore(): ConversationStore {
+  return defaultStore;
+}
+
+export function resetConversationStore(
+  store: ConversationStore = defaultStore,
+): void {
+  store.offTopic.clear();
+  store.replies.clear();
+}
+
+export function shouldEnterConversation(claim: ClaimDecision): boolean {
+  if (claim.type === "code") return false;
+  if (claim.type === "silent") {
+    return claim.reason === "no_match";
+  }
+  return claim.type === "fuzzy" || claim.type === "vision";
+}
+
+export function stripPointFields(
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if ((POINT_FIELD_KEYS as readonly string[]).includes(key)) continue;
+    if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+      out[key] = stripPointFields(entry as Record<string, unknown>);
+    } else {
+      out[key] = entry;
+    }
+  }
+  return out;
+}
+
+export function toolResultHasInventedPoints(
+  result: Record<string, unknown>,
+): boolean {
+  for (const key of POINT_FIELD_KEYS) {
+    if (key in result) return true;
+  }
+  return false;
+}
+
+export function isGameTool(name: string): boolean {
+  return GAME_TOOLS.has(name);
+}
+
+export function looksOnTopic(opts: {
+  text: string;
+  destination?: string | null;
+  taskTitles?: string[];
+  neighborhoods?: string[];
+}): boolean {
+  const blob = [
+    opts.text,
+    opts.destination ?? "",
+    ...(opts.taskTitles ?? []),
+    ...(opts.neighborhoods ?? []),
+  ]
+    .join(" ")
+    .toLowerCase();
+  const text = opts.text.toLowerCase();
+  if (
+    /\b(task|board|standings?|score|claim|photo|bonus|points?|leaderboard|nearby|neighborhood|itinerary)\b/.test(
+      text,
+    )
+  ) {
+    return true;
+  }
+  if (opts.destination && text.includes(opts.destination.toLowerCase())) {
+    return true;
+  }
+  for (const title of opts.taskTitles ?? []) {
+    if (title && text.includes(title.toLowerCase())) return true;
+  }
+  for (const hood of opts.neighborhoods ?? []) {
+    if (hood && text.includes(hood.toLowerCase())) return true;
+  }
+  void blob;
+  return false;
+}
+
+export function isOnTopicExchange(opts: {
+  toolNames: string[];
+  text: string;
+  destination?: string | null;
+  taskTitles?: string[];
+  neighborhoods?: string[];
+}): boolean {
+  if (opts.toolNames.some((name) => isGameTool(name))) return true;
+  return looksOnTopic(opts);
+}
+
+export function nextOffTopicCount(prev: number, offTopic: boolean): number {
+  if (!offTopic) return 0;
+  return prev + 1;
+}
+
+export type OffTopicPolicy = {
+  consecutive: number;
+  redirect: boolean;
+  oneLine: boolean;
+};
+
+export function offTopicPolicy(consecutive: number): OffTopicPolicy {
+  if (consecutive <= 0) {
+    return { consecutive: 0, redirect: false, oneLine: false };
+  }
+  if (consecutive <= 2) {
+    return { consecutive, redirect: false, oneLine: false };
+  }
+  if (consecutive === 3) {
+    return { consecutive, redirect: true, oneLine: false };
+  }
+  return { consecutive, redirect: true, oneLine: true };
+}
+
+export function shapeOffTopicReply(
+  reply: string,
+  policy: OffTopicPolicy,
+  redirect: string,
+): string {
+  const trimmed = reply.trim();
+  if (!policy.redirect) return trimmed;
+  const body = policy.oneLine
+    ? trimmed.split(/\n/)[0]?.trim() || trimmed
+    : trimmed;
+  if (!redirect) return body;
+  if (body.toLowerCase().includes(redirect.toLowerCase())) return body;
+  return `${body} ${redirect}`.trim();
+}
+
+export function recordConversationalReply(
+  chatId: string,
+  now: number,
+  store: ConversationStore = defaultStore,
+): void {
+  const prior = store.replies.get(chatId) ?? [];
+  store.replies.set(chatId, [...prior, now]);
+}
+
+export function conversationalRepliesInWindow(
+  chatId: string,
+  now: number,
+  windowMs = CONVERSATION_WINDOW_MS,
+  store: ConversationStore = defaultStore,
+): number {
+  const cutoff = now - windowMs;
+  const kept = (store.replies.get(chatId) ?? []).filter((at) => at > cutoff);
+  store.replies.set(chatId, kept);
+  return kept.length;
+}
+
+export function conversationalCapReached(
+  chatId: string,
+  now: number,
+  cap = CONVERSATION_REPLY_CAP,
+  store: ConversationStore = defaultStore,
+): boolean {
+  return conversationalRepliesInWindow(chatId, now, CONVERSATION_WINDOW_MS, store) >= cap;
+}
+
+export function getOffTopicCount(
+  chatId: string,
+  store: ConversationStore = defaultStore,
+): number {
+  return store.offTopic.get(chatId) ?? 0;
+}
+
+export function setOffTopicCount(
+  chatId: string,
+  count: number,
+  store: ConversationStore = defaultStore,
+): void {
+  store.offTopic.set(chatId, count);
+}
+
+export function resetOffTopicOnClaim(
+  chatId: string,
+  store: ConversationStore = defaultStore,
+): void {
+  store.offTopic.set(chatId, 0);
+}
+
+export function surveySliceForConversation(
+  answers: SurveyAnswers | null | undefined,
+  isDm: boolean,
+): SurveyAnswers {
+  const source = answers ?? {};
+  const ids = isDm
+    ? [...PUBLIC_SURVEY_IDS, ...PRIVATE_SURVEY_IDS]
+    : PUBLIC_SURVEY_IDS;
+  const slice: SurveyAnswers = {};
+  for (const id of ids) {
+    const value = source[id];
+    if (value) slice[id] = value;
+  }
+  return slice;
+}
+
+export function foreignSurveySecrets(
+  people: { id: string; display_name: string; survey_json?: unknown }[],
+  senderId: string,
+): { name: string; secrets: string[] }[] {
+  return people
+    .filter((person) => person.id !== senderId)
+    .map((person) => {
+      const answers = (person.survey_json ?? {}) as SurveyAnswers;
+      const secrets: string[] = [];
+      for (const id of PRIVATE_SURVEY_IDS) {
+        const value = answerValue(answers, id);
+        if (value) secrets.push(value);
+      }
+      return { name: person.display_name, secrets };
+    });
+}
+
+export function leaksForeignSurvey(
+  text: string,
+  others: { name: string; secrets: string[] }[],
+): boolean {
+  const lower = text.toLowerCase();
+  for (const person of others) {
+    const named = lower.includes(person.name.toLowerCase());
+    const budgetTalk = /\bbudget\b|\ballerg|\bdiet|\bsurvey\b/.test(lower);
+    for (const secret of person.secrets) {
+      if (!secret) continue;
+      if (!lower.includes(secret.toLowerCase())) continue;
+      if (named || budgetTalk) return true;
+    }
+  }
+  return false;
+}
+
+export type ConversationTurn = {
+  text: string;
+  calls: { id?: string; name: string; args: Record<string, unknown> }[];
+};
+
+export function finalizeConversationReply(opts: {
+  text: string;
+  others: { name: string; secrets: string[] }[];
+  policy: OffTopicPolicy;
+  redirect: string;
+  fallback: string;
+  privacyLine: string;
+}): string {
+  let reply = opts.text.trim() || opts.fallback;
+  if (leaksForeignSurvey(reply, opts.others)) {
+    return opts.privacyLine;
+  }
+  reply = shapeOffTopicReply(reply, opts.policy, opts.redirect);
+  return reply.trim() || opts.fallback;
+}
+
+export async function runToolLoop(opts: {
+  maxIterations?: number;
+  generate: (input: {
+    iteration: number;
+    forceReply: boolean;
+  }) => Promise<ConversationTurn>;
+  execute: (
+    call: ConversationTurn["calls"][number],
+  ) => Promise<{ result: Record<string, unknown>; sent: boolean }>;
+}): Promise<{
+  text: string;
+  toolNames: string[];
+  sentByTool: boolean;
+}> {
+  const max = opts.maxIterations ?? CONVERSATION_MAX_TOOL_ITERS;
+  const toolNames: string[] = [];
+  let sentByTool = false;
+  let text = "";
+  for (let iteration = 0; iteration < max; iteration += 1) {
+    const turn = await opts.generate({ iteration, forceReply: false });
+    if (turn.calls.length === 0) {
+      return { text: turn.text.trim(), toolNames, sentByTool };
+    }
+    for (const call of turn.calls) {
+      toolNames.push(call.name);
+      const executed = await opts.execute(call);
+      if (executed.sent) sentByTool = true;
+    }
+  }
+  const last = await opts.generate({ iteration: max, forceReply: true });
+  text = last.text.trim();
+  return { text, toolNames, sentByTool };
+}

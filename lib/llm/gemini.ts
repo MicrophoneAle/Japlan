@@ -1,5 +1,10 @@
-import { GoogleGenAI, type Part } from "@google/genai";
-import type { LLMProvider, Msg } from "./index";
+import {
+  FunctionCallingConfigMode,
+  GoogleGenAI,
+  type Content,
+  type Part,
+} from "@google/genai";
+import type { LLMProvider, Msg, ToolContent, ToolTurn } from "./index";
 
 function modelForTier(tier: "fast" | "smart"): string {
   const name =
@@ -60,6 +65,83 @@ export class GeminiProvider implements LLMProvider {
     });
     return response.text?.trim() ?? "";
   }
+
+  async completeTurn(opts: {
+    system: string;
+    contents: ToolContent[];
+    tools: { name: string; description: string; parameters: object }[];
+    toolMode: "auto" | "none";
+    tier: "fast" | "smart";
+    thinkingBudget?: number;
+  }): Promise<ToolTurn> {
+    const ai = new GoogleGenAI({ apiKey: apiKey() });
+    const contents = opts.contents.map((entry) => contentFromTurn(entry));
+    const response = await ai.models.generateContent({
+      model: modelForTier(opts.tier),
+      contents,
+      config: {
+        systemInstruction: opts.system,
+        ...(opts.thinkingBudget !== undefined
+          ? { thinkingConfig: { thinkingBudget: opts.thinkingBudget } }
+          : {}),
+        ...(opts.toolMode === "none"
+          ? {
+              toolConfig: {
+                functionCallingConfig: { mode: FunctionCallingConfigMode.NONE },
+              },
+            }
+          : {
+              tools: [
+                {
+                  functionDeclarations: opts.tools.map((tool) => ({
+                    name: tool.name,
+                    description: tool.description,
+                    parametersJsonSchema: tool.parameters,
+                  })),
+                },
+              ],
+              toolConfig: {
+                functionCallingConfig: { mode: FunctionCallingConfigMode.AUTO },
+              },
+            }),
+      },
+    });
+    const calls = (response.functionCalls ?? []).map((call) => ({
+      id: call.id,
+      name: call.name ?? "",
+      args: (call.args ?? {}) as Record<string, unknown>,
+    }));
+    return {
+      text: response.text?.trim() ?? "",
+      functionCalls: calls.filter((call) => call.name),
+    };
+  }
+}
+
+function contentFromTurn(entry: ToolContent): Content {
+  const parts: Part[] = [];
+  for (const part of entry.parts) {
+    if ("text" in part) {
+      parts.push({ text: part.text });
+    } else if ("functionCall" in part) {
+      parts.push({
+        functionCall: {
+          id: part.functionCall.id,
+          name: part.functionCall.name,
+          args: part.functionCall.args,
+        },
+      });
+    } else {
+      parts.push({
+        functionResponse: {
+          id: part.functionResponse.id,
+          name: part.functionResponse.name,
+          response: part.functionResponse.response,
+        },
+      });
+    }
+  }
+  return { role: entry.role, parts };
 }
 
 export const CLAIM_MATCH_SCHEMA = {
