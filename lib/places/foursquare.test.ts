@@ -1,7 +1,29 @@
 import { describe, expect, it } from "vitest";
-import { parseFoursquarePlace } from "./foursquare";
+import { parseFoursquarePlace, SEARCH_FIELDS } from "./foursquare";
 
 describe("Foursquare place parse", () => {
+  it("projects only core fields, not Premium attributes", () => {
+    const fields = SEARCH_FIELDS.split(",");
+    expect(fields).toEqual([
+      "fsq_place_id",
+      "name",
+      "latitude",
+      "longitude",
+      "location",
+      "categories",
+    ]);
+    for (const premium of [
+      "photos",
+      "tips",
+      "rating",
+      "popularity",
+      "price",
+      "tastes",
+      "hours",
+    ]) {
+      expect(fields).not.toContain(premium);
+    }
+  });
   it("stores fsq_place_id and ignores fsq_id", () => {
     const place = parseFoursquarePlace({
       fsq_id: "legacy-id",

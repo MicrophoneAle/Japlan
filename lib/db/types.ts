@@ -12,6 +12,7 @@ export type TripRow = {
   stake_text: string | null;
   timezone: string | null;
   destination_profile_json?: unknown | null;
+  is_solo?: boolean;
 };
 
 export type TaskRow = {

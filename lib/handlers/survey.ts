@@ -12,7 +12,7 @@ export async function handleSurveyDm(opts: {
   text: string;
 }): Promise<void> {
   if (!opts.text.trim()) return;
-  const match = await findOpenSurveyByPhone(opts.phone);
+  const match = await findOpenSurveyByPhone(opts.phone, opts.chatId);
   if (!match) return;
   if (!match.participant.survey_state || match.participant.survey_state === "done") {
     return;

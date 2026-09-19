@@ -1,5 +1,7 @@
 export const PLACES_API_BASE = "https://places-api.foursquare.com";
 
+// Core fields only. photos, tips, rating, popularity, price, tastes, and
+// hours are Premium on Places API and have no free tier.
 export const SEARCH_FIELDS = [
   "fsq_place_id",
   "name",
@@ -7,9 +9,6 @@ export const SEARCH_FIELDS = [
   "longitude",
   "location",
   "categories",
-  "price",
-  "tastes",
-  "hours",
 ].join(",");
 
 export type FoursquareSearchParams = {

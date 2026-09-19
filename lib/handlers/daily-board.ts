@@ -28,10 +28,11 @@ import {
 import { getServiceClient } from "@/lib/db/client";
 import type { ParticipantRow, TaskRow, TripRow } from "@/lib/db/types";
 import { sendText } from "@/lib/linq/send";
+import { applySoloVerification } from "@/lib/game/solo";
 import { fillArchetype, midpointAxes, TEMPLATES } from "@/lib/game/templates";
 
 const TRIP_COLS =
-  "id, linq_chat_id, name, destination, start_date, end_date, state, difficulty, stake_text, timezone, destination_profile_json";
+  "id, linq_chat_id, name, destination, start_date, end_date, state, difficulty, stake_text, timezone, destination_profile_json, is_solo";
 
 export type PersistedGeneratedTask = {
   code: string;
@@ -255,26 +256,29 @@ export function persistableTask(opts: {
   participantId: string | null;
   teamId: string | null;
   expiresAt: Date;
+  isSolo?: boolean;
 }): { row: Omit<TaskRow, "id"> } {
   const { points, tier } = pointsForBoard(opts.task.axes, {
     day: opts.day,
     tripDays: opts.tripDays,
   });
+  const [task] = applySoloVerification([opts.task], Boolean(opts.isSolo));
+  const rowTask = task ?? opts.task;
   return {
     row: {
       trip_id: opts.tripId,
       participant_id: opts.participantId,
       team_id: opts.teamId,
-      code: opts.task.code,
-      title: opts.task.title,
+      code: rowTask.code,
+      title: rowTask.title,
       tier,
-      axes_json: opts.task.axes,
+      axes_json: rowTask.axes,
       base_points: points,
-      photo_bonus_max: opts.task.photo_bonus_max,
-      verification: opts.task.verification,
+      photo_bonus_max: rowTask.photo_bonus_max,
+      verification: rowTask.verification,
       day: opts.day,
       expires_at: opts.expiresAt.toISOString(),
-      neighborhood: opts.task.neighborhood || null,
+      neighborhood: rowTask.neighborhood || null,
     },
   };
 }
@@ -394,7 +398,11 @@ export async function generateValidatedBoard(opts: {
     }
   }
 
-  return { tasks: assignDayCodes(kept, day), usedFallback, day };
+  const soloAdjusted = applySoloVerification(
+    kept,
+    Boolean(opts.trip.is_solo),
+  );
+  return { tasks: assignDayCodes(soloAdjusted, day), usedFallback, day };
 }
 
 export async function runDailyBoardForTrip(
@@ -460,6 +468,7 @@ export async function runDailyBoardForTrip(
       participantId: task.participantId ?? null,
       teamId: task.teamId ?? null,
       expiresAt,
+      isSolo: Boolean(trip.is_solo),
     });
     return persisted.row;
   });

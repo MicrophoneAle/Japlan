@@ -1,6 +1,7 @@
 import { getServiceClient } from "@/lib/db/client";
 import { evaluateAddress } from "@/lib/game/addressing";
 import { extractTaskCode } from "@/lib/game/claims";
+import { routeSoloDm, soloModeEnabled } from "@/lib/game/solo";
 import { bootstrapGroupIfNeeded } from "@/lib/handlers/bootstrap";
 import {
   handleGroupClaim,
@@ -8,6 +9,11 @@ import {
   recentCodeFor,
   rememberTaskMention,
 } from "@/lib/handlers/claims";
+import {
+  bootstrapSoloIfNeeded,
+  skipSoloSurvey,
+  soloTripForChat,
+} from "@/lib/handlers/solo";
 import { handleSurveyDm } from "@/lib/handlers/survey";
 import {
   chatIdFromData,
@@ -87,6 +93,25 @@ async function onMessageReceived(data: unknown): Promise<void> {
   }
 
   if (isDm && phone) {
+    const soloEnabled = soloModeEnabled();
+    const soloTrip = soloEnabled ? await soloTripForChat(chatId) : null;
+    const soloRoute = routeSoloDm({
+      enabled: soloEnabled,
+      text,
+      soloTripState: soloTrip?.state ?? null,
+    });
+    if (soloRoute === "solo_bootstrap") {
+      await bootstrapSoloIfNeeded({ chatId, phone });
+      return;
+    }
+    if (soloRoute === "solo_skip") {
+      await skipSoloSurvey({ chatId, phone });
+      return;
+    }
+    if (soloRoute === "solo_claim") {
+      await handleGroupClaim(data);
+      return;
+    }
     await handleSurveyDm({ phone, chatId, text });
     return;
   }

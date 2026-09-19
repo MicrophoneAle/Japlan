@@ -19,7 +19,7 @@ import {
 import { sendDM, sendText } from "@/lib/linq/send";
 
 const TRIP_COLS =
-  "id, linq_chat_id, name, destination, start_date, end_date, state, difficulty, stake_text, timezone";
+  "id, linq_chat_id, name, destination, start_date, end_date, state, difficulty, stake_text, timezone, destination_profile_json, is_solo";
 const PARTICIPANT_COLS =
   "id, trip_id, phone, display_name, score, survey_json, survey_state, sidequests_muted, consented_at";
 
@@ -365,6 +365,7 @@ export async function bootstrapGroupIfNeeded(
 
 export async function findOpenSurveyByPhone(
   phone: string,
+  chatId?: string,
 ): Promise<{ trip: TripRow; participant: ParticipantRow } | null> {
   const { data, error } = await getServiceClient()
     .from("participants")
@@ -379,6 +380,10 @@ export async function findOpenSurveyByPhone(
     if (!trip) return [];
     return [{ trip, participant: row }];
   });
+  if (chatId) {
+    const forChat = mapped.find((row) => row.trip.linq_chat_id === chatId);
+    if (forChat) return forChat;
+  }
   const open = mapped.find(
     (row) =>
       row.participant.survey_state && row.participant.survey_state !== "done",

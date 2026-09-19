@@ -19,7 +19,8 @@ create table trips (
   difficulty text,
   stake_text text,
   timezone text,
-  destination_profile_json jsonb
+  destination_profile_json jsonb,
+  is_solo boolean not null default false
 );
 
 create table participants (

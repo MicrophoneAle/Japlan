@@ -29,6 +29,7 @@ import {
 } from "@/lib/llm/gemini";
 import {
   chatIdFromData,
+  isDirectChat,
   mediaFromParts,
   senderFromData,
   textFromParts,
@@ -468,7 +469,7 @@ export async function handleGroupClaim(
     text,
     hasPhoto,
     recentCode,
-    isDm: false,
+    isDm: isDirectChat(data),
     openTaskContext: hasPhoto && Boolean(recentCode),
   });
 

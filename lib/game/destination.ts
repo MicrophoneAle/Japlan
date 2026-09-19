@@ -186,26 +186,42 @@ async function cacheFoursquarePlaces(
   if (error) throw error;
 }
 
+export function cachedDestinationProfile(
+  trip: Pick<TripRow, "destination_profile_json">,
+): DestinationProfile | null {
+  const raw = trip.destination_profile_json;
+  if (!raw || typeof raw !== "object") return null;
+  return raw as DestinationProfile;
+}
+
+export function needsFoursquareFetch(
+  trip: Pick<TripRow, "destination_profile_json">,
+): boolean {
+  return cachedDestinationProfile(trip) === null;
+}
+
 export async function loadDestinationProfile(
   trip: TripRow,
 ): Promise<DestinationProfile | null> {
-  const raw = (trip as TripRow & { destination_profile_json?: unknown })
-    .destination_profile_json;
-  if (!raw || typeof raw !== "object") return null;
-  return raw as DestinationProfile;
+  return cachedDestinationProfile(trip);
 }
 
 export async function assembleDestinationProfile(opts: {
   trip: TripRow;
   people: ParticipantRow[];
 }): Promise<DestinationProfile> {
+  const cached = await loadDestinationProfile(opts.trip);
+  if (cached) {
+    console.info("[japlan.destination] using cached profile", {
+      tripId: opts.trip.id,
+    });
+    return cached;
+  }
+
   const destination = opts.trip.destination?.trim();
   if (!destination) {
     throw new Error("trip.destination is empty; cannot assemble a profile");
   }
-
-  const cached = await loadDestinationProfile(opts.trip);
-  if (cached) return cached;
 
   const chatPlaces = await existingChatPlaces(opts.trip.id);
   const buckets = interestBuckets(opts.people);

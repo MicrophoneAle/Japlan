@@ -115,7 +115,9 @@ describe("survey skip and branching", () => {
     expect(step.completed).toBe(true);
     expect(step.state.awaiting).toBe("done");
     expect(allParticipantsComplete(["done"])).toBe(true);
+    expect(allParticipantsComplete(["done", "done", "done"])).toBe(true);
     expect(allParticipantsComplete(["age_bracket"])).toBe(false);
+    expect(allParticipantsComplete(["done", "age_bracket"])).toBe(false);
     expect(allParticipantsComplete([])).toBe(false);
   });
 });
