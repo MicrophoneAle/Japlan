@@ -10,7 +10,7 @@ export type LadderHit =
   | { step: 5 };
 
 export type ClaimDecision =
-  | { type: "silent"; reason: "addressing" | "no_match" }
+  | { type: "silent"; reason: "addressing" | "no_match" | "help" }
   | { type: "code"; step: 1 | 2; code: string; withPhoto: boolean }
   | { type: "vision" }
   | { type: "fuzzy"; text: string };
@@ -54,6 +54,9 @@ export function decideClaim(input: {
     });
   if (!address.respond) {
     return { type: "silent", reason: "addressing" };
+  }
+  if (address.intent === "help") {
+    return { type: "silent", reason: "help" };
   }
 
   const hit = ladder({

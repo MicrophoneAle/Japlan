@@ -102,3 +102,30 @@ export function freeformRejectedLine(): string {
 export function twoMatchAskLine(left: string, right: string): string {
   return `${left} or ${right}?`;
 }
+
+export const HELP_TEXT = {
+  group: `here's the deal
+
+· every morning the shared board goes up
+· send the code (like A1) to claim one
+· send a photo after and you get bonus points
+· did something cool i didn't ask for? just tell me, i'll score it
+· "japlan standings" for the leaderboard
+· "japlan chill" if i'm being annoying
+
+that's it. go do something stupid.`,
+  dm: `here's the deal
+
+· every morning you get 3 personal tasks
+· send the code (like A1) to claim one
+· send a photo after and you get bonus points
+· did something cool i didn't ask for? just tell me, i'll score it
+· "japlan standings" for the leaderboard
+· "japlan chill" if i'm being annoying
+
+that's it. go do something stupid.`,
+} as const;
+
+export function helpText(isDm: boolean): string {
+  return isDm ? HELP_TEXT.dm : HELP_TEXT.group;
+}

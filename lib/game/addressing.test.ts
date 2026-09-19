@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { evaluateAddress, shouldRespond } from "./addressing";
+import {
+  allowsOutbound,
+  evaluateAddress,
+  isHelpIntent,
+  shouldRespond,
+} from "./addressing";
+import { decideClaim } from "./claims";
+import { HELP_TEXT, helpText } from "./copy";
 
 const base = {
   isDm: false,
@@ -7,13 +14,26 @@ const base = {
   wakeKeyword: "japlan",
 };
 
+const HELP_TRIGGERS = [
+  "japlan help",
+  "japlan what do you do",
+  "japlan how does this work",
+  "japlan commands",
+  "japlan ?",
+];
+
 describe("addressing gate", () => {
   it("ignores ordinary chatter", () => {
     const decision = evaluateAddress({
       ...base,
       text: "should we do sushi or ramen tonight?",
     });
-    expect(decision).toEqual({ respond: false, reason: "silent" });
+    expect(decision).toEqual({
+      respond: false,
+      reason: "silent",
+      intent: "none",
+      bypassRateLimit: false,
+    });
     expect(shouldRespond({ ...base, text: "lol" })).toBe(false);
   });
 
@@ -59,5 +79,91 @@ describe("addressing gate", () => {
         text: "here is the photo",
       }),
     ).toBe(true);
+  });
+});
+
+describe("help intent", () => {
+  it("routes each trigger phrase to help, not to a claim", () => {
+    for (const text of HELP_TRIGGERS) {
+      const address = evaluateAddress({ ...base, text });
+      expect(address, text).toEqual({
+        respond: true,
+        reason: "help",
+        intent: "help",
+        bypassRateLimit: true,
+      });
+      expect(isHelpIntent({ ...base, text }), text).toBe(true);
+      const claim = decideClaim({
+        text,
+        hasPhoto: false,
+        recentCode: null,
+        isDm: false,
+        openTaskContext: false,
+      });
+      expect(claim, text).toEqual({ type: "silent", reason: "help" });
+      expect(claim.type, text).not.toBe("fuzzy");
+      expect(claim.type, text).not.toBe("code");
+    }
+  });
+
+  it("treats a DM help question without the keyword as help", () => {
+    expect(
+      evaluateAddress({ ...base, isDm: true, text: "help" }).intent,
+    ).toBe("help");
+    expect(
+      evaluateAddress({ ...base, isDm: true, text: "how does this work" })
+        .intent,
+    ).toBe("help");
+  });
+
+  it("ignores help without the keyword in a group", () => {
+    expect(
+      evaluateAddress({ ...base, text: "help" }),
+    ).toEqual({
+      respond: false,
+      reason: "silent",
+      intent: "none",
+      bypassRateLimit: false,
+    });
+    expect(isHelpIntent({ ...base, text: "can you help" })).toBe(false);
+    expect(
+      decideClaim({
+        text: "help",
+        hasPhoto: false,
+        recentCode: null,
+        isDm: false,
+        openTaskContext: false,
+      }).type,
+    ).toBe("silent");
+  });
+
+  it("is not rate-limited by the ambient cap", () => {
+    expect(
+      allowsOutbound({ kind: "help", repliesInWindow: 50, cap: 1 }),
+    ).toBe(true);
+    expect(
+      allowsOutbound({ kind: "ambient", repliesInWindow: 50, cap: 1 }),
+    ).toBe(false);
+    const decision = evaluateAddress({ ...base, text: "japlan help" });
+    expect(decision.bypassRateLimit).toBe(true);
+  });
+});
+
+describe("help copy", () => {
+  it("stays short, lowercase, and practical", () => {
+    for (const text of [HELP_TEXT.group, HELP_TEXT.dm]) {
+      expect(text.trim().split("\n").length).toBeLessThanOrEqual(12);
+      expect(text).not.toMatch(/!/);
+      expect(text).not.toMatch(/welcome to/i);
+      expect(text).toContain("send the code");
+      expect(text).toContain("photo");
+      expect(text).toContain("japlan standings");
+      expect(text).toContain("japlan chill");
+      expect(text).not.toMatch(/axes|verification|scoring/i);
+    }
+    expect(HELP_TEXT.dm).toContain("personal tasks");
+    expect(HELP_TEXT.group).toContain("shared board");
+    expect(helpText(true)).toBe(HELP_TEXT.dm);
+    expect(helpText(false)).toBe(HELP_TEXT.group);
   });
 });

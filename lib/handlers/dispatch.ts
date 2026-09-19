@@ -9,6 +9,7 @@ import {
   recentCodeFor,
   rememberTaskMention,
 } from "@/lib/handlers/claims";
+import { sendHelpGuide } from "@/lib/handlers/help";
 import {
   bootstrapSoloIfNeeded,
   skipSoloSurvey,
@@ -171,6 +172,13 @@ async function onMessageReceivedInner(data: unknown): Promise<void> {
     hasPhone: Boolean(phone),
     phoneLength: phone?.length ?? 0,
   });
+
+  if (decision.intent === "help") {
+    await dispatchAwait("help", { chatId, isDm }, () =>
+      sendHelpGuide({ chatId, isDm }),
+    );
+    return;
+  }
 
   if (!(isDm && phone)) {
     dispatchStep("group_or_no_phone.claim", {
