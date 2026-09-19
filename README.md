@@ -47,7 +47,8 @@ Research Inspector shows persisted URLs, actions, candidates, selections, and
 Browserbase session metadata.
 
 For deterministic UI development only, set `ITINERARY_RESEARCH_MODE=mock`.
-Mock mode is never selected automatically and throws when `NODE_ENV=production`.
+This explicitly switches both research and draft assembly to deterministic test
+data; it is never selected automatically and throws when `NODE_ENV=production`.
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 

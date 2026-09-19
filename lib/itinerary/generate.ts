@@ -31,3 +31,10 @@ export async function generateDraftItinerary(config: TripConfig, candidates: Can
   } catch (error) { lastError = error; }
   throw new Error(`itinerary model output was invalid after retry: ${lastError instanceof Error ? lastError.message : "unknown error"}`);
 }
+
+/** Explicit development-only companion to mock research; it never runs in real mode. */
+export function generateMockDraftItinerary(config: TripConfig, candidates: CandidateActivity[]): DraftItinerary {
+  const dates = inclusiveTripDates(config);
+  if (candidates.length < dates.length) throw new Error("mock research does not contain enough candidates");
+  return validateModelItinerary({ days: dates.map((date, index) => ({ date, dayNumber: index + 1, summary: "Development-only draft. Confirm venue suitability and availability before using.", activities: [{ candidateActivityId: candidates[index]!.id, startTime: null, endTime: null, notes: "Unvalidated development draft; no schedule or safety claim is implied." }] })) }, config, candidates);
+}
