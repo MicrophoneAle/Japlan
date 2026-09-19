@@ -52,6 +52,7 @@ import {
   FREEFORM_PHOTO_BONUS_MAX,
   FREEFORM_SOURCE,
   isClaimantTapback,
+  isLikelyUncompletedActivity,
   openPersonalTaskIds,
   parseFreeformExtraction,
   type FreeformExtraction,
@@ -1128,6 +1129,11 @@ async function tryHandleFreeform(opts: {
   extraction?: FreeformExtraction | null;
   nextStep: string;
 }): Promise<boolean> {
+  if (isLikelyUncompletedActivity(opts.text)) {
+    claimStep("freeform.not_completed", { participantId: opts.claimant.id });
+    return false;
+  }
+
   // No one-freeform-a-day quota: PLAN has no such rule, and points are
   // already bounded by the daily cap. Real refusals (unsafe, illegal, a repeat
   // of something already done) are below.

@@ -44,7 +44,8 @@ import { resolvePlace } from "@/lib/game/plan-board";
 import { categoryKeyFor } from "@/lib/game/preferences";
 import { fitSuggestion, splitPlaceList, type DayPoints } from "@/lib/game/suggestions";
 import { hhmm, resolveSplit, type SplitInput } from "@/lib/game/split";
-import { answerValue, type SurveyAnswers } from "@/lib/game/survey";
+import { answerValue, displayNameFromFirstName, type SurveyAnswers } from "@/lib/game/survey";
+import { looksLikePhone } from "@/lib/linq/payload";
 import { addDaysIso, localDateString, localTimeHHMM } from "@/lib/game/time";
 import { tripDayForDate } from "@/lib/game/board-schedule";
 import {
@@ -426,10 +427,18 @@ export { listNames };
 
 // ---- settings, task counts, redo ------------------------------------------
 
-async function saveAnswers(participantId: string, answers: SurveyAnswers): Promise<void> {
+async function saveAnswers(
+  participantId: string,
+  answers: SurveyAnswers,
+  displayName?: string,
+): Promise<void> {
+  const patch: { survey_json: SurveyAnswers; display_name?: string } = {
+    survey_json: answers,
+  };
+  if (displayName) patch.display_name = displayName;
   const { error } = await getServiceClient()
     .from("participants")
-    .update({ survey_json: answers })
+    .update(patch)
     .eq("id", participantId);
   if (error) throw error;
 }
@@ -476,7 +485,16 @@ export async function updateMySetting(
     const label = SETTING_LABELS[update.id] ?? update.id.replace(/_/g, " ");
     return { reply: settingUnclearLine(label, update.options), dm: null };
   }
-  await saveAnswers(ctx.sender.id, update.answers);
+  const firstName =
+    update.id === "first_name" ? answerValue(update.answers, "first_name") : undefined;
+  if (firstName && looksLikePhone(firstName)) {
+    return { reply: settingUnclearLine("name", []), dm: null };
+  }
+  const displayName =
+    firstName
+      ? displayNameFromFirstName(firstName, ctx.sender.display_name)
+      : undefined;
+  await saveAnswers(ctx.sender.id, update.answers, displayName);
   console.info("[japlan.settings] changed", { participantId: ctx.sender.id, setting: update.id });
   const label = SETTING_LABELS[update.id] ?? update.id.replace(/_/g, " ");
   const line = settingChangedLine(label, update.shown, await boardReadyToday(ctx));
