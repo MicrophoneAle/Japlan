@@ -12,13 +12,14 @@ create table trips (
   id uuid primary key default gen_random_uuid(),
   linq_chat_id text not null unique,
   name text not null,
-  destination text not null,
-  start_date date not null,
-  end_date date not null,
+  -- TODO: destination/dates/difficulty/timezone are unknown at bot-added bootstrap.
+  destination text,
+  start_date date,
+  end_date date,
   state text not null,
-  difficulty text not null,
+  difficulty text,
   stake_text text,
-  timezone text not null
+  timezone text
 );
 
 create table participants (
@@ -30,8 +31,12 @@ create table participants (
   survey_json jsonb,
   survey_state text,
   sidequests_muted boolean not null default false,
-  consented_at timestamptz
+  consented_at timestamptz,
+  unique (trip_id, phone)
 );
+
+create index participants_phone_idx on participants (phone);
+create index participants_trip_id_idx on participants (trip_id);
 
 create table teams (
   id uuid primary key default gen_random_uuid(),

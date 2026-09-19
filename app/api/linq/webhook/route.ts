@@ -1,5 +1,6 @@
 import { after } from "next/server";
 import { getServiceClient } from "@/lib/db/client";
+import { dispatchLinqEvent } from "@/lib/handlers/dispatch";
 import { captureInboundWebhook } from "@/lib/linq/capture";
 import { verifyLinqSignature } from "@/lib/linq/verify";
 
@@ -50,14 +51,11 @@ export async function POST(request: Request): Promise<Response> {
     return new Response("persist failed", { status: 500 });
   }
 
-  after(() => dispatchLinqEvent(envelope));
+  after(() => {
+    void dispatchLinqEvent(envelope).catch((err) => {
+      console.error("[japlan.dispatch]", err);
+    });
+  });
 
   return new Response(null, { status: 200 });
-}
-
-async function dispatchLinqEvent(
-  envelope: LinqWebhookEnvelope,
-): Promise<void> {
-  void envelope;
-  throw new Error("not implemented");
 }
