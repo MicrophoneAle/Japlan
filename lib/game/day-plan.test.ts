@@ -196,8 +196,9 @@ describe("filling the day", () => {
 
 describe("template bank", () => {
   it("has the five originals plus the new archetypes", () => {
-    expect(TEMPLATES).toHaveLength(28);
-    expect(new Set(TEMPLATES.map((t) => t.id)).size).toBe(28);
+    // 25 main, 3 original sidequests, 6 sidequests added with delivery.
+    expect(TEMPLATES).toHaveLength(34);
+    expect(new Set(TEMPLATES.map((t) => t.id)).size).toBe(34);
   });
 
   it("keeps each template's time axis inside its duration band", () => {
@@ -209,7 +210,17 @@ describe("template bank", () => {
 
   it("keeps sidequests off the board and group templates off solo boards", () => {
     expect(sidequestTemplates().map((t) => t.id).sort()).toEqual(
-      ["buy_unidentifiable", "eat_letter_range", "eat_standing"],
+      [
+        "buy_unidentifiable",
+        "eat_letter_range",
+        "eat_standing",
+        "sq_colour_match",
+        "sq_high_five",
+        "sq_local_thanks",
+        "sq_sing_a_line",
+        "sq_stranger_pose",
+        "sq_weird_sign",
+      ],
     );
     expect(boardTemplates({ solo: true }).some((t) => t.duration === "sidequest" || t.groupOnly)).toBe(false);
     expect(boardTemplates({ solo: false }).some((t) => t.id === "split_strangest")).toBe(true);

@@ -49,6 +49,33 @@ export function tierForPoints(points: number): Tier | null {
   return null;
 }
 
+// The photo bonus sweetens a claim, never dominates it: at most 5, and at
+// most 40% of the task's base points, whichever is lower. Enforced in code on
+// every task written and again at claim time; the model's number is only a
+// suggestion (it has proposed 100-250 on 12-19 point tasks).
+export const PHOTO_BONUS_HARD_MAX = 5;
+export const PHOTO_BONUS_SHARE_OF_BASE = 0.4;
+
+export function photoBonusCeiling(basePoints: number): number {
+  const share = Math.floor(Math.max(0, basePoints) * PHOTO_BONUS_SHARE_OF_BASE);
+  return Math.max(0, Math.min(PHOTO_BONUS_HARD_MAX, share));
+}
+
+export function clampPhotoBonusMax(
+  proposed: number,
+  basePoints: number,
+): { value: number; clamped: boolean } {
+  const raw = Number.isFinite(proposed) ? Math.max(0, Math.round(proposed)) : 0;
+  const value = Math.min(raw, photoBonusCeiling(basePoints));
+  return { value, clamped: value !== raw };
+}
+
+// A stored task's usable ceiling. Rows written before the clamp can hold
+// anything; this bounds them at claim time too.
+export function photoBonusMaxFor(task: { photo_bonus_max: number; base_points: number }): number {
+  return clampPhotoBonusMax(task.photo_bonus_max, task.base_points).value;
+}
+
 export const BAND_CEILING = TIER_BANDS.Challenging.max;
 export const MEDIUM_CEILING = TIER_BANDS.Medium.max;
 export const DEFAULT_DAILY_POINTS_CAP = 120;

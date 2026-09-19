@@ -190,6 +190,38 @@ export function parseBoardDay(
 //   japlan plans / tasks / board / what am i doing today
 //   japlan give me the plans
 //   japlan tomorrow / japlan day 3 / japlan friday
+// "japlan redo today", "different tasks", "these are boring, give me new
+// ones", "i want something else": a request to REPLACE the board, checked
+// before isBoardRequest (which only shows the stored board). Without this,
+// "give me seven completely new tasks" matched isBoardRequest and resent the
+// same board.
+const REDO_RE = new RegExp(
+  [
+    String.raw`\b(redo|remake|reroll|re-roll|regenerate|refresh|reshuffle|shuffle)\b`,
+    String.raw`\b(different|new|other|fresh|another|alternative)\s+(board|tasks?|ones?|plans?|list|itinerary|itenerary|schedule|stuff|set)\b`,
+    String.raw`\bcompletely (new|different)\b`,
+    String.raw`\bswap (these|them|my|the|out)\b`,
+    String.raw`\b(these|this|my|the) (tasks?|board|ones?|plan)? ?(are|is|look|looks) (boring|bad|lame|mid|trash|dull)\b`,
+    String.raw`\b(boring|lame|mid) (board|tasks?|plan)\b`,
+    String.raw`\b(don'?t|do not) (like|want) (these|this|them|my|the) ?(board|tasks?|ones?|plan)?\b`,
+    String.raw`\bhate (these|this|my) ?(board|tasks?|ones?)?\b`,
+    String.raw`\bsomething else\b`,
+  ].join("|"),
+);
+
+export function isRedoRequest(text: string): boolean {
+  const t = text.toLowerCase().replace(/\bjaplan\b[,:]?/g, " ").replace(/\s+/g, " ").trim();
+  if (!REDO_RE.test(t)) return false;
+  // "something else" alone is ambiguous in a long message ("something else
+  // to eat"): only as a short request, or next to a board word.
+  if (/\bsomething else\b/.test(t) && !/\b(board|tasks?|plans?|itinerary|ones?)\b/.test(t)) {
+    if (t.split(" ").length > 6 || /\bsomething else (to|for|at|in|on)\b/.test(t)) return false;
+  }
+  // Talk about food or a place with "new" in it is not a board request.
+  if (/\bnew (york|zealand|year)\b/.test(t)) return false;
+  return true;
+}
+
 export function isBoardRequest(text: string): boolean {
   const t = text.toLowerCase().replace(/\bjaplan\b[,:]?/g, " ").replace(/\s+/g, " ").trim();
   if (/\b(did|done|finished|completed|claimed|got)\b/.test(t)) return false;

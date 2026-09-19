@@ -40,6 +40,13 @@ create table trips (
     constraint trips_board_time_format check (board_time ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'),
   -- Categories the group asked to avoid ("no temples"): category -> weight.
   category_weights jsonb not null default '{}'::jsonb,
+  -- Group aggregate profile (no names) and group-chat engagement state.
+  group_profile_md text,
+  engagement_json jsonb,
+  -- "waiting on X and Y": sent once, only while nobody has finished.
+  waiting_notice_sent_at timestamptz,
+  -- Sidequest tick bookkeeping (lib/handlers/sidequests.ts).
+  sidequest_state jsonb,
   created_at timestamptz not null default now()
 );
 
@@ -57,6 +64,11 @@ create table participants (
   survey_json jsonb,
   survey_state text,
   sidequests_muted boolean not null default false,
+  -- Survey v2 weights with confidence, and the written profile. DM-private.
+  prefs_json jsonb,
+  profile_md text,
+  -- Last local day this person got a "your next question" DM at board time.
+  survey_nudged_on date,
   consented_at timestamptz,
   created_at timestamptz not null default now(),
   unique (trip_id, phone)
@@ -238,8 +250,63 @@ create table events (
   type text not null,
   payload jsonb not null,
   processed_at timestamptz,
+  -- Set when a stalled message was re-dispatched, or logged as dropped.
+  retried_at timestamptz,
   created_at timestamptz not null default now()
 );
+
+create index events_unprocessed_received
+  on events (created_at)
+  where processed_at is null and retried_at is null and type = 'message.received';
+
+-- Every message in and out, per chat: the conversation's context.
+create table chat_messages (
+  id uuid primary key default gen_random_uuid(),
+  chat_id text not null,
+  role text not null check (role in ('user', 'bot')),
+  sender_handle text,
+  sender_name text,
+  text text not null,
+  created_at timestamptz not null default now()
+);
+create index chat_messages_by_chat on chat_messages (chat_id, created_at desc);
+
+-- Sidequests: offered privately, first to finish wins, win announced in group.
+create table sidequests (
+  id uuid primary key default gen_random_uuid(),
+  trip_id uuid not null references trips (id) on delete cascade,
+  day integer not null,
+  local_date date not null,
+  template_id text not null,
+  title text not null,
+  points integer not null check (points between 5 and 15),
+  photo_bonus_max integer not null default 0 check (photo_bonus_max between 0 and 2),
+  trigger text not null,
+  status text not null default 'open',
+  won_by uuid references participants (id) on delete set null,
+  won_at timestamptz,
+  created_at timestamptz not null default now()
+);
+create index sidequests_trip_date on sidequests (trip_id, local_date);
+
+create table sidequest_offers (
+  id uuid primary key default gen_random_uuid(),
+  sidequest_id uuid not null references sidequests (id) on delete cascade,
+  trip_id uuid not null references trips (id) on delete cascade,
+  participant_id uuid not null references participants (id) on delete cascade,
+  status text not null,
+  queued_at timestamptz,
+  fired_at timestamptz,
+  expires_at timestamptz,
+  resolved_at timestamptz,
+  awarded_points integer,
+  photo_bonus integer not null default 0,
+  created_at timestamptz not null default now()
+);
+create unique index sidequest_offers_one_live on sidequest_offers (participant_id) where status = 'live';
+create unique index sidequest_offers_one_queued on sidequest_offers (participant_id) where status = 'queued';
+create unique index sidequest_offers_one_winner on sidequest_offers (sidequest_id) where status = 'won';
+create index sidequest_offers_trip on sidequest_offers (trip_id, status);
 
 create table ratings (
   id uuid primary key default gen_random_uuid(),

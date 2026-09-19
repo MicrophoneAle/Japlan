@@ -47,7 +47,7 @@ import {
 import { endOfLocalDayContaining, localDateString } from "@/lib/game/time";
 import { prefDimsFor } from "@/lib/game/prefs";
 import { learnFrom } from "./profiles";
-import { isBoardRequest } from "@/lib/game/board-schedule";
+import { isBoardRequest, isRedoRequest } from "@/lib/game/board-schedule";
 import {
   FREEFORM_PHOTO_BONUS_MAX,
   FREEFORM_SOURCE,
@@ -61,6 +61,8 @@ import { fetchWithTimeout, withTimeout } from "@/lib/timeout";
 import { nextFreeformCode } from "@/lib/game/generate";
 import {
   applyDailyPointsCap,
+  clampPhotoBonusMax,
+  photoBonusMaxFor,
   DEFAULT_DAILY_POINTS_CAP,
   pointsForFreeform,
   tripLengthDays,
@@ -796,7 +798,7 @@ async function applyAwards(opts: {
           invitePhoto:
             !claimantCapped &&
             !opts.photoClaimedAt &&
-            opts.task.photo_bonus_max > 0,
+            photoBonusMaxFor(opts.task) > 0,
           boardCleared:
             personalBoardTask && !claimantCapped && remainingOpenPersonal === 0,
         }),
@@ -1021,7 +1023,7 @@ async function resolveKnownTask(opts: {
     return;
   }
 
-  if (loaded && opts.task.photo_bonus_max > 0) {
+  if (loaded && photoBonusMaxFor(opts.task) > 0) {
     const priorReject = existing.find(
       (c) =>
         c.participant_id === opts.claimant.id &&
@@ -1036,7 +1038,7 @@ async function resolveKnownTask(opts: {
         const vision = await scoreVision({
           provider: opts.provider,
           title: opts.task.title,
-          photoBonusMax: opts.task.photo_bonus_max,
+          photoBonusMax: photoBonusMaxFor(opts.task),
           photo: loaded,
           code: opts.task.code,
           reason: "code_with_photo",
@@ -1052,7 +1054,7 @@ async function resolveKnownTask(opts: {
           takenAt: loaded.takenAt,
           tripStart: opts.trip.start_date,
           tripEnd: opts.trip.end_date,
-          photoBonusMax: opts.task.photo_bonus_max,
+          photoBonusMax: photoBonusMaxFor(opts.task),
           taskCreatedOn: taskCreatedOn(opts.task, opts.trip),
         });
         claimStep("photo_bonus.rules", {
@@ -1178,6 +1180,7 @@ async function tryHandleFreeform(opts: {
 
   const tripDays = tripLengthDays(opts.trip.start_date, opts.trip.end_date);
   const scored = pointsForFreeform(extracted.axes, { day, tripDays });
+  const freeformBonusMax = clampPhotoBonusMax(FREEFORM_PHOTO_BONUS_MAX, scored.points).value;
   const verification = verificationForSolo(
     "peer",
     Boolean(opts.trip.is_solo),
@@ -1210,7 +1213,7 @@ async function tryHandleFreeform(opts: {
     const vision = await scoreVision({
       provider: opts.provider,
       title: extracted.title,
-      photoBonusMax: FREEFORM_PHOTO_BONUS_MAX,
+      photoBonusMax: freeformBonusMax,
       photo: loaded,
       code: "freeform",
       reason: "freeform",
@@ -1225,7 +1228,7 @@ async function tryHandleFreeform(opts: {
         taskCreatedOn: localDateString(new Date(), opts.trip.timezone),
       });
       if (!bonus.reject) {
-        photoBonus = Math.min(bonus.bonus, FREEFORM_PHOTO_BONUS_MAX);
+        photoBonus = Math.min(bonus.bonus, freeformBonusMax);
       }
     }
   }
@@ -1246,7 +1249,7 @@ async function tryHandleFreeform(opts: {
           tier: scored.tier,
           axes_json: extracted.axes,
           base_points: scored.points,
-          photo_bonus_max: FREEFORM_PHOTO_BONUS_MAX,
+          photo_bonus_max: freeformBonusMax,
           verification,
           day,
           neighborhood: extracted.neighborhood || extracted.place_name || null,
@@ -1409,7 +1412,7 @@ export async function applyLatePhotoBonus(opts: {
   const vision = await scoreVision({
     provider: opts.provider,
     title: opts.task.title,
-    photoBonusMax: opts.task.photo_bonus_max,
+    photoBonusMax: photoBonusMaxFor(opts.task),
     photo: loaded,
     code: opts.task.code,
     reason: "late_bonus",
@@ -1433,7 +1436,7 @@ export async function applyLatePhotoBonus(opts: {
     takenAt,
     tripStart: opts.trip.start_date,
     tripEnd: opts.trip.end_date,
-    photoBonusMax: opts.task.photo_bonus_max,
+    photoBonusMax: photoBonusMaxFor(opts.task),
     taskCreatedOn: taskCreatedOn(opts.task, opts.trip),
   });
   if (bonus.reject) {
@@ -1443,7 +1446,7 @@ export async function applyLatePhotoBonus(opts: {
     );
     return;
   }
-  const incoming = clampPhotoBonus(bonus.bonus, opts.task.photo_bonus_max);
+  const incoming = clampPhotoBonus(bonus.bonus, photoBonusMaxFor(opts.task));
   const cap = opts.trip.daily_points_cap ?? DEFAULT_DAILY_POINTS_CAP;
   const memberIds = opts.task.team_id
     ? Array.from(
@@ -1847,7 +1850,7 @@ async function handleGroupClaimInner(
   if (decision.type === "fuzzy") {
     // "give me the first day plans" asks for the board; it is not a claim.
     // Straight to the conversation layer, which answers without a model.
-    if (isBoardRequest(decision.text)) {
+    if (isBoardRequest(decision.text) || isRedoRequest(decision.text)) {
       claimStep("fuzzy.skip", { reason: "board_request" });
       return miss();
     }
@@ -1910,11 +1913,11 @@ async function handleGroupClaimInner(
       return;
     }
     const scored: { code: string; fidelity: number }[] = [];
-    for (const task of openTasks.filter((t) => t.photo_bonus_max > 0)) {
+    for (const task of openTasks.filter((t) => photoBonusMaxFor(t) > 0)) {
       const result = await scoreVision({
         provider: deps.provider,
         title: task.title,
-        photoBonusMax: task.photo_bonus_max,
+        photoBonusMax: photoBonusMaxFor(task),
         photo: loaded,
         code: task.code,
         reason: "vision_scan",

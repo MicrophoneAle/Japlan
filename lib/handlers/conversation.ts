@@ -37,6 +37,7 @@ import { currentTripDay } from "@/lib/handlers/daily-board";
 import {
   describeBoardTime,
   isBoardRequest,
+  isRedoRequest,
   nextBoardAt,
 } from "@/lib/game/board-schedule";
 import { answerBoardRequest } from "@/lib/handlers/board-request";
@@ -209,7 +210,7 @@ export const CONVERSATION_TOOL_DEFS = [
   {
     name: "request_tasks",
     description:
-      "The sender wants more tasks, or a specific number ('7 attractions', 'give me more', 'a packed day'). count: the number they asked for, if they gave one. day: only if not today. Code adds as many as fit in the day and sends the reply with their board.",
+      "The sender wants MORE tasks on top of their current board, or a specific number ('7 attractions', 'give me more', 'a packed day'). count: the number they asked for, if they gave one. day: only if not today. Code adds as many as fit in the day and sends the reply with their board. Never for different or new tasks instead of these: that is redo_today.",
     parameters: {
       type: "object",
       properties: { count: { type: "integer" }, day: { type: "string" } },
@@ -219,10 +220,10 @@ export const CONVERSATION_TOOL_DEFS = [
   {
     name: "redo_today",
     description:
-      "Remake today's board from current settings, usually after a settings change ('yes', 'redo it'). everyone: true only for a trip-level change for the whole group. Claimed tasks stay. Code sends the reply.",
+      "Replace the sender's board with a different one: they want different or new tasks ('these are boring', 'give me something else', 'completely new tasks', 'redo today', 'reroll'), or say yes to a redo after a settings change. Claimed tasks stay; the rest is replaced with tasks that do not repeat the old ones. day: only if not today. everyone: true only for a trip-level change for the whole group. Code sends the reply, saying what changed.",
     parameters: {
       type: "object",
-      properties: { everyone: { type: "boolean" } },
+      properties: { everyone: { type: "boolean" }, day: { type: "string" } },
       additionalProperties: false,
     },
   },
@@ -365,6 +366,13 @@ export async function handleConversation(
 
   // "japlan plans", "japlan tomorrow": the board for that day, made now if it
   // does not exist yet. No model; asking before a board exists is normal.
+  // "different tasks", "these are boring", "redo today": replace the board,
+  // before the plain board request (which only shows the stored one).
+  if (isRedoRequest(miss.text)) {
+    console.info("[japlan.board] step", { step: "redo.request", via: "matcher", text: miss.text.slice(0, 80) });
+    await executeConversationTool("redo_today", { day: redoDayFrom(miss) }, miss);
+    return;
+  }
   if (isBoardRequest(miss.text)) {
     await answerBoardRequest(miss, now);
     return;
@@ -743,7 +751,7 @@ async function executeConversationTool(
       }
       reply = text;
     } else {
-      reply = await redoToday(ctx, { everyone: args.everyone === true });
+      reply = await redoToday(ctx, { everyone: args.everyone === true, day: stringArg(args.day) });
       if (!miss.isDm && args.everyone !== true) {
         await sendDM(miss.claimant.phone, reply);
         await send(miss.chatId, BOARD_IN_DM_LINE);
@@ -818,4 +826,13 @@ async function executeConversationTool(
     return { result: { ok: true, emoji }, sent: false };
   }
   return { result: { ok: false, reason: "unknown_tool" }, sent: false };
+}
+
+// The day a redo request names ("redo tomorrow", "different tasks for day 3"),
+// or null for today.
+function redoDayFrom(miss: ClaimFallthrough): string | null {
+  const m = miss.text
+    .toLowerCase()
+    .match(/\b(tomorrow|tmrw|day\s*\d{1,2}|monday|tuesday|wednesday|thursday|friday|saturday|sunday|(?:the\s+)?(?:first|last|final)\s+day)\b/);
+  return m?.[1] ?? null;
 }

@@ -189,7 +189,9 @@ export async function answerBoardRequest(
   const provisional = Boolean(board?.provisional);
 
   if (open.length > 0) {
-    boardStep("list", { tripId: trip.id, day, open: open.length, provisional });
+    // Served the stored board: a request to SEE it. Asking for a different
+    // one is isRedoRequest, routed before this (redo_today).
+    boardStep("list", { path: "served_existing", tripId: trip.id, day, open: open.length, provisional });
     const text = boardText(day, open, await dayAnchorsForBoard(trip, day));
     await reply(provisional ? provisionalBoard(text) : text, { board: true });
     return;
@@ -218,6 +220,7 @@ export async function answerBoardRequest(
       const used = await refillsUsed(trip.id, miss.claimant.id, day);
       if (used >= REFILLS_PER_DAY) {
         // REAL (anti-abuse): regenerating the same day without end.
+        boardStep("refill.refused", { path: "refused", reason: "rate_limit", tripId: trip.id, day, used });
         await reply(refillLimitLine(target.label, REFILLS_PER_DAY));
         return;
       }
@@ -236,7 +239,7 @@ export async function answerBoardRequest(
       await reply(BOARD_MAKE_FAILED_LINE);
       return;
     }
-    boardStep(isRefill ? "refill" : "late_joiner", { tripId: trip.id, day, count: rows.length });
+    boardStep(isRefill ? "refill" : "late_joiner", { path: "regenerated", tripId: trip.id, day, count: rows.length });
     const text = boardText(day, rows, await dayAnchorsForBoard(trip, day));
     await reply(isRefill ? boardRefillLine(text) : provisional ? provisionalBoard(text) : text, {
       board: true,

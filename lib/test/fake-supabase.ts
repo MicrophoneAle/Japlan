@@ -17,6 +17,8 @@ const DEFAULTS: Record<string, () => Row> = {
   participants: () => ({ score: 0, sidequests_muted: false, survey_json: null, survey_state: null }),
   claims: () => ({ capped: false, primary_claim: true, photo_claimed_at: null, expires_at: null }),
   tasks: () => ({ source: "generated", expires_at: null }),
+  sidequests: () => ({ status: "open", won_by: null, won_at: null, photo_bonus_max: 0 }),
+  sidequest_offers: () => ({ photo_bonus: 0, awarded_points: null, resolved_at: null }),
   boards: () => ({ status: "generating", provisional: false, requested_by: null, delivered_at: null, updated_at: new Date().toISOString() }),
 };
 
@@ -39,6 +41,9 @@ const UNIQUE: [string, string[], ((row: Row) => boolean)?][] = [
   ["tasks", ["trip_id", "day", "participant_id", "team_id", "code"]],
   ["trips", ["linq_chat_id"], (row) => row.state !== "complete"],
   ["boards", ["trip_id", "day"]],
+  ["sidequest_offers", ["participant_id"], (row) => row.status === "live"],
+  ["sidequest_offers", ["participant_id"], (row) => row.status === "queued"],
+  ["sidequest_offers", ["sidequest_id"], (row) => row.status === "won"],
 ];
 
 function compare(a: unknown, b: unknown): number | null {

@@ -56,10 +56,11 @@ import { boardTemplates } from "@/lib/game/templates";
 import { peerLapsedLine } from "@/lib/game/copy";
 import { answerValue, type SurveyAnswers } from "@/lib/game/survey";
 import {
+  clampPhotoBonusMax,
   pointsForBoard,
   tripLengthDays,
 } from "@/lib/game/scoring";
-import type { ProposedTask } from "@/lib/game/validate";
+import { normalizeTitle, type ProposedTask } from "@/lib/game/validate";
 import {
   fetchDayWeather,
   formatWeatherLine,
@@ -405,6 +406,10 @@ async function planForAssignee(opts: {
   targetCount?: number | null;
   // Titles already on their board today, so an extension adds new ones.
   avoidTitles?: string[];
+  // A redo: the board being replaced (never repeated) and which attempt this
+  // is, so the deterministic fallback does not refill the same tasks.
+  rejectedTitles?: string[];
+  variant?: number;
 }): Promise<{ tasks: PlannedTask[]; anchors: PlannedTask[]; usedFallback: boolean; window: DayWindow }> {
   const { trip, assignee } = opts;
   const answers = assignee.people.map((p) => (p.survey_json ?? {}) as SurveyAnswers);
@@ -412,6 +417,7 @@ async function planForAssignee(opts: {
   const completed = [
     ...(await completedTitles(trip.id, assignee.people.map((p) => p.id))),
     ...(opts.avoidTitles ?? []),
+    ...(opts.rejectedTitles ?? []),
   ];
   const solo = Boolean(trip.is_solo);
   const bank = boardTemplates({ solo });
@@ -478,6 +484,7 @@ async function planForAssignee(opts: {
         day: opts.day,
         difficulty: trip.difficulty,
         boardTitles: opts.boardTitles,
+        rejectedTitles: opts.rejectedTitles,
         templates,
         plan,
         curveball,
@@ -509,7 +516,7 @@ async function planForAssignee(opts: {
       weather: opts.weather,
       templates,
       count: templates.length,
-      seed: opts.day * 7 + variant * 5,
+      seed: opts.day * 7 + variant * 5 + (opts.variant ?? 0) * 13,
     }),
   );
   const near = (name: string | null) => (name ? resolvePlace(name, opts.profile)?.coords ?? null : null);
@@ -559,6 +566,17 @@ export function persistableTask(opts: {
   });
   const [task] = applySoloVerification([opts.task], Boolean(opts.isSolo));
   const rowTask = task ?? opts.task;
+  // Code, not the prompt, bounds the photo bonus. Every clamp is logged with
+  // the model's original so the gap is visible.
+  const bonus = clampPhotoBonusMax(rowTask.photo_bonus_max, points);
+  if (bonus.clamped) {
+    console.info("[japlan.generate] photo_bonus_max clamped", {
+      title: rowTask.title,
+      original: rowTask.photo_bonus_max,
+      clamped: bonus.value,
+      basePoints: points,
+    });
+  }
   return {
     row: {
       trip_id: opts.tripId,
@@ -569,7 +587,7 @@ export function persistableTask(opts: {
       tier,
       axes_json: rowTask.axes,
       base_points: points,
-      photo_bonus_max: rowTask.photo_bonus_max,
+      photo_bonus_max: bonus.value,
       verification: rowTask.verification,
       day: opts.day,
       expires_at: opts.expiresAt.toISOString(),
@@ -1415,6 +1433,9 @@ export async function refillPersonalTasksIfNeeded(opts: {
   // fits), around the tasks they still have open.
   targetCount?: number | null;
   keep?: TaskRow[];
+  // A redo: titles of the board being replaced, and the attempt number.
+  rejectTitles?: string[];
+  variant?: number;
   now?: Date;
 }): Promise<Omit<TaskRow, "id">[]> {
   if (opts.remainingOpenPersonal > 0) return [];
@@ -1492,6 +1513,8 @@ export async function refillPersonalTasksIfNeeded(opts: {
     suggestions,
     targetCount: opts.targetCount,
     avoidTitles: (opts.keep ?? []).map((t) => t.title),
+    rejectedTitles: opts.rejectTitles,
+    variant: opts.variant,
     // Open tasks they keep take their time in the day, as fixed stops.
     anchors: (opts.keep ?? []).map((t) => ({
       ...anchorCandidate({
@@ -1714,32 +1737,84 @@ export async function extendPersonalBoard(opts: {
 // After someone changes their settings and says yes to a new board: their
 // unclaimed personal tasks for today go, and a new set is planned from their
 // answers as they are now. Claimed tasks stand; nobody else's board changes.
+// "Give me a different board": the unclaimed part of their board for that
+// day is replaced; claimed tasks stay. The old titles go to the generator as
+// a retry that must not repeat them, and the fallback is re-seeded per
+// attempt. Generation fails: the old board is put back, never left empty.
+export type RedoOutcome =
+  | { kind: "redone"; day: number; rows: Omit<TaskRow, "id">[]; kept: TaskRow[]; replaced: string[]; repeated: number }
+  | { kind: "all_claimed"; day: number; kept: TaskRow[] }
+  | { kind: "no_board"; day: number }
+  | { kind: "failed"; day: number };
+
 export async function redoMyDay(opts: {
   trip: TripRow;
   claimant: ParticipantRow;
   now: Date;
-}): Promise<{ rows: Omit<TaskRow, "id">[]; day: number }> {
-  const date = localDateString(opts.now, opts.trip.timezone || "UTC");
+  date?: string;
+  // How many redos of this day came before: varies the fallback.
+  variant?: number;
+}): Promise<RedoOutcome> {
+  const date = opts.date ?? localDateString(opts.now, opts.trip.timezone || "UTC");
   const day = tripDayOn(opts.trip, date, opts.now);
   const tasks = (await tasksForDay(opts.trip.id, day)).filter((t) => t.participant_id === opts.claimant.id);
-  const claims = tasks.length
-    ? await getServiceClient().from("claims").select("task_id").in("task_id", tasks.map((t) => t.id))
-    : { data: [], error: null };
-  if (claims.error) throw claims.error;
-  const claimed = new Set((claims.data ?? []).map((c) => (c as { task_id: string }).task_id));
-  const drop = tasks.filter((t) => !claimed.has(t.id)).map((t) => t.id);
-  if (drop.length > 0) {
-    const { error } = await getServiceClient().from("tasks").delete().in("id", drop);
-    if (error) throw error;
+  if (tasks.length === 0) {
+    boardLog("redo.no_board", { tripId: opts.trip.id, day, participantId: opts.claimant.id });
+    return { kind: "no_board", day };
   }
-  const rows = await refillPersonalTasksIfNeeded({
-    trip: opts.trip,
-    claimant: opts.claimant,
-    people: [],
-    remainingOpenPersonal: 0,
-    deliver: false,
-    date,
-    now: opts.now,
+  const claims = await getServiceClient()
+    .from("claims")
+    .select("task_id, status")
+    .in("task_id", tasks.map((t) => t.id));
+  if (claims.error) throw claims.error;
+  const claimed = new Set(
+    ((claims.data ?? []) as { task_id: string; status: string }[])
+      .filter((c) => c.status === "awarded" || c.status === "pending_peer")
+      .map((c) => c.task_id),
+  );
+  const kept = tasks.filter((t) => claimed.has(t.id));
+  const replace = tasks.filter((t) => !claimed.has(t.id));
+  if (replace.length === 0) {
+    boardLog("redo.refused", { tripId: opts.trip.id, day, participantId: opts.claimant.id, reason: "all_claimed" });
+    return { kind: "all_claimed", day, kept };
+  }
+  const { error } = await getServiceClient().from("tasks").delete().in("id", replace.map((t) => t.id));
+  if (error) throw error;
+  let rows: Omit<TaskRow, "id">[] = [];
+  try {
+    rows = await refillPersonalTasksIfNeeded({
+      trip: opts.trip,
+      claimant: opts.claimant,
+      people: [],
+      remainingOpenPersonal: 0,
+      deliver: false,
+      date,
+      now: opts.now,
+      keep: kept,
+      rejectTitles: replace.map((t) => t.title),
+      variant: (opts.variant ?? 0) + 1,
+    });
+  } catch (err) {
+    console.error("[japlan.board] redo generation threw", err);
+  }
+  if (rows.length === 0) {
+    // Put the old board back rather than leave them with nothing.
+    const restore = await getServiceClient().from("tasks").insert(replace);
+    if (restore.error) console.error("[japlan.board] redo restore failed", restore.error);
+    boardLog("redo.failed", { tripId: opts.trip.id, day, participantId: opts.claimant.id, restored: replace.length });
+    return { kind: "failed", day };
+  }
+  const old = new Set(replace.map((t) => normalizeTitle(t.title)));
+  const repeated = rows.filter((r) => old.has(normalizeTitle(r.title))).length;
+  boardLog("redo.regenerated", {
+    tripId: opts.trip.id,
+    day,
+    participantId: opts.claimant.id,
+    replaced: replace.length,
+    kept: kept.length,
+    added: rows.length,
+    repeated,
+    variant: (opts.variant ?? 0) + 1,
   });
-  return { rows, day };
+  return { kind: "redone", day, rows, kept, replaced: replace.map((t) => t.title), repeated };
 }

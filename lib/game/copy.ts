@@ -461,7 +461,7 @@ tools:
 - request_tasks: they want more tasks, or a number of them ("7 attractions", "a packed day"). code adds as many as fit and replies.
 - update_my_setting: they want to change any of their own settings (pace, tasks per day, strangers, interests, budget, diet, anything). code saves it and replies.
 - update_trip_setting: destination, dates, difficulty, board time, stake. code handles who can.
-- redo_today: remake today's board from current settings, e.g. after they say yes to a redo.
+- redo_today: they want a DIFFERENT board ("different tasks", "these are boring", "something else", "new ones", "redo today"), or say yes to a redo after a settings change. claimed tasks stay, the rest is replaced with new ones. never answer a request for a different board by describing or resending the current one.
 - show_my_profile: "what do you know about me". code sends it to their dm.
 - propose_freeform_claim: they already did something you did not assign. return title and six axes (integers 1-5). never a point value. code will score it.
 - request_photo_bonus: a photo might add bonus to a recent claim.
@@ -499,6 +499,40 @@ export function preferenceNotedLine(what: string, more: boolean, offerRedo: bool
 
 // "japlan chill": about three words, then quiet until mentioned.
 export const STOP_LINE = "ok, going quiet.";
+
+// Sidequests: DM out, group announce in. Optional, never chased.
+export function sidequestOfferLine(title: string, points: number, fuseMinutes: number): string {
+  return `sidequest, ${fuseMinutes} min: ${title}. worth ${points}. reply done when you have, or pass. ignoring it costs nothing, and "japlan no sidequests" turns them off.`;
+}
+
+export function sidequestWonLine(points: number, bonus: number, total: number): string {
+  return `✅ sidequest done · +${points}${bonus > 0 ? ` (+${bonus} photo)` : ""} · ${total}`;
+}
+
+export function sidequestWinnerGroupLine(name: string, title: string, points: number): string {
+  return `sidequest: ${title}. ${name} got it first, +${points}.`;
+}
+
+export const SIDEQUEST_CAPPED_LINE = "✅ sidequest done, but you're at today's points cap, so it's for glory only.";
+export const SIDEQUEST_BEATEN_LINE = "someone got to that one first. no harm done.";
+export const SIDEQUEST_EXPIRED_LINE = "that one ran out. no harm done.";
+export const SIDEQUEST_PASSED_LINE = "no worries.";
+export const SIDEQUESTS_OFF_LINE = `sidequests off for you. "japlan sidequests on" brings them back.`;
+export const SIDEQUESTS_ON_LINE = "sidequests back on.";
+export const SIDEQUESTS_ON_CIVILIZED_LINE = "sidequests back on, the civilized ones.";
+
+// Nobody has finished the questions yet, at board time: said once.
+export function waitingOnSurveysLine(names: string[]): string {
+  const list = names.length <= 1 ? (names[0] ?? "everyone") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+  return `boards start as soon as someone finishes the quick questions in their dm. waiting on ${list}.`;
+}
+
+// Finished the survey on a day that is already under way: their board now.
+export function lateFinisherLine(board: string): string {
+  return `${SURVEY_DONE_DM} you're in. here's today:
+
+${board}`;
+}
 
 // A reply that failed the checks (untrue, unrelated, empty): this instead.
 export const DISCARD_FALLBACK = "lost the thread for a sec. say that again?";
@@ -640,8 +674,25 @@ export function tasksRequestedLine(opts: {
   return `${head}\n${opts.board}`;
 }
 
-export function boardRedoneLine(board: string): string {
-  return `redone.\n${board}`;
+export const EVERYONE_REDONE_LINE = "redone for everyone, new boards are in your dms.";
+
+// "Give me a different board": say what changed, never resend silently.
+export function redoSwappedLine(opts: { replaced: number; added: number; keptCodes: string[]; board: string }): string {
+  const kept = opts.keptCodes.length
+    ? `, kept ${opts.keptCodes.join(", ")} since you claimed ${opts.keptCodes.length === 1 ? "it" : "them"}`
+    : "";
+  return `fresh board: ${opts.replaced} out, ${opts.added} new${kept}.
+${opts.board}`;
 }
 
-export const EVERYONE_REDONE_LINE = "redone for everyone, new boards are in your dms.";
+export function redoAllClaimedLine(label: string): string {
+  return `every task on ${label === "today" ? "today's" : `${label}'s`} board is already claimed, so there's nothing left to swap. want more on top? say how many.`;
+}
+
+export function redoLimitLine(label: string, count: number): string {
+  return `that's ${count} redos of ${label} already, so this one stays as it is. next day's board is fresh.`;
+}
+
+export const REDO_NO_BOARD_LINE = `no board to swap for that day yet. "japlan plans" makes one.`;
+export const REDO_FAILED_LINE = "couldn't make a different one rn, that's on me. your old board is still there.";
+export const REDO_PAST_DAY_LINE = "that day's done, so its board stays as it was.";
