@@ -54,15 +54,39 @@ export const BUDGET_CEILING: Record<string, number> = {
   high: 200,
 };
 
+// Survey rows written before choice answers were enforced can hold raw text.
+// Anything unrecognised fails closed: the stricter reading wins.
+const NO_CONSTRAINT_RE = /^(none|no|nope|nothing|n\/?a|no[ _]limits?)$/i;
+
 export function lowestBudgetCeiling(
   assignees: AssigneeConstraints[],
 ): number {
   const ceilings = assignees
     .map((person) => answerValue(person.answers, "budget"))
-    .map((band) => (band ? BUDGET_CEILING[band] : undefined))
+    .map((band) =>
+      band ? (BUDGET_CEILING[band] ?? BUDGET_CEILING.low) : undefined,
+    )
     .filter((value): value is number => value !== undefined);
   if (ceilings.length === 0) return BUDGET_CEILING.high;
   return Math.min(...ceilings);
+}
+
+export function dietaryConflictKind(
+  answers: SurveyAnswers,
+): "allergy" | "dietary" | null {
+  const dietary = answerValue(answers, "dietary");
+  if (!dietary || NO_CONSTRAINT_RE.test(dietary.trim())) return null;
+  const strictness = answerValue(answers, "dietary_strictness");
+  if (strictness === "cheat_on_vacation") return null;
+  if (strictness === "preference") return "dietary";
+  // allergy, skipped, or unknown: treat as an allergy.
+  return "allergy";
+}
+
+export function hasMobilityLimit(answers: SurveyAnswers): boolean {
+  const mobility = answerValue(answers, "mobility");
+  if (!mobility) return false;
+  return !NO_CONSTRAINT_RE.test(mobility.trim());
 }
 
 export function estimateTaskCost(title: string, typicalCost?: string): number {
@@ -109,14 +133,11 @@ export function validateGeneratedTask(
   if (estimateTaskCost(title, opts.typicalCost) > ceiling) return "over_budget";
 
   for (const person of opts.assignees) {
-    const dietary = answerValue(person.answers, "dietary");
-    const strictness = answerValue(person.answers, "dietary_strictness");
-    if (dietary === "has_restriction" && FOOD_RE.test(title)) {
-      if (strictness === "allergy") return "allergy";
-      if (strictness === "preference") return "dietary";
+    const dietary = dietaryConflictKind(person.answers);
+    if (dietary && FOOD_RE.test(title)) return dietary;
+    if (hasMobilityLimit(person.answers) && MOBILITY_HARD_RE.test(title)) {
+      return "mobility";
     }
-    const mobility = answerValue(person.answers, "mobility");
-    if (mobility && MOBILITY_HARD_RE.test(title)) return "mobility";
   }
 
   if (opts.expiresAt) {

@@ -71,9 +71,13 @@ export const QUESTIONS: Record<QuestionId, Question> = {
   },
   mobility: {
     id: "mobility",
-    kind: "free_text",
+    kind: "choice",
     prompt:
-      "PLACEHOLDER: Any mobility or physical limits we should treat as hard constraints? Reply skip to skip.",
+      "PLACEHOLDER: Any mobility or physical limits we should treat as hard constraints? (no limits / has limits). Reply skip to skip.",
+    choices: [
+      { id: "no_limits", label: "no limits" },
+      { id: "has_limits", label: "has limits" },
+    ],
   },
   budget: {
     id: "budget",

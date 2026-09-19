@@ -1,5 +1,5 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
-import { SETUP_COMPLETE } from "./copy";
+import { SETUP_COMPLETE, SURVEY_DONE_DM, surveyDoneLine } from "./copy";
 import {
   allParticipantsComplete,
   applyReply,
@@ -10,6 +10,7 @@ import {
   startSurvey,
   type PublicTripFields,
   type SurveyAnswers,
+  type SurveyAwaiting,
 } from "./survey";
 
 const PRIVATE_ANSWERS: SurveyAnswers = {
@@ -130,6 +131,63 @@ describe("survey skip and branching", () => {
     expect(allParticipantsComplete(["age_bracket"])).toBe(false);
     expect(allParticipantsComplete(["done", "age_bracket"])).toBe(false);
     expect(allParticipantsComplete([])).toBe(false);
+  });
+});
+
+describe("choice answers never store raw text", () => {
+  function at(awaiting: SurveyAwaiting, answers: SurveyAnswers = {}) {
+    return { awaiting, answers };
+  }
+
+  it("re-asks dietary on 'yes, peanuts' instead of storing it", () => {
+    const step = applyReply(at("dietary"), "yes, peanuts");
+    expect(step.state.awaiting).toBe("dietary");
+    expect(step.state.answers.dietary).toBeUndefined();
+    expect(step.completed).toBe(false);
+    expect(step.prompt).toBe("didn't catch that. reply none / has_restriction, or skip.");
+  });
+
+  it("then asks strictness once the restriction is picked", () => {
+    const step = applyReply(at("dietary"), "Has Restriction.");
+    expect(step.state.answers.dietary).toEqual({ value: "has_restriction" });
+    expect(step.state.awaiting).toBe("dietary_strictness");
+  });
+
+  it("re-asks an unmatched budget", () => {
+    const step = applyReply(at("budget"), "around $50 a day");
+    expect(step.state.awaiting).toBe("budget");
+    expect(step.state.answers.budget).toBeUndefined();
+    expect(step.prompt).toContain("low / medium / high");
+  });
+
+  it("offers an explicit no limits option for mobility", () => {
+    expect(applyReply(at("mobility"), "no limits").state.answers.mobility).toEqual({
+      value: "no_limits",
+    });
+    expect(applyReply(at("mobility"), "has_limits").state.answers.mobility).toEqual({
+      value: "has_limits",
+    });
+    const reask = applyReply(at("mobility"), "none");
+    expect(reask.state.awaiting).toBe("mobility");
+    expect(reask.prompt).toContain("no limits / has limits");
+  });
+
+  it("still accepts skip and free text where free text is allowed", () => {
+    expect(applyReply(at("dietary"), "skip").state.answers.dietary).toEqual({
+      skipped: true,
+    });
+    expect(applyReply(at("blackout"), "work call 3pm").state.answers.blackout).toEqual({
+      value: "work call 3pm",
+    });
+  });
+});
+
+describe("survey ending", () => {
+  it("says what happens next", () => {
+    expect(surveyDoneLine(0)).toBe(`${SURVEY_DONE_DM} your first board lands in the morning.`);
+    expect(surveyDoneLine(1)).toContain("waiting on 1 more person");
+    expect(surveyDoneLine(3)).toContain("waiting on 3 more people");
+    expect(surveyDoneLine(2)).not.toContain("\n");
   });
 });
 

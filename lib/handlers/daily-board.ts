@@ -4,13 +4,14 @@ import {
   type DestinationProfile,
 } from "@/lib/game/destination";
 import {
-  assignDayCodes,
+  assignOwnedDayCodes,
   fillTemplatesDeterministically,
   generateTasksForAssignee,
-  nextCodeNumber,
-  slotValuesFor,
+  pickBounty,
   TASKS_PER_CALL,
+  type ExistingDayCode,
 } from "@/lib/game/generate";
+import { peerLapsedLine } from "@/lib/game/copy";
 import { answerValue, type SurveyAnswers } from "@/lib/game/survey";
 import {
   pointsForBoard,
@@ -30,10 +31,14 @@ import { getServiceClient } from "@/lib/db/client";
 import type { ParticipantRow, TaskRow, TripRow } from "@/lib/db/types";
 import { sendDM, sendText } from "@/lib/linq/send";
 import { applySoloVerification } from "@/lib/game/solo";
-import { fillArchetype, midpointAxes, TEMPLATES } from "@/lib/game/templates";
+// Plan does not specify the exact expiry instant; tasks end with the trip's local day.
+import { endOfLocalDay, localDateString, localHour } from "@/lib/game/time";
 
 const TRIP_COLS =
   "id, linq_chat_id, name, destination, start_date, end_date, state, difficulty, stake_text, timezone, destination_profile_json, is_solo, daily_points_cap";
+
+// Matches tasks_owner_code_key: codes are unique per owner per day, not per trip.
+const TASK_CODE_CONFLICT = "trip_id,day,participant_id,team_id,code";
 
 export type PersistedGeneratedTask = {
   code: string;
@@ -58,33 +63,6 @@ function preferenceText(answers: SurveyAnswers): string {
   return bits.join("; ") || "(no survey answers)";
 }
 
-function localDateString(now: Date, timezone: string): string {
-  try {
-    return new Intl.DateTimeFormat("en-CA", {
-      timeZone: timezone,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(now);
-  } catch {
-    return now.toISOString().slice(0, 10);
-  }
-}
-
-function localHour(now: Date, timezone: string): number {
-  try {
-    return Number(
-      new Intl.DateTimeFormat("en-US", {
-        timeZone: timezone,
-        hour: "numeric",
-        hourCycle: "h23",
-      }).format(now),
-    );
-  } catch {
-    return now.getUTCHours();
-  }
-}
-
 export function isLocalMorning(now: Date, timezone: string): boolean {
   return localHour(now, timezone) === 8;
 }
@@ -97,13 +75,6 @@ export function currentTripDay(trip: TripRow, now: Date): number {
   if (Number.isNaN(start) || Number.isNaN(current)) return 1;
   const day = Math.floor((current - start) / (24 * 60 * 60 * 1000)) + 1;
   return Math.max(1, day);
-}
-
-export function endOfLocalDay(date: string, timezone: string): Date {
-  // TODO: plan does not specify the exact expiry instant; using end of the local calendar day.
-  const asUtc = new Date(`${date}T23:59:59`);
-  void timezone;
-  return asUtc;
 }
 
 async function completedTitles(tripId: string, participantIds: string[]): Promise<string[]> {
@@ -291,6 +262,8 @@ export async function generateValidatedBoard(opts: {
   profile: DestinationProfile;
   weather: DayWeather;
   now?: Date;
+  // Codes already taken today by tasks that must survive (claimed ones).
+  reservedCodes?: ExistingDayCode[];
 }): Promise<{ tasks: ProposedTask[]; usedFallback: boolean; day: number }> {
   const now = opts.now ?? new Date();
   const day = currentTripDay(opts.trip, now);
@@ -371,40 +344,40 @@ export async function generateValidatedBoard(opts: {
 
   const trailer = trailingPlayer(opts.people);
   if (trailer) {
-    const bountyTemplate =
-      TEMPLATES.find((t) => t.verification === "peer") ?? TEMPLATES[0];
-    const values = slotValuesFor(bountyTemplate, opts.profile, 99);
-    const bounty: ProposedTask = {
-      code: "",
-      title: fillArchetype(bountyTemplate.archetype, values),
-      axes: {
-        ...midpointAxes(bountyTemplate),
-        boldness: 5,
-        scarcity: 4,
+    const trailerDone = await completedTitles(opts.trip.id, [trailer.id]);
+    const bounty = pickBounty({
+      profile: opts.profile,
+      day,
+      trailer: {
+        id: trailer.id,
+        answers: (trailer.survey_json ?? {}) as SurveyAnswers,
       },
-      verification: bountyTemplate.verification,
-      photo_bonus_max: bountyTemplate.photo_bonus_max,
-      neighborhood: values.neighborhood ?? opts.profile.destination,
-      participantId: trailer.id,
-      teamId: null,
-    };
-    const reason = validateGeneratedTask(bounty, {
-      assignees: [{ answers: (trailer.survey_json ?? {}) as SurveyAnswers }],
-      completedTitles: kept.map((t) => t.title),
+      avoidTitles: [...trailerDone, ...kept.map((t) => t.title)],
       expiresAt,
+      now,
+      onReject: (reason, title, attempt) =>
+        logReject(reason, title, { bounty: true, attempt }),
     });
-    if (reason) {
-      logReject(reason, bounty.title, { bounty: true });
-    } else {
-      kept.push(bounty);
-    }
+    if (bounty) kept.push(bounty);
+    else logReject("no_valid_bounty", "(none)", { bounty: true, trailer: trailer.id });
   }
 
   const soloAdjusted = applySoloVerification(
     kept,
     Boolean(opts.trip.is_solo),
   );
-  return { tasks: assignDayCodes(soloAdjusted, day), usedFallback, day };
+  const teamMembers: Record<string, string[]> = {};
+  for (const assignee of assignees) {
+    if (assignee.teamId) {
+      teamMembers[assignee.teamId] = assignee.people.map((p) => p.id);
+    }
+  }
+  const coded = assignOwnedDayCodes(soloAdjusted, day, {
+    participantIds: opts.people.map((p) => p.id),
+    teamMembers,
+    existing: opts.reservedCodes,
+  });
+  return { tasks: coded, usedFallback, day };
 }
 
 export async function runDailyBoardForTrip(
@@ -451,17 +424,21 @@ export async function runDailyBoardForTrip(
     }
   }
 
+  const lapsed = await sweepLapsedPeerClaims(trip.id, now);
+  const claimedToday = await claimedTasksOnDay(trip.id, currentTripDay(trip, now));
+
   const { tasks, usedFallback, day } = await generateValidatedBoard({
     trip,
     people,
     profile,
     weather,
     now,
+    reservedCodes: claimedToday,
   });
 
   const tripDays = tripLengthDays(trip.start_date, trip.end_date);
   const expiresAt = endOfLocalDay(today, timezone);
-  const rows = tasks.map((task) => {
+  const generated = tasks.map((task) => {
     const persisted = persistableTask({
       tripId: trip.id,
       day,
@@ -474,10 +451,11 @@ export async function runDailyBoardForTrip(
     });
     return persisted.row;
   });
+  const rows = withoutClaimedCollisions(generated, claimedToday, trip.id);
 
   if (rows.length > 0) {
     const { error } = await supabase.from("tasks").upsert(rows, {
-      onConflict: "trip_id,code",
+      onConflict: TASK_CODE_CONFLICT,
     });
     if (error) throw error;
   }
@@ -489,6 +467,7 @@ export async function runDailyBoardForTrip(
     rows,
     day,
     weatherLine,
+    lapsed,
   });
   console.info("[japlan.generate] board posted", {
     tripId: trip.id,
@@ -499,12 +478,109 @@ export async function runDailyBoardForTrip(
   return { posted: true, day, count: rows.length, usedFallback };
 }
 
+// Tasks on this day that already have any claim row. A forced re-run must
+// never upsert over them: their codes are reserved and collisions are skipped.
+async function claimedTasksOnDay(tripId: string, day: number): Promise<ExistingDayCode[]> {
+  const supabase = getServiceClient();
+  const tasksRes = await supabase
+    .from("tasks")
+    .select("id, code, participant_id, team_id")
+    .eq("trip_id", tripId)
+    .eq("day", day);
+  if (tasksRes.error) throw tasksRes.error;
+  const dayTasks = (tasksRes.data ?? []) as {
+    id: string;
+    code: string;
+    participant_id: string | null;
+    team_id: string | null;
+  }[];
+  if (dayTasks.length === 0) return [];
+  const claimsRes = await supabase
+    .from("claims")
+    .select("task_id")
+    .in("task_id", dayTasks.map((t) => t.id));
+  if (claimsRes.error) throw claimsRes.error;
+  const claimedIds = new Set(
+    (claimsRes.data ?? []).map((row) => (row as { task_id: string }).task_id),
+  );
+  return dayTasks
+    .filter((t) => claimedIds.has(t.id))
+    .map((t) => ({ code: t.code, participantId: t.participant_id, teamId: t.team_id }));
+}
+
+function ownerCodeKey(code: string, participantId: string | null, teamId: string | null) {
+  return `${participantId ?? ""}|${teamId ?? ""}|${code.toUpperCase()}`;
+}
+
+export function withoutClaimedCollisions<
+  T extends { code: string; participant_id: string | null; team_id: string | null },
+>(rows: T[], claimed: ExistingDayCode[], tripId: string): T[] {
+  const taken = new Set(claimed.map((c) => ownerCodeKey(c.code, c.participantId, c.teamId)));
+  return rows.filter((row) => {
+    const hit = taken.has(ownerCodeKey(row.code, row.participant_id, row.team_id));
+    if (hit) {
+      console.warn("[japlan.generate] skipped overwrite of claimed task", {
+        tripId,
+        code: row.code,
+        participantId: row.participant_id,
+        teamId: row.team_id,
+      });
+    }
+    return !hit;
+  });
+}
+
+// Lapse pending_peer claims past their expiry, then report every claim that
+// lapsed in the last day so the morning DM can say the code is open again.
+async function sweepLapsedPeerClaims(
+  tripId: string,
+  now: Date,
+): Promise<Map<string, string[]>> {
+  const supabase = getServiceClient();
+  const tasksRes = await supabase.from("tasks").select("id, code").eq("trip_id", tripId);
+  if (tasksRes.error) throw tasksRes.error;
+  const tripTasks = (tasksRes.data ?? []) as { id: string; code: string }[];
+  const byParticipant = new Map<string, string[]>();
+  if (tripTasks.length === 0) return byParticipant;
+  const taskIds = tripTasks.map((t) => t.id);
+
+  const sweep = await supabase
+    .from("claims")
+    .update({ status: "expired" })
+    .eq("status", "pending_peer")
+    .lte("expires_at", now.toISOString())
+    .in("task_id", taskIds);
+  if (sweep.error) throw sweep.error;
+
+  const since = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+  const lapsedRes = await supabase
+    .from("claims")
+    .select("task_id, participant_id")
+    .eq("status", "expired")
+    .gt("expires_at", since)
+    .lte("expires_at", now.toISOString())
+    .in("task_id", taskIds);
+  if (lapsedRes.error) throw lapsedRes.error;
+  const codeById = new Map(tripTasks.map((t) => [t.id, t.code]));
+  for (const row of (lapsedRes.data ?? []) as { task_id: string; participant_id: string }[]) {
+    const code = codeById.get(row.task_id);
+    if (!code) continue;
+    byParticipant.set(row.participant_id, [
+      ...(byParticipant.get(row.participant_id) ?? []),
+      code,
+    ]);
+  }
+  return byParticipant;
+}
+
 async function deliverMorningBoards(opts: {
   trip: TripRow;
   people: ParticipantRow[];
   rows: Omit<TaskRow, "id">[];
   day: number;
   weatherLine: string | null;
+  // participant id -> codes whose pending peer claim lapsed overnight
+  lapsed?: Map<string, string[]>;
 }): Promise<void> {
   const byPerson = new Map<string, Omit<TaskRow, "id">[]>();
   for (const person of opts.people) {
@@ -543,16 +619,26 @@ async function deliverMorningBoards(opts: {
 
   for (const person of opts.people) {
     const tasks = byPerson.get(person.id) ?? [];
-    if (tasks.length === 0) continue;
-    const text = formatPersonalBoard({
-      day: opts.day,
-      weatherLine: opts.weatherLine,
-      tasks: tasks.map((row) => ({
-        code: row.code,
-        title: row.title,
-        base_points: row.base_points,
-      })),
-    });
+    const lapsedCodes = opts.lapsed?.get(person.id) ?? [];
+    if (tasks.length === 0 && lapsedCodes.length === 0) continue;
+    const parts: string[] = [];
+    // One DM: the lapsed-claim line (which names the reopened code) rides on
+    // top of the board instead of arriving as a second message.
+    if (lapsedCodes.length > 0) parts.push(peerLapsedLine(lapsedCodes));
+    if (tasks.length > 0) {
+      parts.push(
+        formatPersonalBoard({
+          day: opts.day,
+          weatherLine: opts.weatherLine,
+          tasks: tasks.map((row) => ({
+            code: row.code,
+            title: row.title,
+            base_points: row.base_points,
+          })),
+        }),
+      );
+    }
+    const text = parts.join("\n\n");
     try {
       await sendDM(person.phone, text);
     } catch (err) {
@@ -674,16 +760,33 @@ export async function refillPersonalTasksIfNeeded(opts: {
   }));
   const existing = await supabase
     .from("tasks")
-    .select("code")
+    .select("code, participant_id, team_id")
     .eq("trip_id", opts.trip.id)
     .eq("day", day);
   if (existing.error) throw existing.error;
-  const startAt = nextCodeNumber(
-    (existing.data ?? []).map((row) => (row as { code: string }).code),
-    day,
-  );
+  const membership = await supabase
+    .from("team_members")
+    .select("team_id")
+    .eq("participant_id", opts.claimant.id);
+  if (membership.error) throw membership.error;
+  // Only the claimant's view matters: their personal, team, and shared codes.
+  const teamMembers: Record<string, string[]> = {};
+  for (const row of membership.data ?? []) {
+    teamMembers[(row as { team_id: string }).team_id] = [opts.claimant.id];
+  }
   const coded = applySoloVerification(
-    assignDayCodes(kept, day, startAt),
+    assignOwnedDayCodes(kept, day, {
+      participantIds: [opts.claimant.id],
+      teamMembers,
+      existing: (existing.data ?? []).map((row) => {
+        const r = row as {
+          code: string;
+          participant_id: string | null;
+          team_id: string | null;
+        };
+        return { code: r.code, participantId: r.participant_id, teamId: r.team_id };
+      }),
+    }),
     Boolean(opts.trip.is_solo),
   );
   const tripDays = tripLengthDays(opts.trip.start_date, opts.trip.end_date);
@@ -701,7 +804,7 @@ export async function refillPersonalTasksIfNeeded(opts: {
   );
   if (rows.length === 0) return;
   const { error } = await supabase.from("tasks").upsert(rows, {
-    onConflict: "trip_id,code",
+    onConflict: TASK_CODE_CONFLICT,
   });
   if (error) throw error;
   const text = formatPersonalBoard({

@@ -1,5 +1,5 @@
 import type { ClaimDecision } from "./claims";
-import type { QuestionId } from "./survey-questions";
+import { QUESTIONS, type QuestionId } from "./survey-questions";
 import type { SurveyAnswers } from "./survey";
 import { answerValue } from "./survey";
 
@@ -266,35 +266,88 @@ export function surveySliceForConversation(
   return slice;
 }
 
+// Values too generic to identify anyone ("no", "none"). Matching these made
+// every reply containing "not" or "below" look like a leak.
+const TRIVIAL_ANSWER_RE = /^(no|none|nope|nothing|yes|n\/?a|na|skip)$/i;
+
+// What an enum answer is about. An enum value like "low" only leaks when the
+// reply names the person AND the topic ("sarah's budget is low"); on its own
+// it is an ordinary word.
+const ENUM_TOPIC_RE: Partial<Record<QuestionId, RegExp>> = {
+  budget: /\b(budget|money|spend\w*|afford\w*|cheap|broke|price\w*)\b/i,
+  dietary: /\b(diet\w*|allerg\w*|restriction\w*|vegan|vegetarian|eat)\b/i,
+  dietary_strictness: /\b(diet\w*|allerg\w*|restriction\w*|strict)\b/i,
+  mobility: /\b(mobility|walk\w*|knee\w*|stairs|wheelchair|physical|limits?)\b/i,
+  social_couples: /\b(couples?|partner\w*|together|split)\b/i,
+};
+
+export type EnumSecret = { value: string; topic: RegExp };
+
+function enumValueOf(id: QuestionId, value: string): string | null {
+  const question = QUESTIONS[id];
+  if (question.kind !== "choice") return null;
+  const choice = (question.choices ?? []).find(
+    (c) => c.id.toLowerCase() === value.trim().toLowerCase(),
+  );
+  if (!choice) return null;
+  // Match the words people would actually write ("has restriction").
+  return choice.id.replace(/_/g, " ");
+}
+
 export function foreignSurveySecrets(
   people: { id: string; display_name: string; survey_json?: unknown }[],
   senderId: string,
-): { name: string; secrets: string[] }[] {
+): { name: string; secrets: string[]; enums: EnumSecret[] }[] {
   return people
     .filter((person) => person.id !== senderId)
     .map((person) => {
       const answers = (person.survey_json ?? {}) as SurveyAnswers;
+      // secrets: real free text (free-text answers, or raw text left in a
+      // choice answer by older rows). enums: shared option values, which only
+      // count with the person's name and the question's topic.
       const secrets: string[] = [];
+      const enums: EnumSecret[] = [];
       for (const id of PRIVATE_SURVEY_IDS) {
-        const value = answerValue(answers, id);
-        if (value) secrets.push(value);
+        const value = answerValue(answers, id)?.trim();
+        if (!value) continue;
+        const enumValue = enumValueOf(id, value);
+        if (enumValue) {
+          const topic = ENUM_TOPIC_RE[id];
+          if (topic) enums.push({ value: enumValue, topic });
+          continue;
+        }
+        if (value.length < 3 || TRIVIAL_ANSWER_RE.test(value)) continue;
+        secrets.push(value);
       }
-      return { name: person.display_name, secrets };
+      return { name: person.display_name, secrets, enums };
     });
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function containsPhrase(text: string, phrase: string): boolean {
+  const words = phrase.trim().split(/\s+/).map(escapeRegExp).join("\\s+");
+  if (!words) return false;
+  // Word boundaries that also work for phrases starting or ending in a symbol.
+  return new RegExp(`(^|[^\\p{L}\\p{N}])${words}($|[^\\p{L}\\p{N}])`, "iu").test(text);
 }
 
 export function leaksForeignSurvey(
   text: string,
-  others: { name: string; secrets: string[] }[],
+  others: { name: string; secrets: string[]; enums?: EnumSecret[] }[],
 ): boolean {
-  const lower = text.toLowerCase();
+  const budgetTalk = /\bbudget\b|\ballerg|\bdiet|\bsurvey\b/i.test(text);
   for (const person of others) {
-    const named = lower.includes(person.name.toLowerCase());
-    const budgetTalk = /\bbudget\b|\ballerg|\bdiet|\bsurvey\b/.test(lower);
+    const named = containsPhrase(text, person.name);
     for (const secret of person.secrets) {
-      if (!secret) continue;
-      if (!lower.includes(secret.toLowerCase())) continue;
+      if (!containsPhrase(text, secret)) continue;
       if (named || budgetTalk) return true;
+    }
+    if (!named) continue;
+    for (const secret of person.enums ?? []) {
+      if (secret.topic.test(text) && containsPhrase(text, secret.value)) return true;
     }
   }
   return false;
@@ -307,7 +360,7 @@ export type ConversationTurn = {
 
 export function finalizeConversationReply(opts: {
   text: string;
-  others: { name: string; secrets: string[] }[];
+  others: { name: string; secrets: string[]; enums?: EnumSecret[] }[];
   policy: OffTopicPolicy;
   redirect: string;
   fallback: string;

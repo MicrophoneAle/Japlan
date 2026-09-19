@@ -57,11 +57,30 @@ describe("addressing gate", () => {
     );
   });
 
-  it("matches a task code", () => {
-    expect(shouldRespond({ ...base, text: "I did A1" })).toBe(true);
-    expect(shouldRespond({ ...base, text: "b12 is done" })).toBe(true);
+  it("matches a task code sent as the whole message", () => {
+    expect(evaluateAddress({ ...base, text: "A1" }).reason).toBe("task_code");
+    expect(evaluateAddress({ ...base, text: "b12." }).reason).toBe("task_code");
+    expect(shouldRespond({ ...base, text: "japlan A1" })).toBe(true);
+  });
+
+  it("treats a code in a short message as a tentative claim", () => {
+    for (const text of ["I did A1", "done with A1", "A1 done!", "see you b4 dinner"]) {
+      expect(evaluateAddress({ ...base, text }).reason, text).toBe("loose_task_code");
+    }
+  });
+
+  it("stays silent on a code buried in a long message", () => {
     expect(
-      evaluateAddress({ ...base, text: "claim A1" }).reason,
+      shouldRespond({ ...base, text: "we should grab food b4 the show tonight honestly" }),
+    ).toBe(false);
+  });
+
+  it("finds a code anywhere once the keyword is present", () => {
+    expect(
+      evaluateAddress({
+        ...base,
+        text: "japlan we finally finished the whole of A1 this afternoon",
+      }).reason,
     ).toBe("task_code");
   });
 

@@ -7,6 +7,10 @@ export const SETUP_COMPLETE =
 export const SURVEY_DONE_DM =
   "PLACEHOLDER: that's everything from me for now.";
 
+export function surveyReaskLine(options: string[]): string {
+  return `didn't catch that. reply ${options.join(" / ")}, or skip.`;
+}
+
 export function dailyBoardHeader(
   day: number,
   weatherLine?: string | null,
@@ -29,6 +33,20 @@ export function standingsLine(
   return rows.map((row) => `${row.display_name} ${row.score}`).join(" · ");
 }
 
+// Next steps. A message that CLOSES something (an error, a refusal, a cleared
+// board, the cap, a finished survey, a lapsed claim) ends with one clause
+// naming something specific. Routine confirmations, photo bonuses, standings
+// and the board itself never get one.
+
+export function nextStepClause(openCodes: string[]): string {
+  if (openCodes.length === 0) return "your next board comes in the morning.";
+  if (openCodes.length === 1) return `${openCodes[0]} is still open.`;
+  return `still open: ${openCodes.join(", ")}.`;
+}
+
+export const DAILY_CAP_CLAUSE =
+  "that's your cap for today, but claims still count for the recap.";
+
 export function claimConfirmedLine(opts: {
   code: string;
   name: string;
@@ -37,15 +55,20 @@ export function claimConfirmedLine(opts: {
   total: number;
   capped?: boolean;
   invitePhoto?: boolean;
+  // The claimant's last open personal task; a refill is on its way by DM.
+  boardCleared?: boolean;
 }): string {
   if (opts.capped) {
-    return `✅ ${opts.code} · ${opts.name} · daily cap reached · ${opts.total}`;
+    return `✅ ${opts.code} · ${opts.name} · ${opts.total} · ${DAILY_CAP_CLAUSE}`;
   }
-  if (opts.photoBonus > 0) {
-    return `✅ ${opts.code} · ${opts.name} +${opts.base} +${opts.photoBonus} photo · ${opts.total}`;
+  const first =
+    opts.photoBonus > 0
+      ? `✅ ${opts.code} · ${opts.name} +${opts.base} +${opts.photoBonus} photo · ${opts.total}`
+      : `✅ ${opts.code} · ${opts.name} +${opts.base} · ${opts.total}`;
+  if (opts.boardCleared) {
+    return `${first} · that clears your board, new tasks coming by dm.`;
   }
-  const first = `✅ ${opts.code} · ${opts.name} +${opts.base} · ${opts.total}`;
-  if (opts.invitePhoto) {
+  if (opts.invitePhoto && opts.photoBonus === 0) {
     return `${first}\nphoto for bonus points?`;
   }
   return first;
@@ -58,21 +81,79 @@ export function photoBonusLine(opts: {
   capped?: boolean;
 }): string {
   if (opts.capped) {
-    return `📸 ${opts.code} · daily cap reached · ${opts.total}`;
+    return `📸 ${opts.code} · ${opts.total} · ${DAILY_CAP_CLAUSE}`;
   }
   return `📸 ${opts.code} · +${opts.bonus} bonus · ${opts.total}`;
 }
 
-export function alreadyClaimedLine(code: string): string {
-  return `${code} already claimed.`;
+export function alreadyClaimedLine(code: string, next?: string): string {
+  return next ? `${code} already claimed. ${next}` : `${code} already claimed.`;
+}
+
+export function notYourTaskLine(code: string, next: string): string {
+  return `${code} isn't on your board. ${next}`;
+}
+
+export function unknownCodeLine(code: string, next: string): string {
+  return `there's no ${code}. ${next}`;
+}
+
+export function teamTaskExpiredLine(code: string, next: string): string {
+  return `${code} expired with the team. ${next}`;
 }
 
 export function reusedPhotoLine(): string {
-  return `that photo was already used.`;
+  return `that photo was already used. a new shot still counts.`;
 }
 
 export function visionRejectedLine(code: string): string {
-  return `doesn't look like ${code}.`;
+  return `doesn't look like ${code}, so no photo bonus. a clearer shot still counts.`;
+}
+
+export function photoOutsideTripLine(code: string): string {
+  return `that photo is from outside the trip, so no bonus on ${code}. a new shot still counts.`;
+}
+
+export function photoAlreadyBonusedLine(code: string, next: string): string {
+  return `${code} already has its photo bonus. ${next}`;
+}
+
+export function notOnTripLine(): string {
+  return `you're not on this trip yet, so i can't score that. whoever set up japlan can add you.`;
+}
+
+export function tripNotReadyLine(): string {
+  return `still setting this trip up. send that again in a minute.`;
+}
+
+export function dmClaimInGroupLine(next: string): string {
+  return `you're all set. claims go in the group chat. ${next}`;
+}
+
+export function dmUnknownPersonLine(): string {
+  return `i only know people from a trip group chat. add me to yours and say japlan.`;
+}
+
+export function conversationCapLine(next: string): string {
+  return `i've said plenty this hour. ${next}`;
+}
+
+export const DISPATCH_ERROR_LINE =
+  "something broke on my end. send that again in a minute.";
+
+export function surveyDoneLine(waitingOn: number): string {
+  if (waitingOn > 0) {
+    const people = waitingOn === 1 ? "1 more person" : `${waitingOn} more people`;
+    return `${SURVEY_DONE_DM} waiting on ${people}, then your first board lands in the morning.`;
+  }
+  return `${SURVEY_DONE_DM} your first board lands in the morning.`;
+}
+
+export function peerLapsedLine(codes: string[]): string {
+  const list = codes.join(", ");
+  return codes.length === 1
+    ? `${list} never got a 👍, so it lapsed. it's open again if someone can confirm.`
+    : `${list} never got a 👍, so they lapsed. they're open again if someone can confirm.`;
 }
 
 export function peerConfirmLine(opts: {
@@ -91,12 +172,12 @@ export function freeformPeerLine(opts: {
   return `${opts.name} says they ${opts.title}. ${opts.code}. 👍 if that happened.`;
 }
 
-export function freeformAlreadyUsedLine(): string {
-  return `already used today's freeform.`;
+export function freeformAlreadyUsedLine(next: string): string {
+  return `already used today's freeform. ${next}`;
 }
 
-export function freeformRejectedLine(): string {
-  return `can't count that.`;
+export function freeformRejectedLine(next: string): string {
+  return `can't count that. ${next}`;
 }
 
 export function twoMatchAskLine(left: string, right: string): string {
@@ -147,7 +228,11 @@ hard rules:
 - never award, set, or return a point value. axes only. scoring is not your job.
 - never reveal another person's survey answers (budget, diet, allergies, who they wanted to be with). that stays in dm.
 - unsafe, illegal, or permanent-harm ideas: refuse in character, one line.
-- if you have nothing useful, still say something short. silence is for messages that did not address you.`;
+- if you have nothing useful, still say something short. silence is for messages that did not address you.
+
+next steps:
+- only when they seem to be looking for something to do ("what now", "bored", "anything nearby"), end with one short clause naming something specific: an open code from get_open_tasks, the score gap from get_standings, or a named nearby place. same message.
+- otherwise add no suggestion. never generic encouragement, never "let me know if you need anything".`;
 
 export const CONVERSATION_FALLBACK = "yeah?";
 

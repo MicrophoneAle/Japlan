@@ -1,6 +1,6 @@
 import { getServiceClient } from "@/lib/db/client";
-import { evaluateAddress } from "@/lib/game/addressing";
-import { extractTaskCode } from "@/lib/game/claims";
+import { evaluateAddress, findTaskCode } from "@/lib/game/addressing";
+import { DISPATCH_ERROR_LINE } from "@/lib/game/copy";
 import { routeSoloDm, soloModeEnabled } from "@/lib/game/solo";
 import { bootstrapGroupIfNeeded } from "@/lib/handlers/bootstrap";
 import {
@@ -27,7 +27,11 @@ import {
   textFromParts,
   type LinqEnvelope,
 } from "@/lib/linq/payload";
-import { markRead } from "@/lib/linq/send";
+import { markRead, sendText } from "@/lib/linq/send";
+
+// Set once a message is known to be addressed, so a later failure can still
+// answer it. Addressed means answered, even when something breaks.
+type AddressedMarker = { chatId: string | null };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -100,16 +104,28 @@ async function runClaimThenConversation(
 
 async function onMessageReceived(data: unknown): Promise<void> {
   dispatchStep("onMessageReceived.enter");
+  const addressed: AddressedMarker = { chatId: null };
   try {
-    await onMessageReceivedInner(data);
+    await onMessageReceivedInner(data, addressed);
   } catch (err) {
+    if (addressed.chatId) {
+      try {
+        await sendText(addressed.chatId, DISPATCH_ERROR_LINE);
+        dispatchStep("error_reply.sent", { chatId: addressed.chatId });
+      } catch (sendErr) {
+        console.error("[japlan.dispatch] error reply failed", sendErr);
+      }
+    }
     dispatchThrow("onMessageReceived.throw", err);
   } finally {
     dispatchStep("onMessageReceived.exit");
   }
 }
 
-async function onMessageReceivedInner(data: unknown): Promise<void> {
+async function onMessageReceivedInner(
+  data: unknown,
+  addressed: AddressedMarker,
+): Promise<void> {
   if (!isRecord(data)) {
     dispatchIdle("not_a_record");
     return;
@@ -139,9 +155,10 @@ async function onMessageReceivedInner(data: unknown): Promise<void> {
   const phone = sender?.handle ?? null;
   const senderName = sender?.display_name ?? null;
   const recentCode = chatId && phone ? recentCodeFor(chatId, phone) : null;
-  const codeInText = extractTaskCode(text);
-  if (chatId && phone && codeInText) {
-    rememberTaskMention(chatId, phone, codeInText);
+  // Loose codes are remembered by the claim handler only once they resolve.
+  const codeMatch = findTaskCode(text);
+  if (chatId && phone && codeMatch?.strict) {
+    rememberTaskMention(chatId, phone, codeMatch.code);
   }
   const decision = evaluateAddress({
     text,
@@ -157,6 +174,10 @@ async function onMessageReceivedInner(data: unknown): Promise<void> {
     });
     return;
   }
+
+  // A loose code alone is tentative: the claim handler decides whether it was
+  // a claim, so an error there should not answer ordinary chat.
+  if (decision.reason !== "loose_task_code") addressed.chatId = chatId;
 
   const messageId = typeof data.id === "string" ? data.id : null;
   if (messageId) {
@@ -287,6 +308,21 @@ export async function dispatchLinqEvent(envelope: LinqEnvelope): Promise<void> {
     if (envelope.event_type === "message.received") {
       await onMessageReceived(envelope.data);
     } else if (envelope.event_type === "reaction.added") {
+      // Never seen in a real capture. Log the shape (not phone numbers or
+      // text) so the first live tapback confirms or corrects the field names.
+      const reaction = isRecord(envelope.data) ? envelope.data : null;
+      console.info("[japlan.reaction] observed", {
+        eventId: envelope.event_id ?? null,
+        keys: reaction ? Object.keys(reaction) : null,
+        reactionType: reaction?.reaction_type ?? null,
+        hasMessageId: typeof reaction?.message_id === "string",
+        chatId: reaction ? chatIdFromData(reaction) : null,
+        fromShape: reaction?.from_handle
+          ? "from_handle"
+          : typeof reaction?.from === "string"
+            ? "from"
+            : "none",
+      });
       if (isRecord(envelope.data)) {
         await dispatchAwait("peer_reaction", {}, () =>
           handlePeerReaction(envelope.data as Record<string, unknown>),

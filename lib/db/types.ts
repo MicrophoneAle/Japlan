@@ -48,6 +48,7 @@ export type ClaimRow = {
   resolution_json: unknown;
   capped?: boolean;
   photo_claimed_at?: string | null;
+  expires_at?: string | null;
   created_at?: string;
 };
 

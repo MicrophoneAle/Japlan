@@ -7,7 +7,12 @@ import {
   TEMPLATES,
   type TaskTemplate,
 } from "./templates";
-import type { ProposedTask } from "./validate";
+import type { SurveyAnswers } from "./survey";
+import {
+  validateGeneratedTask,
+  type ProposedTask,
+  type RejectionReason,
+} from "./validate";
 import type { DayWeather } from "./weather";
 import { dayLetter, type Axes } from "./scoring";
 
@@ -107,27 +112,69 @@ export function parseGeneratedTasks(raw: string): ProposedTask[] {
   return tasks;
 }
 
-export function assignDayCodes(
-  tasks: ProposedTask[],
-  day: number,
-  startAt = 1,
-): ProposedTask[] {
-  const letter = dayLetter(day);
-  return tasks.map((task, index) => ({
-    ...task,
-    code: `${letter}${startAt + index}`,
-  }));
-}
+export type ExistingDayCode = {
+  code: string;
+  participantId: string | null;
+  teamId: string | null;
+};
 
-export function nextCodeNumber(codes: string[], day: number): number {
+// Codes are per owner, not per trip: everyone's personal board starts at A1.
+// A number is only taken if nobody who can see the task already sees that
+// number, so a person's personal, team, and shared codes never collide.
+export function assignOwnedDayCodes<T extends ProposedTask>(
+  tasks: T[],
+  day: number,
+  ctx: {
+    participantIds: string[];
+    teamMembers: Record<string, string[]>;
+    existing?: ExistingDayCode[];
+  },
+): T[] {
   const letter = dayLetter(day);
   const re = new RegExp(`^${letter}(\\d+)$`, "i");
-  let max = 0;
-  for (const code of codes) {
-    const match = code.match(re);
-    if (match) max = Math.max(max, Number(match[1]));
+  const used = new Map<string, Set<number>>();
+
+  const keysFor = (owner: {
+    participantId?: string | null;
+    teamId?: string | null;
+  }): string[] => {
+    if (owner.participantId) return [`p:${owner.participantId}`];
+    if (owner.teamId) {
+      return [
+        `t:${owner.teamId}`,
+        ...(ctx.teamMembers[owner.teamId] ?? []).map((id) => `p:${id}`),
+      ];
+    }
+    return ["shared", ...ctx.participantIds.map((id) => `p:${id}`)];
+  };
+  const mark = (keys: string[], n: number): void => {
+    for (const key of keys) {
+      const set = used.get(key) ?? new Set<number>();
+      set.add(n);
+      used.set(key, set);
+    }
+  };
+
+  for (const row of ctx.existing ?? []) {
+    const match = row.code.match(re);
+    if (match) mark(keysFor(row), Number(match[1]));
   }
-  return max + 1;
+
+  // Team and personal tasks claim low numbers before the shared board does.
+  const rank = (task: T): number =>
+    task.teamId ? 0 : task.participantId ? 1 : 2;
+  const order = tasks
+    .map((_, index) => index)
+    .sort((a, b) => rank(tasks[a]) - rank(tasks[b]) || a - b);
+  const out = [...tasks];
+  for (const index of order) {
+    const keys = keysFor(tasks[index]);
+    let n = 1;
+    while (keys.some((key) => used.get(key)?.has(n))) n += 1;
+    mark(keys, n);
+    out[index] = { ...tasks[index], code: `${letter}${n}` };
+  }
+  return out;
 }
 
 export function nextFreeformCode(codes: string[]): string {
@@ -240,6 +287,55 @@ export function slotValuesFor(
     }
   }
   return values;
+}
+
+const BOUNTY_ATTEMPTS = 12;
+
+// Catch-up bounty for the trailing player. Peer templates first; the seed
+// moves with the day and the attempt, so it is not the same task every day,
+// and it never repeats anything in avoidTitles (the trailer's completed tasks
+// plus today's board).
+export function pickBounty(opts: {
+  profile: DestinationProfile;
+  day: number;
+  trailer: { id: string; answers: SurveyAnswers };
+  avoidTitles: string[];
+  expiresAt: Date;
+  now?: Date;
+  onReject?: (reason: RejectionReason, title: string, attempt: number) => void;
+}): ProposedTask | null {
+  const ordered = [
+    ...TEMPLATES.filter((t) => t.verification === "peer"),
+    ...TEMPLATES.filter((t) => t.verification !== "peer"),
+  ];
+  if (ordered.length === 0) return null;
+  for (let attempt = 0; attempt < BOUNTY_ATTEMPTS; attempt++) {
+    const template = ordered[(opts.day + attempt) % ordered.length];
+    const values = slotValuesFor(template, opts.profile, opts.day * 7 + attempt);
+    const bounty: ProposedTask = {
+      code: "",
+      title: fillArchetype(template.archetype, values),
+      axes: {
+        ...midpointAxes(template),
+        boldness: 5,
+        scarcity: 4,
+      },
+      verification: template.verification,
+      photo_bonus_max: template.photo_bonus_max,
+      neighborhood: values.neighborhood ?? opts.profile.destination,
+      participantId: opts.trailer.id,
+      teamId: null,
+    };
+    const reason = validateGeneratedTask(bounty, {
+      assignees: [{ answers: opts.trailer.answers }],
+      completedTitles: opts.avoidTitles,
+      expiresAt: opts.expiresAt,
+      now: opts.now,
+    });
+    if (!reason) return bounty;
+    opts.onReject?.(reason, bounty.title, attempt);
+  }
+  return null;
 }
 
 export function fillTemplatesDeterministically(opts: {

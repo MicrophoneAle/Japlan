@@ -10,6 +10,9 @@ export type AddressReason =
   | "dm"
   | "open_task_context"
   | "task_code"
+  // Code-shaped token in a short unaddressed group message. Tentative: the
+  // claim handler stays silent unless it resolves to the sender's own task.
+  | "loose_task_code"
   | "wake_keyword"
   | "help"
   | "silent";
@@ -23,7 +26,11 @@ export type AddressDecision = {
   bypassRateLimit: boolean;
 };
 
-const TASK_CODE = /\b[A-Za-z]\d{1,2}\b/;
+const TASK_CODE_BODY = "[A-Za-z]\\d{1,2}";
+const WHOLE_MESSAGE_CODE_RE = new RegExp(`^\\s*(${TASK_CODE_BODY})\\s*[.!?]*\\s*$`);
+const CODE_TOKEN_RE = new RegExp(`^${TASK_CODE_BODY}$`);
+// "done with A1" is a claim; a long message with a code-shaped token is chat.
+export const LOOSE_CODE_MAX_WORDS = 6;
 const FILLER_PREFIX = /^(hey|hi|ok|okay|please|um+|uh|so)[, ]+/i;
 const HELP_BODY_RE = [
   /^help(?:\s+me)?(?:\s+please)?\??$/i,
@@ -40,16 +47,64 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+export function defaultWakeKeyword(): string {
+  return (process.env.JAPLAN_WAKE_KEYWORD ?? "japlan").trim();
+}
+
 function wakeKeywordOf(input: AddressingInput): string {
-  return (
-    input.wakeKeyword ??
-    process.env.JAPLAN_WAKE_KEYWORD ??
-    "japlan"
-  ).trim();
+  return input.wakeKeyword?.trim() ?? defaultWakeKeyword();
 }
 
 export function wakeKeywordRe(keyword: string): RegExp {
   return new RegExp(`\\b${escapeRegExp(keyword)}\\b`, "i");
+}
+
+export type TaskCodeMatch = {
+  code: string;
+  // strict: the whole message, or anywhere in a message with the keyword.
+  // loose: a standalone token in a short message with no keyword.
+  strict: boolean;
+};
+
+function normalizeCode(raw: string): string {
+  return `${raw[0].toUpperCase()}${raw.slice(1)}`;
+}
+
+function firstCodeToken(text: string): string | null {
+  for (const word of text.split(/\s+/)) {
+    const token = word.replace(/^[^\w]+|[^\w]+$/g, "");
+    if (CODE_TOKEN_RE.test(token)) return token;
+  }
+  return null;
+}
+
+export function findTaskCode(
+  text: string,
+  keyword: string = defaultWakeKeyword(),
+): TaskCodeMatch | null {
+  const whole = text.match(WHOLE_MESSAGE_CODE_RE)?.[1];
+  if (whole) return { code: normalizeCode(whole), strict: true };
+
+  if (keyword && wakeKeywordRe(keyword).test(text)) {
+    const afterKeyword = new RegExp(
+      `\\b${escapeRegExp(keyword)}\\b[\\s,:;-]*(${TASK_CODE_BODY})\\b`,
+      "i",
+    );
+    const raw = text.match(afterKeyword)?.[1] ?? firstCodeToken(text);
+    return raw ? { code: normalizeCode(raw), strict: true } : null;
+  }
+
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  if (words.length > LOOSE_CODE_MAX_WORDS) return null;
+  const raw = firstCodeToken(text);
+  return raw ? { code: normalizeCode(raw), strict: false } : null;
+}
+
+export function extractTaskCode(
+  text: string,
+  keyword: string = defaultWakeKeyword(),
+): string | null {
+  return findTaskCode(text, keyword)?.code ?? null;
 }
 
 export function stripWakeKeyword(text: string, keyword: string): string {
@@ -98,7 +153,9 @@ export function evaluateAddress(input: AddressingInput): AddressDecision {
       bypassRateLimit: false,
     };
   }
-  if (TASK_CODE.test(input.text)) {
+  const keyword = wakeKeywordOf(input);
+  const code = findTaskCode(input.text, keyword);
+  if (code?.strict) {
     return {
       respond: true,
       reason: "task_code",
@@ -107,11 +164,19 @@ export function evaluateAddress(input: AddressingInput): AddressDecision {
     };
   }
 
-  const keyword = wakeKeywordOf(input);
   if (keyword && wakeKeywordRe(keyword).test(input.text)) {
     return {
       respond: true,
       reason: "wake_keyword",
+      intent: "none",
+      bypassRateLimit: false,
+    };
+  }
+
+  if (code) {
+    return {
+      respond: true,
+      reason: "loose_task_code",
       intent: "none",
       bypassRateLimit: false,
     };

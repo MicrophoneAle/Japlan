@@ -6,6 +6,7 @@ import {
   conversationalRepliesInWindow,
   finalizeConversationReply,
   foreignSurveySecrets,
+  leaksForeignSurvey,
   nextOffTopicCount,
   offTopicPolicy,
   recordConversationalReply,
@@ -161,7 +162,8 @@ describe("DM stays in DM", () => {
     expect(JSON.stringify(slice)).not.toContain("low");
     expect(JSON.stringify(slice)).not.toContain("Alex only");
     const others = foreignSurveySecrets(people, "p1");
-    expect(others[0]?.secrets).toEqual(expect.arrayContaining(["low", "Alex only"]));
+    expect(others[0]?.secrets).toEqual(["Alex only"]);
+    expect(others[0]?.enums.map((e) => e.value)).toEqual(["low"]);
     const leaked = finalizeConversationReply({
       text: "sarah's budget is low",
       others,
@@ -173,6 +175,65 @@ describe("DM stays in DM", () => {
     expect(leaked).toBe(CONVERSATION_PRIVACY_LINE);
     expect(leaked).not.toContain("low");
     expect(leaked).not.toContain("budget");
+  });
+
+  it("does not flag ordinary words that contain an answer value", () => {
+    const others = foreignSurveySecrets(
+      [
+        { id: "p1", display_name: "Michael", survey_json: {} },
+        {
+          id: "p2",
+          display_name: "Sam",
+          survey_json: {
+            budget: { value: "low" },
+            dietary: { value: "none" },
+            mobility: { value: "no_limits" },
+            blackout: { value: "no" },
+          },
+        },
+      ],
+      "p1",
+    );
+    for (const text of [
+      "sam is not far behind, follow them to A2",
+      "sam is below you by 4",
+      "sam leads with 40, nobody close",
+      "sam walked slowly but got there",
+    ]) {
+      expect(leaksForeignSurvey(text, others), text).toBe(false);
+    }
+  });
+
+  it("still catches a free-text answer as a whole phrase", () => {
+    const others = foreignSurveySecrets(
+      [
+        { id: "p1", display_name: "Michael", survey_json: {} },
+        {
+          id: "p2",
+          display_name: "Sam",
+          survey_json: { blackout: { value: "prayer at 1pm" } },
+        },
+      ],
+      "p1",
+    );
+    expect(leaksForeignSurvey("sam has prayer at 1pm", others)).toBe(true);
+    expect(leaksForeignSurvey("sam is winning", others)).toBe(false);
+  });
+
+  it("catches a legacy raw dietary answer as a secret", () => {
+    const others = foreignSurveySecrets(
+      [
+        { id: "p1", display_name: "Michael", survey_json: {} },
+        {
+          id: "p2",
+          display_name: "Sam",
+          survey_json: { dietary: { value: "peanut allergy" } },
+        },
+      ],
+      "p1",
+    );
+    expect(others[0]?.secrets).toEqual(["peanut allergy"]);
+    expect(leaksForeignSurvey("careful, sam has a peanut allergy", others)).toBe(true);
   });
 });
 

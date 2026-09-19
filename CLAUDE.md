@@ -44,7 +44,7 @@ Do not re-guess these.
 - Sender is `data.sender_handle.handle` (E.164). The object has `is_me`. `is_me` events are ignored. Display name is on the handle object, not the phone string; survey `first_name` can replace it.
 - Media is `data.parts[]`, `type=media`, fetchable `url`, `mime` / `mime_type`.
 - Foursquare venue id is **`fsq_place_id`**, not `fsq_id`. Drop results that only have the legacy field.
-- Task codes: `\b[A-Za-z]\d{1,2}\b`. Wake keyword: `japlan` (`JAPLAN_WAKE_KEYWORD`), case-insensitive, word boundary.
+- Task codes: `[A-Za-z]\d{1,2}` as a standalone token (`findTaskCode` in `lib/game/addressing.ts`). Strict: the whole message, or anywhere with the keyword. Loose: a token in a message of 6 words or fewer with no keyword; loose is tentative and stays silent unless it resolves to the sender's own task. Codes repeat per owner (everyone's personal board is A1-A3), unique on `(trip_id, day, participant_id, team_id, code)`; resolve with `findTaskByCodeFor`. Wake keyword: `japlan` (`JAPLAN_WAKE_KEYWORD`), case-insensitive, word boundary.
 
 ## Known open problems
 

@@ -22,6 +22,8 @@ create table trips (
   destination_profile_json jsonb,
   is_solo boolean not null default false,
   daily_points_cap integer not null default 120,
+  -- Set when the group intro goes out; it is posted at most once per chat.
+  intro_sent_at timestamptz,
   created_at timestamptz not null default now()
 );
 
@@ -108,7 +110,10 @@ create table tasks (
   constraint tasks_at_most_one_assignee check (
     not (participant_id is not null and team_id is not null)
   ),
-  unique (trip_id, code)
+  -- Codes repeat per owner: everyone's personal board is A1-A3. nulls not
+  -- distinct so shared (both null) and team tasks are still unique per day.
+  constraint tasks_owner_code_key unique nulls not distinct
+    (trip_id, day, participant_id, team_id, code)
 );
 
 create index tasks_trip_id_day_idx on tasks (trip_id, day);
@@ -125,11 +130,39 @@ create table claims (
   resolution_json jsonb,
   capped boolean not null default false,
   photo_claimed_at timestamptz,
+  -- The claimant's own row. Team fanout rows for other members are false.
+  primary_claim boolean not null default true,
+  -- pending_peer only: end of the local day it was made. Swept to 'expired'.
+  expires_at timestamptz,
   created_at timestamptz not null default now()
 );
 
 create unique index claims_task_participant_key on claims (task_id, participant_id);
+-- First write wins: one live primary claim per task, enforced by the database.
+create unique index claims_one_winner_per_task on claims (task_id)
+  where primary_claim and status in ('awarded', 'pending_peer');
 create index claims_image_hash_idx on claims (image_hash);
+create index claims_pending_expiry_idx on claims (expires_at)
+  where status = 'pending_peer';
+
+-- Atomic score bump. Read-then-write in the app lost increments under
+-- concurrent claims. Returns the new score, or null if no such participant.
+create or replace function increment_participant_score(
+  p_participant_id uuid,
+  p_delta integer
+) returns integer
+language sql
+as $$
+  update participants
+  set score = score + p_delta
+  where id = p_participant_id
+  returning score;
+$$;
+
+revoke execute on function increment_participant_score(uuid, integer)
+  from public, anon, authenticated;
+grant execute on function increment_participant_score(uuid, integer)
+  to service_role;
 
 create table events (
   id uuid primary key default gen_random_uuid(),

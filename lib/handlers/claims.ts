@@ -5,28 +5,43 @@ import {
   CLAIM_MATCH_CONFIDENCE_MIN,
   applyPhotoBonusRules,
   awardFanout,
+  canClaimTask,
   clampPhotoBonus,
   decideClaim,
-  extractTaskCode,
+  findTaskByCodeFor,
   hashAlreadyUsed,
   isOpenTask,
+  openCodesFor,
   photoBonusWindowMs,
   pickLatePhotoTarget,
+  splitTeamsByClaimWindow,
+  tasksClaimableBy,
   verificationRequiresPeer,
   type ClaimDecision,
+  type TeamMembership,
 } from "@/lib/game/claims";
+import { evaluateAddress, findTaskCode } from "@/lib/game/addressing";
 import {
   alreadyClaimedLine,
   claimConfirmedLine,
   freeformAlreadyUsedLine,
   freeformPeerLine,
   freeformRejectedLine,
+  nextStepClause,
+  notOnTripLine,
+  notYourTaskLine,
   peerConfirmLine,
+  photoAlreadyBonusedLine,
   photoBonusLine,
+  photoOutsideTripLine,
   reusedPhotoLine,
+  teamTaskExpiredLine,
+  tripNotReadyLine,
   twoMatchAskLine,
+  unknownCodeLine,
   visionRejectedLine,
 } from "@/lib/game/copy";
+import { endOfLocalDayContaining } from "@/lib/game/time";
 import {
   FREEFORM_PHOTO_BONUS_MAX,
   FREEFORM_SOURCE,
@@ -73,7 +88,7 @@ const TASK_COLS =
 const PARTICIPANT_COLS =
   "id, trip_id, phone, display_name, score, survey_json, survey_state, sidequests_muted, consented_at";
 const CLAIM_COLS =
-  "id, task_id, participant_id, evidence_url, image_hash, status, awarded_points, resolved_by, resolution_json, capped, photo_claimed_at, created_at";
+  "id, task_id, participant_id, evidence_url, image_hash, status, awarded_points, resolved_by, resolution_json, capped, photo_claimed_at, expires_at, created_at";
 
 const recentCodeMentions = new Map<string, { code: string; at: number }>();
 
@@ -155,6 +170,8 @@ export type ClaimFallthrough = {
   hasPhoto: boolean;
   photo: { url: string; mime: string } | null;
   claimant: ParticipantRow;
+  // Teams whose claim window is still open (see splitTeamsByClaimWindow).
+  claimantTeamIds: string[];
   people: ParticipantRow[];
   trip: TripRow;
   tasks: TaskRow[];
@@ -164,6 +181,8 @@ export type ClaimFallthrough = {
   send: SendFn;
   provider?: LLMProvider;
   now?: number;
+  // One clause naming the claimant's open codes, for replies that close something.
+  nextStep: string;
 };
 
 function asTasks(rows: unknown): TaskRow[] {
@@ -221,6 +240,20 @@ async function loadTripContext(chatId: string): Promise<{
   let claims: ClaimRow[] = [];
   if (tasks.length > 0) {
     const taskIds = tasks.map((task) => task.id);
+    // Lapse pending_peer claims past end of their local day, so the task opens
+    // up again and claims_one_winner_per_task stops blocking it.
+    const sweep = await claimAwait(
+      "peer_expiry.sweep",
+      { tripId: trip.id },
+      async () =>
+        await supabase
+          .from("claims")
+          .update({ status: "expired" })
+          .eq("status", "pending_peer")
+          .lte("expires_at", new Date().toISOString())
+          .in("task_id", taskIds),
+    );
+    if (sweep.error) throw sweep.error;
     const claimsRes = await claimAwait(
       "open_claims.lookup",
       { tripId: trip.id, taskCount: taskIds.length },
@@ -259,6 +292,53 @@ async function teamMemberIds(teamId: string): Promise<string[]> {
     .eq("team_id", teamId);
   if (error) throw error;
   return (data ?? []).map((row) => (row as { participant_id: string }).participant_id);
+}
+
+// Two flat queries, no embed: nested embeds are a suspect in the isolate hang.
+async function teamMembershipsFor(participantId: string): Promise<TeamMembership[]> {
+  const supabase = getServiceClient();
+  const { data, error } = await supabase
+    .from("team_members")
+    .select("team_id")
+    .eq("participant_id", participantId);
+  if (error) throw error;
+  const teamIds = (data ?? []).map((row) => (row as { team_id: string }).team_id);
+  if (teamIds.length === 0) return [];
+  const teams = await supabase
+    .from("teams")
+    .select("id, dissolved_at")
+    .in("id", teamIds);
+  if (teams.error) throw teams.error;
+  return (teams.data ?? []).map((row) => {
+    const team = row as { id: string; dissolved_at: string | null };
+    return { teamId: team.id, dissolvedAt: team.dissolved_at };
+  });
+}
+
+// The next-step clause for someone outside the claim flow (e.g. a DM).
+export async function nextStepForParticipant(
+  trip: TripRow,
+  participantId: string,
+): Promise<string> {
+  const supabase = getServiceClient();
+  const tasksRes = await supabase.from("tasks").select(TASK_COLS).eq("trip_id", trip.id);
+  if (tasksRes.error) throw tasksRes.error;
+  const tasks = asTasks(tasksRes.data);
+  let claims: ClaimRow[] = [];
+  if (tasks.length > 0) {
+    const claimsRes = await supabase
+      .from("claims")
+      .select("task_id, status")
+      .in("task_id", tasks.map((task) => task.id));
+    if (claimsRes.error) throw claimsRes.error;
+    claims = asClaims(claimsRes.data);
+  }
+  const teams = splitTeamsByClaimWindow(
+    await teamMembershipsFor(participantId),
+    trip.timezone,
+    new Date(),
+  );
+  return nextStepClause(openCodesFor(tasks, claims, participantId, teams.active));
 }
 
 async function tripHashes(tripId: string): Promise<string[]> {
@@ -300,35 +380,22 @@ async function fetchPhoto(url: string): Promise<Buffer> {
   return Buffer.from(bytes);
 }
 
+// score = score + delta in one statement; concurrent claims cannot lose a bump.
 async function bumpScore(participantId: string, delta: number): Promise<number> {
-  const supabase = getServiceClient();
   const { data, error } = await claimAwait(
-    "score.select",
+    "score.increment",
     { participantId, delta },
     async () =>
-      await supabase
-        .from("participants")
-        .select("score")
-        .eq("id", participantId)
-        .maybeSingle(),
+      await getServiceClient().rpc("increment_participant_score", {
+        p_participant_id: participantId,
+        p_delta: delta,
+      }),
   );
   if (error) throw error;
-  if (!data) throw new Error(`participant not found: ${participantId}`);
-  const next = ((data as { score: number }).score ?? 0) + delta;
-  const updated = await claimAwait(
-    "score.update",
-    { participantId, next },
-    async () =>
-      await supabase
-        .from("participants")
-        .update({ score: next })
-        .eq("id", participantId)
-        .select("score")
-        .maybeSingle(),
-  );
-  if (updated.error) throw updated.error;
-  if (!updated.data) throw new Error(`participant score update failed: ${participantId}`);
-  return (updated.data as { score: number }).score;
+  if (typeof data !== "number") {
+    throw new Error(`participant not found: ${participantId}`);
+  }
+  return data;
 }
 
 async function insertClaim(row: {
@@ -342,8 +409,12 @@ async function insertClaim(row: {
   resolution_json: unknown;
   capped?: boolean;
   photo_claimed_at?: string | null;
-}): Promise<void> {
-  const { error } = await claimAwait(
+  // false only for team fanout rows; claims_one_winner_per_task keys on it.
+  primary_claim?: boolean;
+  // pending_peer only: when the claim lapses.
+  expires_at?: string | null;
+}): Promise<string> {
+  const { data, error } = await claimAwait(
     "claim.insert",
     {
       taskId: row.task_id,
@@ -351,10 +422,15 @@ async function insertClaim(row: {
       status: row.status,
     },
     async () =>
-      await getServiceClient().from("claims").insert({
-        ...row,
-        capped: row.capped ?? false,
-      }),
+      await getServiceClient()
+        .from("claims")
+        .insert({
+          ...row,
+          capped: row.capped ?? false,
+          primary_claim: row.primary_claim ?? true,
+        })
+        .select("id")
+        .maybeSingle(),
   );
   if (error) {
     if (error.code === "23505") {
@@ -364,6 +440,14 @@ async function insertClaim(row: {
     }
     throw error;
   }
+  if (!data) throw new Error("claim insert returned no row");
+  return (data as { id: string }).id;
+}
+
+function isClaimConflict(err: unknown): boolean {
+  return (
+    err instanceof Error && (err as Error & { code?: string }).code === "23505"
+  );
 }
 
 export async function postDailyBoard(tripId: string, send: SendFn = sendText): Promise<void> {
@@ -441,6 +525,8 @@ async function applyAwards(opts: {
   trip: TripRow;
   send: SendFn;
   photoClaimedAt?: string | null;
+  // Fired once the claimant's primary row exists.
+  onClaimWritten?: () => void;
 }): Promise<void> {
   const memberIds = opts.task.team_id
     ? Array.from(
@@ -452,13 +538,19 @@ async function applyAwards(opts: {
         ]),
       )
     : [opts.claimant.id];
+  // Claimant's primary row goes first: if another claim already won the task,
+  // claims_one_winner_per_task rejects it before any fanout row or score bump.
   const rows = awardFanout({
     teamId: opts.task.team_id,
     claimantId: opts.claimant.id,
     teamMemberIds: memberIds,
     basePoints: opts.task.base_points,
     photoBonus: opts.photoBonus,
-  });
+  }).sort(
+    (a, b) =>
+      Number(b.participantId === opts.claimant.id) -
+      Number(a.participantId === opts.claimant.id),
+  );
   const cap = opts.trip.daily_points_cap ?? DEFAULT_DAILY_POINTS_CAP;
   const confirmChatId = opts.trip.linq_chat_id;
 
@@ -490,12 +582,24 @@ async function applyAwards(opts: {
       resolution_json: resolution,
       capped: capped.capped,
       photo_claimed_at: opts.photoClaimedAt ?? null,
+      primary_claim: row.participantId === opts.claimant.id,
     });
+    if (row.participantId === opts.claimant.id) opts.onClaimWritten?.();
     if (capped.awarded_points > 0) {
       const total = await bumpScore(row.participantId, capped.awarded_points);
       if (row.participantId === opts.claimant.id) claimantTotal = total;
     }
     if (row.participantId === opts.claimant.id) claimantCapped = capped.capped;
+  }
+
+  // A personal generated task may be the claimant's last open one. Count first
+  // so the confirmation can say what comes next; the refill runs after it.
+  const personalBoardTask =
+    opts.task.participant_id === opts.claimant.id &&
+    opts.task.source !== FREEFORM_SOURCE;
+  let remainingOpenPersonal = 1;
+  if (personalBoardTask) {
+    remainingOpenPersonal = await countOpenPersonal(opts.trip.id, opts.claimant.id);
   }
 
   const name =
@@ -518,6 +622,8 @@ async function applyAwards(opts: {
             !claimantCapped &&
             !opts.photoClaimedAt &&
             opts.task.photo_bonus_max > 0,
+          boardCleared:
+            personalBoardTask && !claimantCapped && remainingOpenPersonal === 0,
         }),
       ),
   );
@@ -531,57 +637,67 @@ async function applyAwards(opts: {
   });
   resetOffTopicOnClaim(confirmChatId);
 
-  if (
-    opts.task.participant_id === opts.claimant.id &&
-    opts.task.source !== FREEFORM_SOURCE
-  ) {
-    const { data: personal, error: personalErr } = await claimAwait(
-      "refill.personal_tasks",
-      { tripId: opts.trip.id, participantId: opts.claimant.id },
-      async () =>
-        await getServiceClient()
-          .from("tasks")
-          .select("id, participant_id, source")
-          .eq("trip_id", opts.trip.id)
-          .eq("participant_id", opts.claimant.id),
-    );
-    if (personalErr) throw personalErr;
-    const { data: claimRows, error: claimErr } = await claimAwait(
-      "refill.personal_claims",
-      { participantId: opts.claimant.id },
-      async () =>
-        await getServiceClient()
-          .from("claims")
-          .select("task_id, status")
-          .eq("participant_id", opts.claimant.id),
-    );
-    if (claimErr) throw claimErr;
-    const remaining = openPersonalTaskIds(
-      (personal ?? []) as {
-        id: string;
-        participant_id: string | null;
-        source?: string | null;
-      }[],
-      (claimRows ?? []) as { task_id: string; status: string }[],
-      opts.claimant.id,
-    ).length;
-    await claimAwait(
-      "refill.generate",
-      { remainingOpenPersonal: remaining },
-      () =>
-        refillPersonalTasksIfNeeded({
-          trip: opts.trip,
-          claimant: opts.claimant,
-          people: opts.people,
-          remainingOpenPersonal: remaining,
-        }),
-    );
+  if (personalBoardTask) {
+    // The claim is already confirmed; a refill failure must not surface as a
+    // second "something broke" message after the ✅.
+    try {
+      await claimAwait(
+        "refill.generate",
+        { remainingOpenPersonal },
+        () =>
+          refillPersonalTasksIfNeeded({
+            trip: opts.trip,
+            claimant: opts.claimant,
+            people: opts.people,
+            remainingOpenPersonal,
+          }),
+      );
+    } catch (err) {
+      console.error("[japlan.claim] refill failed after confirm", {
+        participantId: opts.claimant.id,
+        err,
+      });
+    }
   }
+}
+
+async function countOpenPersonal(tripId: string, participantId: string): Promise<number> {
+  const { data: personal, error: personalErr } = await claimAwait(
+    "refill.personal_tasks",
+    { tripId, participantId },
+    async () =>
+      await getServiceClient()
+        .from("tasks")
+        .select("id, participant_id, source")
+        .eq("trip_id", tripId)
+        .eq("participant_id", participantId),
+  );
+  if (personalErr) throw personalErr;
+  const { data: claimRows, error: claimErr } = await claimAwait(
+    "refill.personal_claims",
+    { participantId },
+    async () =>
+      await getServiceClient()
+        .from("claims")
+        .select("task_id, status")
+        .eq("participant_id", participantId),
+  );
+  if (claimErr) throw claimErr;
+  return openPersonalTaskIds(
+    (personal ?? []) as {
+      id: string;
+      participant_id: string | null;
+      source?: string | null;
+    }[],
+    (claimRows ?? []) as { task_id: string; status: string }[],
+    participantId,
+  ).length;
 }
 
 async function resolveKnownTask(opts: {
   task: TaskRow;
   claimant: ParticipantRow;
+  claimantTeamIds: string[];
   people: ParticipantRow[];
   trip: TripRow;
   withPhoto: boolean;
@@ -591,7 +707,22 @@ async function resolveKnownTask(opts: {
   provider?: LLMProvider;
   decision: ClaimDecision;
   photoBonusOverride?: number;
+  nextStep: string;
 }): Promise<void> {
+  // Safety net: callers already filter to claimable tasks, but never award a
+  // task to someone it does not belong to.
+  if (!canClaimTask(opts.task, opts.claimant.id, opts.claimantTeamIds)) {
+    claimStep("ownership.reject", {
+      code: opts.task.code,
+      taskParticipant: opts.task.participant_id,
+      taskTeam: opts.task.team_id,
+    });
+    await claimAwait("outbound.send", { reason: "not_your_task" }, () =>
+      opts.send(opts.chatId, notYourTaskLine(opts.task.code, opts.nextStep)),
+    );
+    return;
+  }
+
   const existing = await existingClaimsForTask(opts.task.id);
   const blocking = existing.filter(
     (c) => c.status === "awarded" || c.status === "pending_peer",
@@ -599,9 +730,27 @@ async function resolveKnownTask(opts: {
   if (blocking.length > 0) {
     claimStep("already_claimed.hit", { code: opts.task.code });
     await claimAwait("outbound.send", { reason: "already_claimed" }, () =>
-      opts.send(opts.chatId, alreadyClaimedLine(opts.task.code)),
+      opts.send(opts.chatId, alreadyClaimedLine(opts.task.code, opts.nextStep)),
     );
     return;
+  }
+  // A lapsed peer claim by this same person would trip the (task, participant)
+  // unique index on the new claim; clear it first.
+  const lapsed = existing.find(
+    (c) => c.participant_id === opts.claimant.id && c.status === "expired",
+  );
+  if (lapsed) {
+    const { error: lapsedErr } = await claimAwait(
+      "claim.clear_lapsed",
+      { claimId: lapsed.id },
+      async () =>
+        await getServiceClient()
+          .from("claims")
+          .delete()
+          .eq("id", lapsed.id)
+          .eq("status", "expired"),
+    );
+    if (lapsedErr) throw lapsedErr;
   }
 
   const codeDecision = opts.decision.type === "code";
@@ -635,26 +784,54 @@ async function resolveKnownTask(opts: {
   }
 
   if (verificationRequiresPeer(opts.task.verification)) {
-    const sent = await claimAwait("outbound.send", { reason: "peer_confirm" }, () =>
-      opts.send(
-        opts.trip.linq_chat_id,
-        peerConfirmLine({
-          name: opts.claimant.display_name,
-          code: opts.task.code,
-          title: opts.task.title,
-        }),
-      ),
+    // Take the task first so a lost race never posts a tapback prompt.
+    let pendingId: string;
+    try {
+      pendingId = await insertClaim({
+        task_id: opts.task.id,
+        participant_id: opts.claimant.id,
+        evidence_url: evidenceUrl,
+        image_hash: imageHash,
+        status: "pending_peer",
+        awarded_points: null,
+        resolved_by: "peer",
+        resolution_json: {},
+        expires_at: endOfLocalDayContaining(new Date(), opts.trip.timezone).toISOString(),
+      });
+    } catch (err) {
+      if (!isClaimConflict(err)) throw err;
+      await claimAwait("outbound.send", { reason: "claim_conflict" }, () =>
+        opts.send(opts.chatId, alreadyClaimedLine(opts.task.code, opts.nextStep)),
+      );
+      return;
+    }
+    let sent: { messageId: string };
+    try {
+      sent = await claimAwait("outbound.send", { reason: "peer_confirm" }, () =>
+        opts.send(
+          opts.trip.linq_chat_id,
+          peerConfirmLine({
+            name: opts.claimant.display_name,
+            code: opts.task.code,
+            title: opts.task.title,
+          }),
+        ),
+      );
+    } catch (err) {
+      // Nobody can tap back on a message that never went out; release the task.
+      await getServiceClient().from("claims").delete().eq("id", pendingId);
+      throw err;
+    }
+    const { error: peerErr } = await claimAwait(
+      "claim.peer_message",
+      { claimId: pendingId },
+      async () =>
+        await getServiceClient()
+          .from("claims")
+          .update({ resolution_json: { peer_message_id: sent.messageId } })
+          .eq("id", pendingId),
     );
-    await insertClaim({
-      task_id: opts.task.id,
-      participant_id: opts.claimant.id,
-      evidence_url: evidenceUrl,
-      image_hash: imageHash,
-      status: "pending_peer",
-      awarded_points: null,
-      resolved_by: "peer",
-      resolution_json: { peer_message_id: sent.messageId },
-    });
+    if (peerErr) throw peerErr;
     return;
   }
 
@@ -726,9 +903,9 @@ async function resolveKnownTask(opts: {
       photoClaimedAt,
     });
   } catch (err) {
-    if (err instanceof Error && (err as Error & { code?: string }).code === "23505") {
+    if (isClaimConflict(err)) {
       await claimAwait("outbound.send", { reason: "claim_conflict" }, () =>
-        opts.send(opts.chatId, alreadyClaimedLine(opts.task.code)),
+        opts.send(opts.chatId, alreadyClaimedLine(opts.task.code, opts.nextStep)),
       );
       return;
     }
@@ -748,6 +925,7 @@ async function tryHandleFreeform(opts: {
   send: SendFn;
   provider?: LLMProvider;
   extraction?: FreeformExtraction | null;
+  nextStep: string;
 }): Promise<boolean> {
   const day = currentTripDay(opts.trip, new Date());
   if (
@@ -758,7 +936,7 @@ async function tryHandleFreeform(opts: {
       day,
     })
   ) {
-    await opts.send(opts.trip.linq_chat_id, freeformAlreadyUsedLine());
+    await opts.send(opts.trip.linq_chat_id, freeformAlreadyUsedLine(opts.nextStep));
     return true;
   }
 
@@ -803,7 +981,7 @@ async function tryHandleFreeform(opts: {
     completedTitles: completed,
   });
   if (reason === "unsafe" || reason === "illegal" || reason === "duplicate") {
-    await opts.send(opts.trip.linq_chat_id, freeformRejectedLine());
+    await opts.send(opts.trip.linq_chat_id, freeformRejectedLine(opts.nextStep));
     return true;
   }
 
@@ -813,50 +991,8 @@ async function tryHandleFreeform(opts: {
     "peer",
     Boolean(opts.trip.is_solo),
   );
-  const code = nextFreeformCode(opts.tasks.map((task) => task.code));
-  const { data: inserted, error: insertErr } = await claimAwait(
-    "freeform.task_insert",
-    { code },
-    async () =>
-      await getServiceClient()
-        .from("tasks")
-        .insert({
-          trip_id: opts.trip.id,
-          participant_id: opts.claimant.id,
-          team_id: null,
-          code,
-          title: extracted.title,
-          tier: scored.tier,
-          axes_json: extracted.axes,
-          base_points: scored.points,
-          photo_bonus_max: FREEFORM_PHOTO_BONUS_MAX,
-          verification,
-          day,
-          neighborhood: extracted.neighborhood || extracted.place_name || null,
-          source: FREEFORM_SOURCE,
-        })
-        .select(TASK_COLS)
-        .maybeSingle(),
-  );
-  if (insertErr) throw insertErr;
-  if (!inserted) throw new Error("freeform task insert returned no row");
-  const task = inserted as TaskRow;
-
-  if (extracted.place_name) {
-    const { error: placeErr } = await getServiceClient().from("places").insert({
-      trip_id: opts.trip.id,
-      name: extracted.place_name,
-      lat: extracted.lat,
-      lng: extracted.lng,
-      category: extracted.category,
-      source: FREEFORM_SOURCE,
-      suggested_by: opts.claimant.id,
-    });
-    if (placeErr) {
-      console.error("[japlan.freeform] place insert failed", placeErr);
-    }
-  }
-
+  // Photo checks come before the task insert: a reused photo used to leave an
+  // orphaned X-code task on the board that anyone could claim.
   let imageHash: string | null = null;
   let evidenceUrl: string | null = null;
   let photoBonus = 0;
@@ -898,41 +1034,110 @@ async function tryHandleFreeform(opts: {
     }
   }
 
-  if (verification === "peer") {
-    const sent = await opts.send(
-      opts.trip.linq_chat_id,
-      freeformPeerLine({
-        name: opts.claimant.display_name,
-        title: extracted.title,
-        code,
-      }),
-    );
-    await insertClaim({
-      task_id: task.id,
-      participant_id: opts.claimant.id,
-      evidence_url: evidenceUrl,
-      image_hash: imageHash,
-      status: "pending_peer",
-      awarded_points: null,
-      resolved_by: "peer",
-      resolution_json: { peer_message_id: sent.messageId, photoBonus },
-    });
-    return true;
+  const code = nextFreeformCode(opts.tasks.map((task) => task.code));
+  const { data: inserted, error: insertErr } = await claimAwait(
+    "freeform.task_insert",
+    { code },
+    async () =>
+      await getServiceClient()
+        .from("tasks")
+        .insert({
+          trip_id: opts.trip.id,
+          participant_id: opts.claimant.id,
+          team_id: null,
+          code,
+          title: extracted.title,
+          tier: scored.tier,
+          axes_json: extracted.axes,
+          base_points: scored.points,
+          photo_bonus_max: FREEFORM_PHOTO_BONUS_MAX,
+          verification,
+          day,
+          neighborhood: extracted.neighborhood || extracted.place_name || null,
+          source: FREEFORM_SOURCE,
+        })
+        .select(TASK_COLS)
+        .maybeSingle(),
+  );
+  if (insertErr) throw insertErr;
+  if (!inserted) throw new Error("freeform task insert returned no row");
+  const task = inserted as TaskRow;
+
+  // Nothing after this point may leave the task without a claim: if any step
+  // fails before the claim row exists, delete the task.
+  let claimWritten = false;
+  try {
+    if (verification === "peer") {
+      const pendingId = await insertClaim({
+        task_id: task.id,
+        participant_id: opts.claimant.id,
+        evidence_url: evidenceUrl,
+        image_hash: imageHash,
+        status: "pending_peer",
+        awarded_points: null,
+        resolved_by: "peer",
+        resolution_json: { photoBonus },
+        expires_at: endOfLocalDayContaining(new Date(), opts.trip.timezone).toISOString(),
+      });
+      claimWritten = true;
+      const sent = await opts.send(
+        opts.trip.linq_chat_id,
+        freeformPeerLine({
+          name: opts.claimant.display_name,
+          title: extracted.title,
+          code,
+        }),
+      );
+      const { error: peerErr } = await getServiceClient()
+        .from("claims")
+        .update({ resolution_json: { peer_message_id: sent.messageId, photoBonus } })
+        .eq("id", pendingId);
+      if (peerErr) throw peerErr;
+    } else {
+      await applyAwards({
+        task,
+        claimant: opts.claimant,
+        people: opts.people,
+        photoBonus,
+        evidenceUrl,
+        imageHash,
+        resolvedBy: "freeform",
+        resolution: { freeform: true },
+        trip: opts.trip,
+        send: opts.send,
+        onClaimWritten: () => {
+          claimWritten = true;
+        },
+      });
+    }
+  } catch (err) {
+    // A task with a claim row is owned and not orphaned (a stuck pending_peer
+    // lapses at end of day). Only a task with no claim at all is removed.
+    if (!claimWritten) await rollbackFreeformTask(task.id);
+    throw err;
   }
 
-  await applyAwards({
-    task,
-    claimant: opts.claimant,
-    people: opts.people,
-    photoBonus,
-    evidenceUrl,
-    imageHash,
-    resolvedBy: "freeform",
-    resolution: { freeform: true },
-    trip: opts.trip,
-    send: opts.send,
-  });
+  if (extracted.place_name) {
+    const { error: placeErr } = await getServiceClient().from("places").insert({
+      trip_id: opts.trip.id,
+      name: extracted.place_name,
+      lat: extracted.lat,
+      lng: extracted.lng,
+      category: extracted.category,
+      source: FREEFORM_SOURCE,
+      suggested_by: opts.claimant.id,
+    });
+    if (placeErr) {
+      console.error("[japlan.freeform] place insert failed", placeErr);
+    }
+  }
   return true;
+}
+
+async function rollbackFreeformTask(taskId: string): Promise<void> {
+  console.error("[japlan.freeform] rolling back unclaimed task", { taskId });
+  const { error } = await getServiceClient().from("tasks").delete().eq("id", taskId);
+  if (error) console.error("[japlan.freeform] rollback task failed", error);
 }
 
 export async function submitFreeformClaim(opts: {
@@ -947,6 +1152,7 @@ export async function submitFreeformClaim(opts: {
   send: SendFn;
   provider?: LLMProvider;
   extraction?: FreeformExtraction | null;
+  nextStep: string;
 }): Promise<boolean> {
   return tryHandleFreeform(opts);
 }
@@ -968,6 +1174,17 @@ export async function applyLatePhotoBonus(opts: {
       .update({ photo_claimed_at: new Date().toISOString() })
       .eq("id", opts.claim.id);
     if (error) throw error;
+    await claimAwait("outbound.send", { reason: "photo_capped" }, () =>
+      opts.send(
+        opts.trip.linq_chat_id,
+        photoBonusLine({
+          code: opts.task.code,
+          bonus: 0,
+          total: opts.claimant.score,
+          capped: true,
+        }),
+      ),
+    );
     return;
   }
   const bytes = await fetchPhoto(opts.photo.url);
@@ -1000,6 +1217,9 @@ export async function applyLatePhotoBonus(opts: {
   );
   if (!scored?.shows_task) {
     claimStep("photo_bonus.no_match", { code: opts.task.code });
+    await claimAwait("outbound.send", { reason: "photo_no_match" }, () =>
+      opts.send(opts.trip.linq_chat_id, visionRejectedLine(opts.task.code)),
+    );
     return;
   }
   const bonus = applyPhotoBonusRules({
@@ -1012,6 +1232,9 @@ export async function applyLatePhotoBonus(opts: {
   });
   if (bonus.reject) {
     claimStep("photo_bonus.exif_reject", { code: opts.task.code });
+    await claimAwait("outbound.send", { reason: "photo_outside_trip" }, () =>
+      opts.send(opts.trip.linq_chat_id, photoOutsideTripLine(opts.task.code)),
+    );
     return;
   }
   const incoming = clampPhotoBonus(bonus.bonus, opts.task.photo_bonus_max);
@@ -1076,6 +1299,10 @@ export async function applyLatePhotoBonus(opts: {
   }
 
   if (incoming === 0 && !claimantCapped) {
+    // Matched, but fidelity scored 0: still answer the photo.
+    await claimAwait("outbound.send", { reason: "photo_zero" }, () =>
+      opts.send(opts.trip.linq_chat_id, visionRejectedLine(opts.task.code)),
+    );
     return;
   }
 
@@ -1128,13 +1355,26 @@ async function handleGroupClaimInner(
   );
   const hasPhoto = media.length > 0;
   const photo = media[0] ?? null;
+  const isDm = isDirectChat(data);
   const recentCode = recentCodeFor(chatId, sender.handle, deps.now);
-  const codeInText = extractTaskCode(text);
-  if (codeInText) rememberTaskMention(chatId, sender.handle, codeInText, deps.now);
+  const codeMatch = findTaskCode(text);
+  const codeInText = codeMatch?.code ?? null;
+  // Loose codes ("see you b4 dinner") are only remembered once they resolve.
+  if (codeMatch?.strict) {
+    rememberTaskMention(chatId, sender.handle, codeMatch.code, deps.now);
+  }
+  const address = evaluateAddress({
+    text,
+    isDm,
+    openTaskContext: hasPhoto && Boolean(recentCode),
+  });
+  // Addressed only by a loose code: silent unless it is the sender's own task.
+  const tentative = address.reason === "loose_task_code";
   claimStep("handler.parsed", {
     chatId,
     hasPhoto,
     codeInText,
+    tentative,
     textPreview: text.slice(0, 80),
   });
   await Promise.resolve();
@@ -1142,8 +1382,13 @@ async function handleGroupClaimInner(
 
   const ctx = await loadTripContext(chatId);
   if (!ctx) {
-    claimStep("trip.context.miss", { chatId });
-    return;
+    claimStep("trip.context.miss", { chatId, tentative });
+    if (!tentative) {
+      await claimAwait("outbound.send", { reason: "trip_not_ready" }, () =>
+        send(chatId, tripNotReadyLine()),
+      );
+    }
+    return null;
   }
   const claimant = await claimAwait(
     "participant.lookup",
@@ -1154,9 +1399,31 @@ async function handleGroupClaimInner(
     claimStep("participant.lookup.miss", {
       tripId: ctx.trip.id,
       phone: sender.handle,
+      tentative,
     });
-    return;
+    if (!tentative) {
+      await claimAwait("outbound.send", { reason: "not_on_trip" }, () =>
+        send(chatId, notOnTripLine()),
+      );
+    }
+    return null;
   }
+  const memberships = await claimAwait(
+    "team_membership.lookup",
+    { participantId: claimant.id },
+    () => teamMembershipsFor(claimant.id),
+  );
+  const teams = splitTeamsByClaimWindow(
+    memberships,
+    ctx.trip.timezone,
+    new Date(deps.now ?? Date.now()),
+  );
+  const claimantTeamIds = teams.active;
+  // Codes repeat per owner, so everything below works on the claimant's tasks.
+  const claimable = tasksClaimableBy(ctx.tasks, claimant.id, claimantTeamIds);
+  const nextStep = nextStepClause(
+    openCodesFor(ctx.tasks, ctx.claims, claimant.id, claimantTeamIds),
+  );
 
   const miss = (): ClaimFallthrough => ({
     data,
@@ -1164,15 +1431,17 @@ async function handleGroupClaimInner(
     hasPhoto,
     photo,
     claimant,
+    claimantTeamIds,
     people: ctx.people,
     trip: ctx.trip,
     tasks: ctx.tasks,
     claims: ctx.claims,
     chatId,
-    isDm: isDirectChat(data),
+    isDm,
     send,
     provider: deps.provider,
     now: deps.now,
+    nextStep,
   });
 
   if (hasPhoto && photo) {
@@ -1181,13 +1450,17 @@ async function handleGroupClaimInner(
       code: codeInText ?? recentCode,
       claimantId: claimant.id,
       claims: ctx.claims,
-      tasks: ctx.tasks,
+      tasks: claimable,
       now: deps.now ?? Date.now(),
       windowMs: photoBonusWindowMs(),
     });
     claimStep("photo_bonus.bind", { kind: bind.kind, code: codeInText ?? recentCode });
     if (bind.kind === "already_bonused") {
-      return;
+      const code = (codeInText ?? recentCode) as string;
+      await claimAwait("outbound.send", { reason: "already_bonused" }, () =>
+        send(chatId, photoAlreadyBonusedLine(code, nextStep)),
+      );
+      return null;
     }
     if (bind.kind === "bonus") {
       const task = ctx.tasks.find((row) => row.id === bind.taskId);
@@ -1202,19 +1475,20 @@ async function handleGroupClaimInner(
           send,
           provider: deps.provider,
         });
-        return;
+        return null;
       }
     }
   }
 
-  const openTasks = ctx.tasks.filter((task) => isOpenTask(task.id, ctx.claims));
+  const openTasks = claimable.filter((task) => isOpenTask(task.id, ctx.claims));
 
   const decision = decideClaim({
     text,
     hasPhoto,
     recentCode,
-    isDm: isDirectChat(data),
+    isDm,
     openTaskContext: hasPhoto && Boolean(recentCode),
+    address,
   });
   claimStep("decision", {
     type: decision.type,
@@ -1235,19 +1509,50 @@ async function handleGroupClaimInner(
 
   if (decision.type === "code") {
     claimStep("task.lookup.before", { code: decision.code });
-    const task = ctx.tasks.find((t) => t.code === decision.code);
+    const lookup = findTaskByCodeFor(
+      ctx.tasks,
+      decision.code,
+      claimant.id,
+      claimantTeamIds,
+      teams.expired,
+    );
+    const task = lookup.kind === "task" ? lookup.task : undefined;
     claimStep("task.lookup.after", {
       code: decision.code,
-      found: Boolean(task),
+      result: lookup.kind,
+      tentative: decision.tentative,
       verification: task?.verification ?? null,
       taskId: task?.id ?? null,
     });
+    if (!task && decision.tentative) {
+      // "see you b4 dinner": b4 is not this person's task, so it was chat.
+      claimStep("task.lookup.tentative_miss", { code: decision.code });
+      return null;
+    }
+    if (lookup.kind === "not_yours") {
+      await claimAwait("outbound.send", { reason: "not_your_task" }, () =>
+        send(chatId, notYourTaskLine(decision.code, nextStep)),
+      );
+      return null;
+    }
+    if (lookup.kind === "team_expired") {
+      await claimAwait("outbound.send", { reason: "team_expired" }, () =>
+        send(chatId, teamTaskExpiredLine(decision.code, nextStep)),
+      );
+      return null;
+    }
     if (!task) {
       claimStep("task.lookup.miss", {
         code: decision.code,
-        knownCodes: ctx.tasks.map((t) => t.code),
+        knownCodes: claimable.map((t) => t.code),
       });
-      return;
+      await claimAwait("outbound.send", { reason: "unknown_code" }, () =>
+        send(chatId, unknownCodeLine(decision.code, nextStep)),
+      );
+      return null;
+    }
+    if (decision.tentative) {
+      rememberTaskMention(chatId, sender.handle, task.code, deps.now);
     }
     claimStep("gemini.skip", {
       reason: "ladder_step_1_or_2_code",
@@ -1257,6 +1562,8 @@ async function handleGroupClaimInner(
     await resolveKnownTask({
       task,
       claimant,
+      claimantTeamIds,
+      nextStep,
       people: ctx.people,
       trip: ctx.trip,
       withPhoto: decision.withPhoto,
@@ -1290,10 +1597,12 @@ async function handleGroupClaimInner(
     const task = openTasks.find(
       (t) => t.code.toUpperCase() === match.task_code.toUpperCase(),
     );
-    if (!task) return;
+    if (!task) return miss();
     await resolveKnownTask({
       task,
       claimant,
+      claimantTeamIds,
+      nextStep,
       people: ctx.people,
       trip: ctx.trip,
       withPhoto: hasPhoto,
@@ -1307,7 +1616,7 @@ async function handleGroupClaimInner(
   }
 
   if (decision.type === "vision") {
-    if (!photo) return;
+    if (!photo) return miss();
     const bytes = await fetchPhoto(photo.url);
     const imageHash = await claimAwait("photo.hash", { reason: "vision" }, () =>
       perceptualHash(bytes),
@@ -1350,10 +1659,12 @@ async function handleGroupClaimInner(
       return;
     }
     const task = openTasks.find((t) => t.code === scored[0].code);
-    if (!task) return;
+    if (!task) return miss();
     await resolveKnownTask({
       task,
       claimant,
+      claimantTeamIds,
+      nextStep,
       people: ctx.people,
       trip: ctx.trip,
       withPhoto: true,
@@ -1390,6 +1701,9 @@ export async function handlePeerReaction(
         ? data.from
         : null;
 
+  const peerLog = (outcome: string, fields: Record<string, unknown> = {}) =>
+    console.info("[japlan.reaction] peer", { outcome, messageId, chatId, ...fields });
+
   const { data: rows, error } = await getServiceClient()
     .from("claims")
     .select(CLAIM_COLS)
@@ -1399,7 +1713,14 @@ export async function handlePeerReaction(
     const json = claim.resolution_json as { peer_message_id?: string } | null;
     return json?.peer_message_id === messageId;
   });
-  if (!pending) return;
+  if (!pending) {
+    peerLog("no_pending_claim_for_message");
+    return;
+  }
+  if (pending.expires_at && Date.parse(pending.expires_at) <= Date.now()) {
+    peerLog("pending_claim_lapsed", { claimId: pending.id });
+    return;
+  }
 
   const { data: taskRow, error: taskErr } = await getServiceClient()
     .from("tasks")
@@ -1414,14 +1735,25 @@ export async function handlePeerReaction(
   if (!ctx) return;
   const claimant = ctx.people.find((p) => p.id === pending.participant_id);
   if (!claimant) return;
-  if (isClaimantTapback(fromHandle ?? null, claimant.phone)) return;
+  if (isClaimantTapback(fromHandle ?? null, claimant.phone)) {
+    peerLog("self_tapback_ignored", { claimId: pending.id });
+    return;
+  }
 
-  const { error: delErr } = await getServiceClient()
+  // Only the call that actually removes the pending row may award it, so two
+  // tapbacks on one prompt cannot both pay.
+  const { data: removed, error: delErr } = await getServiceClient()
     .from("claims")
     .delete()
     .eq("id", pending.id)
-    .eq("status", "pending_peer");
+    .eq("status", "pending_peer")
+    .select("id");
   if (delErr) throw delErr;
+  if (!removed || removed.length === 0) {
+    peerLog("already_resolved_or_lapsed", { claimId: pending.id });
+    return;
+  }
+  peerLog("confirmed", { claimId: pending.id, code: task.code });
 
   const pendingJson = pending.resolution_json as {
     peer_message_id?: string;

@@ -58,7 +58,7 @@ async function main(): Promise<void> {
   });
 
   const { error: upsertError } = await supabase.from("tasks").upsert(rows, {
-    onConflict: "trip_id,code",
+    onConflict: "trip_id,day,participant_id,team_id,code",
   });
   if (upsertError) throw upsertError;
 

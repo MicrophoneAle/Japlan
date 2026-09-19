@@ -1,6 +1,11 @@
-import { evaluateAddress, type AddressDecision } from "./addressing";
+import {
+  evaluateAddress,
+  extractTaskCode,
+  type AddressDecision,
+} from "./addressing";
+import { endOfLocalDayContaining } from "./time";
 
-export const TASK_CODE_RE = /\b[A-Za-z]\d{1,2}\b/;
+export { extractTaskCode };
 
 export type LadderHit =
   | { step: 1; code: string }
@@ -11,16 +16,16 @@ export type LadderHit =
 
 export type ClaimDecision =
   | { type: "silent"; reason: "addressing" | "no_match" | "help" }
-  | { type: "code"; step: 1 | 2; code: string; withPhoto: boolean }
+  | {
+      type: "code";
+      step: 1 | 2;
+      code: string;
+      withPhoto: boolean;
+      // Only addressed by a loose code: stay silent unless it is the sender's task.
+      tentative: boolean;
+    }
   | { type: "vision" }
   | { type: "fuzzy"; text: string };
-
-export function extractTaskCode(text: string): string | null {
-  const match = text.match(TASK_CODE_RE);
-  if (!match) return null;
-  const raw = match[0];
-  return `${raw[0].toUpperCase()}${raw.slice(1)}`;
-}
 
 export function ladder(input: {
   text: string;
@@ -71,6 +76,7 @@ export function decideClaim(input: {
       step: hit.step,
       code: hit.code,
       withPhoto: input.hasPhoto,
+      tentative: address.reason === "loose_task_code",
     };
   }
   if (hit.step === 3) return { type: "vision" };
@@ -118,6 +124,109 @@ export function canResolveNow(
 ): boolean {
   void verification;
   return true;
+}
+
+export type OwnedTask = {
+  participant_id: string | null;
+  team_id: string | null;
+};
+
+export type TeamMembership = { teamId: string; dissolvedAt: string | null };
+
+// A team's tasks stay claimable by its members until the end of the local day
+// the team dissolved. Retroactive claims cover "we did A1 yesterday", not a
+// team arrangement that ended days ago.
+export function splitTeamsByClaimWindow(
+  memberships: TeamMembership[],
+  timezone: string | null | undefined,
+  now: Date,
+): { active: string[]; expired: string[] } {
+  const active: string[] = [];
+  const expired: string[] = [];
+  for (const membership of memberships) {
+    if (!membership.dissolvedAt) {
+      active.push(membership.teamId);
+      continue;
+    }
+    const dissolved = new Date(membership.dissolvedAt);
+    if (Number.isNaN(dissolved.getTime())) {
+      expired.push(membership.teamId);
+      continue;
+    }
+    const closes = endOfLocalDayContaining(dissolved, timezone);
+    (now.getTime() <= closes.getTime() ? active : expired).push(membership.teamId);
+  }
+  return { active, expired };
+}
+
+// Personal tasks belong to one participant, team tasks to that team's members
+// (while the team's claim window is open), shared-board tasks to anyone.
+// team_members has no left_at, so membership is "has a row".
+export function canClaimTask(
+  task: OwnedTask,
+  claimantId: string,
+  claimantTeamIds: readonly string[],
+): boolean {
+  if (task.participant_id) return task.participant_id === claimantId;
+  if (task.team_id) return claimantTeamIds.includes(task.team_id);
+  return true;
+}
+
+export function tasksClaimableBy<T extends OwnedTask>(
+  tasks: T[],
+  claimantId: string,
+  claimantTeamIds: readonly string[],
+): T[] {
+  return tasks.filter((task) => canClaimTask(task, claimantId, claimantTeamIds));
+}
+
+export type CodeLookup<T> =
+  | { kind: "task"; task: T }
+  | { kind: "not_yours" }
+  | { kind: "team_expired" }
+  | { kind: "unknown" };
+
+// Codes repeat across owners (everyone has an A1), so resolve against the
+// claimant: their personal task first, then their team's, then the shared board.
+// claimantTeamIds are teams whose claim window is open; expiredTeamIds are the
+// claimant's teams whose window closed.
+export function findTaskByCodeFor<T extends OwnedTask & { code: string }>(
+  tasks: T[],
+  code: string,
+  claimantId: string,
+  claimantTeamIds: readonly string[],
+  expiredTeamIds: readonly string[] = [],
+): CodeLookup<T> {
+  const wanted = code.toUpperCase();
+  const matches = tasks.filter((task) => task.code.toUpperCase() === wanted);
+  if (matches.length === 0) return { kind: "unknown" };
+  const rank = (task: T): number =>
+    task.participant_id ? 0 : task.team_id ? 1 : 2;
+  const mine = tasksClaimableBy(matches, claimantId, claimantTeamIds).sort(
+    (a, b) => rank(a) - rank(b),
+  );
+  if (mine[0]) return { kind: "task", task: mine[0] };
+  if (matches.some((task) => task.team_id && expiredTeamIds.includes(task.team_id))) {
+    return { kind: "team_expired" };
+  }
+  return { kind: "not_yours" };
+}
+
+// Up to `limit` open codes the claimant can act on, today's first.
+export function openCodesFor<
+  T extends OwnedTask & { id: string; code: string; day: number },
+>(
+  tasks: T[],
+  claims: { task_id: string; status: string }[],
+  claimantId: string,
+  claimantTeamIds: readonly string[],
+  limit = 3,
+): string[] {
+  return tasksClaimableBy(tasks, claimantId, claimantTeamIds)
+    .filter((task) => isOpenTask(task.id, claims))
+    .sort((a, b) => b.day - a.day || a.code.localeCompare(b.code, "en", { numeric: true }))
+    .slice(0, limit)
+    .map((task) => task.code);
 }
 
 export function verificationRequiresPeer(verification: string): boolean {

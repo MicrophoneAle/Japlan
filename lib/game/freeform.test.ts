@@ -107,7 +107,9 @@ describe("daily points cap", () => {
         total: 160,
         capped: true,
       }),
-    ).toBe("✅ C2 · Michael · daily cap reached · 160");
+    ).toBe(
+      "✅ C2 · Michael · 160 · that's your cap for today, but claims still count for the recap.",
+    );
 
     const wrapped = wrappedQuestCount([
       { status: "awarded", awarded_points: 18, capped: false },

@@ -22,10 +22,16 @@ import {
   CONVERSATION_FALLBACK,
   CONVERSATION_PRIVACY_LINE,
   CONVERSATION_SYSTEM_PROMPT,
+  conversationCapLine,
   conversationRedirect,
 } from "@/lib/game/copy";
 import type { FreeformExtraction } from "@/lib/game/freeform";
-import { isOpenTask, pickLatePhotoTarget, photoBonusWindowMs } from "@/lib/game/claims";
+import {
+  isOpenTask,
+  pickLatePhotoTarget,
+  photoBonusWindowMs,
+  tasksClaimableBy,
+} from "@/lib/game/claims";
 import type { Axes } from "@/lib/game/scoring";
 import type { SurveyAnswers } from "@/lib/game/survey";
 import { currentTripDay } from "@/lib/handlers/daily-board";
@@ -125,6 +131,11 @@ function axesFromTool(raw: unknown): Axes | null {
   };
 }
 
+// Codes repeat per owner (everyone has an A1), so only show the sender theirs.
+function claimableTasks(miss: ClaimFallthrough): TaskRow[] {
+  return tasksClaimableBy(miss.tasks, miss.claimant.id, miss.claimantTeamIds);
+}
+
 function openTasksFor(tasks: TaskRow[], claims: ClaimRow[]): TaskRow[] {
   return tasks.filter((task) => isOpenTask(task.id, claims));
 }
@@ -197,17 +208,19 @@ export async function handleConversation(
   if (!addressed) return;
 
   const now = miss.now ?? Date.now();
+  const send = miss.send ?? sendText;
   if (conversationalCapReached(miss.chatId, now)) {
     console.info("[japlan.conversation] hourly cap", {
       chatId: miss.chatId,
       at: new Date(now).toISOString(),
     });
+    // Addressed means answered: a fixed line, no model call, not counted.
+    await send(miss.chatId, conversationCapLine(miss.nextStep));
     return;
   }
 
   const provider = deps.provider ?? miss.provider ?? new GeminiProvider();
-  const send = miss.send ?? sendText;
-  const open = openTasksFor(miss.tasks, miss.claims);
+  const open = openTasksFor(claimableTasks(miss), miss.claims);
   const day = currentTripDay(miss.trip, new Date(now));
   const survey = surveySliceForConversation(
     (miss.claimant.survey_json ?? {}) as SurveyAnswers,
@@ -361,7 +374,7 @@ async function executeConversationTool(
     return { result: { standings: rows }, sent: false };
   }
   if (name === "get_open_tasks") {
-    const tasks = openTasksFor(miss.tasks, miss.claims).map((task) => ({
+    const tasks = openTasksFor(claimableTasks(miss), miss.claims).map((task) => ({
       code: task.code,
       title: task.title,
       neighborhood: task.neighborhood,
@@ -403,6 +416,7 @@ async function executeConversationTool(
       send: miss.send,
       provider: miss.provider,
       extraction,
+      nextStep: miss.nextStep,
     });
     return { result: { ok: sent, title }, sent };
   }
@@ -419,7 +433,7 @@ async function executeConversationTool(
       code,
       claimantId: miss.claimant.id,
       claims: miss.claims,
-      tasks: miss.tasks,
+      tasks: claimableTasks(miss),
       now: miss.now ?? Date.now(),
       windowMs: photoBonusWindowMs(),
     });

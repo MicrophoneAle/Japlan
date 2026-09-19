@@ -236,6 +236,11 @@ async function startSurveyDm(participant: ParticipantRow): Promise<boolean> {
   return true;
 }
 
+export async function countSurveysPending(tripId: string): Promise<number> {
+  const people = await listParticipants(tripId);
+  return people.filter((p) => p.survey_state !== "done").length;
+}
+
 export async function maybeActivateTrip(trip: TripRow): Promise<void> {
   const people = await listParticipants(trip.id);
   if (!allParticipantsComplete(people.map((p) => p.survey_state))) return;
@@ -359,12 +364,30 @@ export async function bootstrapGroupIfNeeded(
       name: displayName || trip.name,
       state: trip.state,
     };
-    try {
-      await sendText(trip.linq_chat_id, buildIntroGroupPost(publicTrip));
-      logStep("intro.send", { chatId, ok: true });
-    } catch (err) {
-      logError("intro.send", err, { chatId, ok: false });
-      return trip;
+    // At most once per chat, whatever state the trip is stuck in: claim the
+    // intro atomically, and release the claim only if the send itself failed.
+    const introClaim = await getServiceClient()
+      .from("trips")
+      .update({ intro_sent_at: new Date().toISOString() })
+      .eq("id", trip.id)
+      .is("intro_sent_at", null)
+      .select("id");
+    if (introClaim.error) throw introClaim.error;
+    if (!introClaim.data || introClaim.data.length === 0) {
+      logStep("intro.skip", { chatId, reason: "already_sent" });
+    } else {
+      try {
+        await sendText(trip.linq_chat_id, buildIntroGroupPost(publicTrip));
+        logStep("intro.send", { chatId, ok: true });
+      } catch (err) {
+        logError("intro.send", err, { chatId, ok: false });
+        const { error: releaseErr } = await getServiceClient()
+          .from("trips")
+          .update({ intro_sent_at: null })
+          .eq("id", trip.id);
+        if (releaseErr) logError("intro.release", releaseErr, { chatId });
+        return trip;
+      }
     }
 
     step = "sendDM";

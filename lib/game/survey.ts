@@ -1,4 +1,9 @@
-import { GROUP_INTRO, SETUP_COMPLETE, SURVEY_DONE_DM } from "./copy";
+import {
+  GROUP_INTRO,
+  SETUP_COMPLETE,
+  SURVEY_DONE_DM,
+  surveyReaskLine,
+} from "./copy";
 import {
   FIRST_QUESTION_ID,
   QUESTIONS,
@@ -90,29 +95,43 @@ export function nextQuestion(
   return "done";
 }
 
+// "Has Restriction", "has_restriction" and "has restriction." all match.
+function normalizeChoice(text: string): string {
+  return text
+    .trim()
+    .toLowerCase()
+    .replace(/[.!?]+$/, "")
+    .replace(/[\s_]+/g, " ")
+    .trim();
+}
+
 function matchChoice(question: Question, text: string): string | undefined {
-  const needle = text.trim().toLowerCase();
+  const needle = normalizeChoice(text);
   return question.choices?.find(
     (choice) =>
-      choice.id.toLowerCase() === needle ||
-      choice.label.toLowerCase() === needle,
+      normalizeChoice(choice.id) === needle ||
+      normalizeChoice(choice.label) === needle,
   )?.id;
 }
 
+// Choice questions never store raw text: an unmatched reply leaves the
+// question unanswered (applyReply re-asks). Raw text here used to silently
+// disable the allergy, budget and mobility checks in validate.ts.
 export function recordAnswer(
   answers: SurveyAnswers,
   questionId: QuestionId,
   text: string,
-): SurveyAnswers {
+): SurveyAnswers | null {
   if (isSkip(text)) {
     return { ...answers, [questionId]: { skipped: true } };
   }
   const question = QUESTIONS[questionId];
-  const matched = question.kind === "choice" ? matchChoice(question, text) : undefined;
-  return {
-    ...answers,
-    [questionId]: { value: matched ?? text.trim() },
-  };
+  if (question.kind === "choice") {
+    const matched = matchChoice(question, text);
+    if (!matched) return null;
+    return { ...answers, [questionId]: { value: matched } };
+  }
+  return { ...answers, [questionId]: { value: text.trim() } };
 }
 
 export function startSurvey(): SurveyStep {
@@ -136,6 +155,16 @@ export function applyReply(
   }
 
   const answers = recordAnswer(state.answers, state.awaiting, text);
+  if (!answers) {
+    const question = QUESTIONS[state.awaiting];
+    return {
+      state,
+      prompt: surveyReaskLine(
+        (question.choices ?? []).map((choice) => choice.label),
+      ),
+      completed: false,
+    };
+  }
   const next = nextQuestion(answers, state.awaiting);
   if (next === "done") {
     return {

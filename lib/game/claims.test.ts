@@ -3,20 +3,33 @@ import { formatDailyBoard, formatMorningStandings, formatPersonalBoard } from ".
 import {
   applyPhotoBonusRules,
   awardFanout,
+  canClaimTask,
   canResolveNow,
   clampPhotoBonus,
   decideClaim,
   DEFAULT_PHOTO_BONUS_WINDOW_MS,
   extractTaskCode,
+  findTaskByCodeFor,
   hashAlreadyUsed,
   isOpenTask,
   ladder,
+  openCodesFor,
   pickLatePhotoTarget,
+  splitTeamsByClaimWindow,
+  tasksClaimableBy,
   verificationRequiresPeer,
 } from "./claims";
+import { findTaskCode } from "./addressing";
 import { HAND_WRITTEN_DAY1_TASKS } from "./hand-written-tasks";
 import { computePoints, applyDailyPointsCap, tierForPoints } from "./scoring";
-import { claimConfirmedLine, photoBonusLine } from "./copy";
+import {
+  claimConfirmedLine,
+  nextStepClause,
+  notYourTaskLine,
+  photoBonusLine,
+  teamTaskExpiredLine,
+  unknownCodeLine,
+} from "./copy";
 
 describe("hand-written board scoring", () => {
   it("lands every seed task in a real tier via scoring.ts", () => {
@@ -41,11 +54,62 @@ describe("hand-written board scoring", () => {
 
 describe("claim ladder", () => {
   it("hits step 1 on an explicit code", () => {
-    expect(extractTaskCode("I did A1")).toBe("A1");
-    expect(ladder({ text: "claim a10", hasPhoto: false, recentCode: null })).toEqual({
+    expect(extractTaskCode("A1")).toBe("A1");
+    expect(extractTaskCode("  a1. ")).toBe("A1");
+    expect(extractTaskCode("japlan A1")).toBe("A1");
+    expect(extractTaskCode("hey JAPLAN: b12 done")).toBe("B12");
+    expect(ladder({ text: "japlan a10", hasPhoto: false, recentCode: null })).toEqual({
       step: 1,
       code: "A10",
     });
+  });
+
+  it("matches a standalone code in a message of six words or fewer", () => {
+    expect(findTaskCode("I did A1")).toEqual({ code: "A1", strict: false });
+    expect(findTaskCode("done with a1!")).toEqual({ code: "A1", strict: false });
+    expect(findTaskCode("(B3) finally")).toEqual({ code: "B3", strict: false });
+    expect(findTaskCode("b4")).toEqual({ code: "B4", strict: true });
+    expect(findTaskCode("A1s are great")).toBeNull();
+  });
+
+  it("needs the keyword past six words", () => {
+    expect(findTaskCode("one two three four five six A1")).toBeNull();
+    expect(findTaskCode("one two three four five A1")).toEqual({
+      code: "A1",
+      strict: false,
+    });
+    expect(findTaskCode("japlan one two three four five six A1")).toEqual({
+      code: "A1",
+      strict: true,
+    });
+    expect(findTaskCode("japlanning a1 and more words here for sure")).toBeNull();
+  });
+
+  it("marks a loose-only code decision as tentative", () => {
+    const loose = decideClaim({
+      text: "done with A1",
+      hasPhoto: false,
+      recentCode: null,
+      isDm: false,
+      openTaskContext: false,
+    });
+    expect(loose).toMatchObject({ type: "code", code: "A1", tentative: true });
+    const strict = decideClaim({
+      text: "A1",
+      hasPhoto: false,
+      recentCode: null,
+      isDm: false,
+      openTaskContext: false,
+    });
+    expect(strict).toMatchObject({ type: "code", code: "A1", tentative: false });
+    const dm = decideClaim({
+      text: "done with A1",
+      hasPhoto: false,
+      recentCode: null,
+      isDm: true,
+      openTaskContext: false,
+    });
+    expect(dm).toMatchObject({ type: "code", code: "A1", tentative: false });
   });
 
   it("short-circuits a bare A1 in a DM as regex step 1 with no fuzzy/vision", () => {
@@ -61,6 +125,7 @@ describe("claim ladder", () => {
       step: 1,
       code: "A1",
       withPhoto: false,
+      tentative: false,
     });
     expect(decision.type).not.toBe("fuzzy");
     expect(decision.type).not.toBe("vision");
@@ -89,6 +154,115 @@ describe("claim ladder", () => {
   it("does not crash on a media-only message with empty text", () => {
     expect(ladder({ text: "", hasPhoto: true, recentCode: null }).step).toBe(3);
     expect(extractTaskCode("")).toBeNull();
+  });
+});
+
+describe("task ownership", () => {
+  const personal = (id: string, owner: string, code = "A1") => ({
+    id,
+    code,
+    participant_id: owner,
+    team_id: null,
+  });
+  const team = (id: string, teamId: string, code = "A1") => ({
+    id,
+    code,
+    participant_id: null,
+    team_id: teamId,
+  });
+  const shared = (id: string, code = "A1") => ({
+    id,
+    code,
+    participant_id: null,
+    team_id: null,
+  });
+
+  it("lets only the owner claim a personal task", () => {
+    expect(canClaimTask(personal("t1", "p1"), "p1", [])).toBe(true);
+    expect(canClaimTask(personal("t1", "p1"), "p2", [])).toBe(false);
+  });
+
+  it("lets only team members claim a team task", () => {
+    expect(canClaimTask(team("t1", "red"), "p1", ["red"])).toBe(true);
+    expect(canClaimTask(team("t1", "red"), "p2", ["blue"])).toBe(false);
+  });
+
+  it("lets anyone claim the shared board", () => {
+    expect(canClaimTask(shared("t1"), "p9", [])).toBe(true);
+  });
+
+  it("resolves a repeated code to the claimant's own task", () => {
+    const tasks = [personal("mine", "p1"), personal("theirs", "p2")];
+    expect(findTaskByCodeFor(tasks, "A1", "p1", [])).toEqual({
+      kind: "task",
+      task: tasks[0],
+    });
+    expect(findTaskByCodeFor(tasks, "a1", "p2", [])).toEqual({
+      kind: "task",
+      task: tasks[1],
+    });
+  });
+
+  it("reports not_yours when the code exists only on someone else's board", () => {
+    const tasks = [personal("theirs", "p2", "A5"), team("red-a1", "red")];
+    expect(findTaskByCodeFor(tasks, "A5", "p1", []).kind).toBe("not_yours");
+    expect(findTaskByCodeFor(tasks, "A1", "p1", ["blue"]).kind).toBe("not_yours");
+    expect(findTaskByCodeFor(tasks, "Z9", "p1", []).kind).toBe("unknown");
+  });
+
+  it("prefers personal, then team, then shared on a collision", () => {
+    const tasks = [shared("s"), team("t", "red"), personal("p", "p1")];
+    const hit = findTaskByCodeFor(tasks, "A1", "p1", ["red"]);
+    expect(hit.kind === "task" && hit.task.id).toBe("p");
+    const teamHit = findTaskByCodeFor(tasks, "A1", "p2", ["red"]);
+    expect(teamHit.kind === "task" && teamHit.task.id).toBe("t");
+    const sharedHit = findTaskByCodeFor(tasks, "A1", "p3", []);
+    expect(sharedHit.kind === "task" && sharedHit.task.id).toBe("s");
+  });
+
+  it("keeps a dissolved team's tasks claimable until end of that local day", () => {
+    const tz = "Asia/Tokyo";
+    // Dissolved 2026-09-19 15:00 JST; the window closes 23:59:59 JST that day.
+    const dissolvedAt = "2026-09-19T06:00:00Z";
+    const memberships = [
+      { teamId: "red", dissolvedAt },
+      { teamId: "blue", dissolvedAt: null },
+    ];
+    const sameEvening = splitTeamsByClaimWindow(
+      memberships,
+      tz,
+      new Date("2026-09-19T14:00:00Z"), // 23:00 JST
+    );
+    expect(sameEvening).toEqual({ active: ["red", "blue"], expired: [] });
+    const nextMorning = splitTeamsByClaimWindow(
+      memberships,
+      tz,
+      new Date("2026-09-19T15:30:00Z"), // 00:30 JST next day
+    );
+    expect(nextMorning).toEqual({ active: ["blue"], expired: ["red"] });
+  });
+
+  it("says a code expired with the team once the window closes", () => {
+    const tasks = [team("red-b2", "red", "B2")];
+    expect(findTaskByCodeFor(tasks, "B2", "p1", [], ["red"]).kind).toBe("team_expired");
+    expect(findTaskByCodeFor(tasks, "B2", "p1", ["red"], []).kind).toBe("task");
+    expect(findTaskByCodeFor(tasks, "B2", "p9", [], []).kind).toBe("not_yours");
+  });
+
+  it("lists the claimant's open codes, today's first", () => {
+    const tasks = [
+      { ...personal("a1", "p1", "A1"), day: 1 },
+      { ...personal("b1", "p1", "B1"), day: 2 },
+      { ...personal("b2", "p1", "B2"), day: 2 },
+      { ...personal("b1-other", "p2", "B1"), day: 2 },
+    ];
+    const claims = [{ task_id: "b2", status: "awarded" }];
+    expect(openCodesFor(tasks, claims, "p1", [])).toEqual(["B1", "A1"]);
+  });
+
+  it("filters to claimable tasks", () => {
+    const tasks = [personal("a", "p1"), personal("b", "p2"), shared("c", "A4")];
+    expect(tasksClaimableBy(tasks, "p1", []).map((t) => t.id)).toEqual(["a", "c"]);
   });
 });
 
@@ -284,7 +458,9 @@ describe("board and confirmation copy", () => {
         total: 160,
         capped: true,
       }),
-    ).toBe("✅ C2 · Michael · daily cap reached · 160");
+    ).toBe(
+      "✅ C2 · Michael · 160 · that's your cap for today, but claims still count for the recap.",
+    );
     expect(
       claimConfirmedLine({
         code: "A1",
@@ -300,7 +476,50 @@ describe("board and confirmation copy", () => {
     ).toBe("📸 A1 · +3 bonus · 15");
     expect(
       photoBonusLine({ code: "A1", bonus: 0, total: 120, capped: true }),
-    ).toBe("📸 A1 · daily cap reached · 120");
+    ).toBe("📸 A1 · 120 · that's your cap for today, but claims still count for the recap.");
+  });
+
+  it("offers a next step only when the claim clears the board", () => {
+    const routine = claimConfirmedLine({
+      code: "A2",
+      name: "Michael",
+      base: 12,
+      photoBonus: 0,
+      total: 30,
+    });
+    expect(routine).toBe("✅ A2 · Michael +12 · 30");
+    expect(routine.split("\n")).toHaveLength(1);
+    expect(
+      claimConfirmedLine({
+        code: "A3",
+        name: "Michael",
+        base: 12,
+        photoBonus: 0,
+        total: 42,
+        invitePhoto: true,
+        boardCleared: true,
+      }),
+    ).toBe("✅ A3 · Michael +12 · 42 · that clears your board, new tasks coming by dm.");
+  });
+
+  it("names open codes in refusals, never generic encouragement", () => {
+    expect(nextStepClause(["A2"])).toBe("A2 is still open.");
+    expect(nextStepClause(["A2", "A3"])).toBe("still open: A2, A3.");
+    expect(nextStepClause([])).toBe("your next board comes in the morning.");
+    expect(notYourTaskLine("A5", nextStepClause(["A1", "A3"]))).toBe(
+      "A5 isn't on your board. still open: A1, A3.",
+    );
+    expect(unknownCodeLine("A9", nextStepClause(["A1"]))).toBe(
+      "there's no A9. A1 is still open.",
+    );
+    for (const line of [
+      notYourTaskLine("A5", nextStepClause(["A1"])),
+      unknownCodeLine("A9", nextStepClause([])),
+      teamTaskExpiredLine("B2", nextStepClause(["B4"])),
+    ]) {
+      expect(line).not.toMatch(/let me know|you got this|!/i);
+      expect(line.split("\n")).toHaveLength(1);
+    }
   });
 });
 
