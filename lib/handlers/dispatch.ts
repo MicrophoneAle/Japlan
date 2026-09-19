@@ -128,7 +128,12 @@ async function onMessageReceived(data: unknown): Promise<void> {
       return;
     }
     if (soloRoute === "solo_claim") {
-      await handleGroupClaim(data);
+      console.log("[japlan.claim] step", { step: "solo_claim.before", chatId });
+      try {
+        await handleGroupClaim(data);
+      } finally {
+        console.log("[japlan.claim] step", { step: "solo_claim.after", chatId });
+      }
       return;
     }
     await handleSurveyDm({ phone, chatId, text });

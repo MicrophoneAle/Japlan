@@ -44,6 +44,24 @@ describe("claim ladder", () => {
     });
   });
 
+  it("short-circuits a bare A1 in a DM as regex step 1 with no fuzzy/vision", () => {
+    const decision = decideClaim({
+      text: "A1",
+      hasPhoto: false,
+      recentCode: null,
+      isDm: true,
+      openTaskContext: false,
+    });
+    expect(decision).toEqual({
+      type: "code",
+      step: 1,
+      code: "A1",
+      withPhoto: false,
+    });
+    expect(decision.type).not.toBe("fuzzy");
+    expect(decision.type).not.toBe("vision");
+  });
+
   it("binds a photo to a code within 60 seconds", () => {
     expect(
       ladder({ text: "", hasPhoto: true, recentCode: "A3" }),
