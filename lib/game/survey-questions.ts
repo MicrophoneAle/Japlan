@@ -466,6 +466,9 @@ export const SURVEY_V2: Partial<Record<QuestionId, Question>> = {
 };
 
 export const SURVEY_V2_ORDER: QuestionId[] = [
+  // Linq may provide a phone number rather than a usable display name. This
+  // answer is the authoritative name for standings and Wrapped.
+  "first_name",
   "ab_food_outdoors",
   "ab_discover_iconic",
   "ab_culture_nightlife",
