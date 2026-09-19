@@ -1,5 +1,6 @@
 import { after } from "next/server";
 import { getServiceClient } from "@/lib/db/client";
+import { captureInboundWebhook } from "@/lib/linq/capture";
 import { verifyLinqSignature } from "@/lib/linq/verify";
 
 type LinqWebhookEnvelope = {
@@ -9,6 +10,12 @@ type LinqWebhookEnvelope = {
 
 export async function POST(request: Request): Promise<Response> {
   const rawBody = await request.text();
+
+  try {
+    await captureInboundWebhook(rawBody, request.headers);
+  } catch (err) {
+    console.error("webhook capture failed", err);
+  }
 
   if (!verifyLinqSignature(rawBody, request.headers)) {
     return new Response("unauthorized", { status: 401 });

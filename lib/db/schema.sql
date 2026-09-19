@@ -121,3 +121,10 @@ create table ratings (
   score integer not null,
   created_at timestamptz not null default now()
 );
+
+-- Credential smoke test only. Not part of the game data model.
+create table if not exists smoke_scratch (
+  id uuid primary key default gen_random_uuid(),
+  marker text not null,
+  created_at timestamptz not null default now()
+);
