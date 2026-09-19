@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   assignOwnedDayCodes,
+  boldTasksWanted,
   buildGenerationPrompt,
   nextFreeformCode,
   parseGeneratedTasks,
@@ -8,11 +9,16 @@ import {
 } from "./generate";
 import { pointsForBoard } from "./scoring";
 import type { SurveyAnswers } from "./survey";
+import { TEMPLATES } from "./templates";
 import {
   BUDGET_CEILING,
+  enforceBoardMix,
   lowestBudgetCeiling,
+  placeKey,
+  TASK_KINDS,
   validateGeneratedTask,
   type ProposedTask,
+  type TaskKind,
 } from "./validate";
 
 const allFives = {
@@ -43,7 +49,7 @@ const baseTask: ProposedTask = {
 describe("generated scoring", () => {
   it("lands all-5s axes in Challenging, not above the band ceiling", () => {
     const scored = pointsForBoard(allFives, { day: 1, tripDays: 5 });
-    expect(scored.points).toBe(30);
+    expect(scored.points).toBe(34);
     expect(scored.tier).toBe("Challenging");
   });
 
@@ -72,7 +78,8 @@ describe("generated scoring", () => {
     expect(tasks).toHaveLength(1);
     expect(tasks[0]).not.toHaveProperty("points");
     const scored = pointsForBoard(tasks[0].axes, { day: 1, tripDays: null });
-    expect(scored.points).toBe(12);
+    // 1.6*3 + 0.8*2 + 0.9*1 + 1.5*1 + 1.4*1 + 0.6*2 = 11.4
+    expect(scored.points).toBe(11);
     expect(scored.points).not.toBe(999);
   });
 });
@@ -297,5 +304,170 @@ describe("generation prompt", () => {
     });
     expect(prompt).toContain("Verification is not a photo gate");
     expect(prompt).toContain("Only peer requires someone else's tapback");
+  });
+});
+
+describe("boldness and variety", () => {
+  const input = (difficulty: string | null, boardTitles: string[] = []) => ({
+    profile: {
+      assembled_at: "2026-09-19T00:00:00Z",
+      destination: "Tokyo",
+      neighborhoods: [],
+      transit_lines: [],
+      dishes: [],
+      landmarks: [],
+      price_bands: [],
+      center: null,
+    },
+    weather: { summary: "clear", indoorPreferred: false, temperatureC: 22, precipitationChance: 0 },
+    preferenceText: "food",
+    completedTitles: [],
+    yesterdayRatings: "",
+    scoreGap: "",
+    day: 2,
+    difficulty,
+    boardTitles,
+  });
+
+  it("asks for bold tasks by count, even on chill", () => {
+    expect(boldTasksWanted("unhinged", 3)).toBe(3);
+    expect(boldTasksWanted("normal", 3)).toBe(2);
+    expect(boldTasksWanted(null, 3)).toBe(2);
+    expect(boldTasksWanted("chill", 3)).toBe(1);
+    const prompt = buildGenerationPrompt(input("chill"));
+    expect(prompt).toContain("At least 1 of the 3 tasks must honestly rate boldness 3 or more.");
+    expect(prompt).not.toMatch(/favour low boldness/i);
+  });
+
+  it("shows the model what is already on the trip's boards", () => {
+    const prompt = buildGenerationPrompt(input(null, ["find a bench in yoyogi park"]));
+    expect(prompt).toContain("do not repeat or rephrase): find a bench in yoyogi park");
+  });
+
+  it("reads kind and place from the model, ignoring unknown kinds", () => {
+    const [a, b] = parseGeneratedTasks(
+      JSON.stringify([
+        { code: "", title: "t1", axes: {}, verification: "honor", photo_bonus_max: 0, neighborhood: "Shibuya", kind: "social", place: " Yoyogi Park " },
+        { code: "", title: "t2", axes: {}, verification: "honor", photo_bonus_max: 0, neighborhood: "Shibuya", kind: "sightseeing", place: "" },
+      ]),
+    );
+    expect(a).toMatchObject({ kind: "social", place: "Yoyogi Park" });
+    expect(b.kind).toBeUndefined();
+    expect(b.place).toBeUndefined();
+  });
+
+  const task = (title: string, kind?: TaskKind, place?: string): ProposedTask => ({
+    code: "",
+    title,
+    axes: { boldness: 1, physical: 1, time: 1, scarcity: 1, cultural: 1, aesthetics: 1 },
+    verification: "photo",
+    photo_bonus_max: 2,
+    neighborhood: "Shibuya",
+    kind,
+    place,
+  });
+
+  it("drops a second task at the same place", () => {
+    const { kept, rejected } = enforceBoardMix([
+      task("find a bench in yoyogi park", "explore", "Yoyogi Park"),
+      task("ask a local for their favourite ramen", "social", ""),
+      task("rest on a shaded bench", "explore", "the yoyogi park."),
+    ]);
+    expect(kept.map((t) => t.title)).toEqual(["find a bench in yoyogi park", "ask a local for their favourite ramen"]);
+    expect(rejected.map((r) => r.reason)).toEqual(["same_place"]);
+    expect(placeKey("Meiji Jingu")).not.toBe(placeKey("Yoyogi Park"));
+  });
+
+  it("never keeps a board that is all one kind", () => {
+    const { kept, rejected } = enforceBoardMix([
+      task("look at a pine", "explore", "Kokyo Gaien"),
+      task("look at a statue", "explore", "Kusunoki statue"),
+      task("look at a waterfall", "explore", "Shinjuku Chuo Park"),
+    ]);
+    expect(kept).toHaveLength(1);
+    expect(rejected.map((r) => r.reason)).toEqual(["one_kind", "one_kind"]);
+    // Mixed kinds, distinct places: all kept.
+    expect(
+      enforceBoardMix([task("a", "explore", "x"), task("b", "social", "y"), task("c", "explore", "z")]).kept,
+    ).toHaveLength(3);
+  });
+
+  it("gives template fallbacks a kind so the same rules apply", () => {
+    for (const t of TEMPLATES) expect(TASK_KINDS).toContain(t.kind);
+  });
+});
+
+describe("generation prompt: quality and time", () => {
+  const base = {
+    profile: {
+      assembled_at: "2026-09-19T00:00:00Z",
+      destination: "Tokyo",
+      neighborhoods: [],
+      transit_lines: [],
+      dishes: [],
+      landmarks: [],
+      price_bands: [],
+      center: null,
+    },
+    weather: { summary: "clear", indoorPreferred: false, temperatureC: 22, precipitationChance: 0 },
+    preferenceText: "food",
+    completedTitles: [],
+    yesterdayRatings: "",
+    scoreGap: "",
+    day: 1,
+  };
+
+  it("says what a weak task is and what every board needs", () => {
+    const prompt = buildGenerationPrompt(base);
+    expect(prompt).toContain(
+      "A task that can be completed without speaking to anyone, without going somewhere unusual, and without doing anything slightly embarrassing is a weak task.",
+    );
+    expect(prompt).toContain('"Go look at X" (find a bench, locate a statue, view a waterfall) is the weakest possible archetype.');
+    expect(prompt).toContain("At least one task on the board must involve a stranger");
+    expect(prompt).toContain("No two tasks on the board share a location, and no two use the same template.");
+    // The bank offered is main tasks only.
+    expect(prompt).not.toContain("eat_letter_range");
+    expect(prompt).not.toContain("buy_unidentifiable");
+  });
+
+  it("tells the model the time it has, so duration shapes the board", () => {
+    const prompt = buildGenerationPrompt({
+      ...base,
+      count: 4,
+      plan: { windowText: "19:00 to 21:00", usableMinutes: 110, targetMinutes: 72, maxTaskMinutes: 120, lateStart: true },
+    });
+    expect(prompt).toContain("It is already late in the day: the board covers 19:00 to 21:00");
+    expect(prompt).toContain("No task may take longer than 120 minutes");
+    expect(prompt).toContain("Return exactly 4 tasks");
+  });
+
+  it("asks for a curveball only on a curveball board", () => {
+    expect(buildGenerationPrompt(base)).not.toContain('template "curveball"');
+    expect(buildGenerationPrompt({ ...base, curveball: true })).toContain(
+      'Exactly one task uses template "curveball"',
+    );
+  });
+
+  it("reads the template, places and stranger flag", () => {
+    const [task] = parseGeneratedTasks(
+      JSON.stringify([
+        {
+          template: "a_to_b_without",
+          title: "get from senso-ji to ueno park on foot",
+          axes: allFives,
+          verification: "peer",
+          photo_bonus_max: 0,
+          neighborhood: "Asakusa",
+          places: ["Senso-ji", "Ueno Park", "extra"],
+          involves_stranger: false,
+        },
+      ]),
+    );
+    expect(task).toMatchObject({
+      template: "a_to_b_without",
+      places: ["Senso-ji", "Ueno Park"],
+      place: "Senso-ji",
+      stranger: false,
+    });
   });
 });

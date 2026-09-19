@@ -79,6 +79,7 @@ export class GeminiProvider implements LLMProvider {
     images?: { data: string; mime: string }[];
     tier: "fast" | "smart";
     thinkingBudget?: number;
+    temperature?: number;
   }): Promise<string> {
     const parts: Part[] = [];
     for (const image of opts.images ?? []) {
@@ -104,6 +105,7 @@ export class GeminiProvider implements LLMProvider {
             }
           : {}),
         ...(thinkingConfig ? { thinkingConfig } : {}),
+        ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
       },
     });
     return response.text?.trim() ?? "";
@@ -227,12 +229,16 @@ export const CLAIM_MATCH_SCHEMA = {
   required: ["task_code", "confidence", "reasoning"],
 };
 
-export const PHOTO_SHOWS_SCHEMA = {
+// "seen" comes first so the model looks before it answers, and so every
+// check logs what the model actually saw: proof the image arrived intact.
+export const PHOTO_RELATES_SCHEMA = {
   type: "object",
   properties: {
-    shows_task: { type: "boolean" },
+    seen: { type: "string" },
+    relates: { type: "boolean" },
   },
-  required: ["shows_task"],
+  required: ["seen", "relates"],
+  propertyOrdering: ["seen", "relates"],
 };
 
 export const PHOTO_FIDELITY_SCHEMA = {
@@ -252,6 +258,9 @@ export type ClaimMatchJson = {
 export type PhotoFidelityJson = {
   shows_task: boolean;
   fidelity: number;
+  seen: string;
+  // Exactly what the model returned, for the logs.
+  raw: { relates: string; fidelity: string | null };
 };
 
 export async function matchClaimText(opts: {
@@ -303,8 +312,32 @@ export function visionTimeoutMs(value = process.env.JAPLAN_VISION_TIMEOUT_MS): n
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_VISION_TIMEOUT_MS;
 }
 
+// PLAN: score fidelity, not quality, and ask two easy questions rather than
+// one hard one. A photo is evidence, not proof: it cannot show a place's
+// name, an action in progress, or that something was done. So the first
+// question is only "does this plausibly relate", biased to yes, and the
+// bounded score is asked only after a yes. A loose photo occasionally earning
+// a bonus is fine; a bonus that never fires is the bug this replaced (it asked
+// "does this photo show the task", and a bench was not "finding a bench").
+export const PHOTO_RELATES_SYSTEM = [
+  "You check photos for a travel game. A player sends a photo as evidence for a task they did.",
+  "Evidence, not proof. A photo cannot show a place's name, that an action happened, how long it took, or how it felt. Never require that.",
+  "relates is true when the photo plausibly goes with the task: its main subject, kind of place, food, object, activity or scene fits, even loosely or only in part. A park bench goes with a bench task whichever park it is. Any garden or greenery goes with a garden stroll.",
+  "relates is false only when the photo clearly has nothing to do with the task: a different kind of thing entirely, a screenshot or meme, or a blank or black frame.",
+  "When unsure, relates is true. The photo may be rotated; judge the content.",
+  "seen: a few plain words on what the photo shows.",
+].join(" ");
+
+export const PHOTO_FIDELITY_SYSTEM = [
+  "A player's photo already counts as evidence for a travel game task. Score how much of the task it shows, from 1 to the given maximum.",
+  "1: loosely related. The maximum: the task's main subject is plainly in frame.",
+  "Score content only. Ignore photo quality, lighting, framing, rotation and whether a named place can be confirmed.",
+].join(" ");
+
 // Each vision call is bounded: a hung Gemini request throws TimeoutError
-// instead of holding the claim until the function is killed.
+// instead of holding the claim until the function is killed. An empty or
+// unreadable answer returns null, which callers treat as a failed check
+// (ask again), never as "doesn't look like it".
 export async function scorePhotoFidelity(opts: {
   provider?: LLMProvider;
   title: string;
@@ -314,56 +347,45 @@ export async function scorePhotoFidelity(opts: {
 }): Promise<PhotoFidelityJson | null> {
   const provider = opts.provider ?? new GeminiProvider();
   const timeoutMs = opts.timeoutMs ?? visionTimeoutMs();
-  const shownRaw = await withTimeout(provider.complete({
-    system:
-      "Answer one question: does this photo show the task. Return JSON only. Classification, not reasoning.",
-    messages: [
-      {
-        role: "user",
-        content: `Task: "${opts.title}". Does this photo show it?`,
-      },
-    ],
+  const relatesRaw = await withTimeout(provider.complete({
+    system: PHOTO_RELATES_SYSTEM,
+    messages: [{ role: "user", content: `Task: "${opts.title}"` }],
     images: [opts.image],
-    schema: PHOTO_SHOWS_SCHEMA,
+    schema: PHOTO_RELATES_SCHEMA,
     tier: "fast",
     thinkingBudget: 0,
-  }), timeoutMs, "gemini.vision.shows_task");
-  if (!shownRaw) return null;
-  let showsTask = false;
-  try {
-    const parsed = JSON.parse(shownRaw) as { shows_task?: boolean };
-    showsTask = parsed.shows_task === true;
-  } catch {
-    return null;
+    temperature: 0,
+  }), timeoutMs, "gemini.vision.relates");
+  const relates = parseJsonObject(relatesRaw);
+  if (!relates || typeof relates.relates !== "boolean") return null;
+  const seen = typeof relates.seen === "string" ? relates.seen.slice(0, 200) : "";
+  if (!relates.relates) {
+    return { shows_task: false, fidelity: 0, seen, raw: { relates: relatesRaw, fidelity: null } };
   }
-  if (!showsTask) return { shows_task: false, fidelity: 0 };
 
-  const scoreRaw = await withTimeout(provider.complete({
-    system:
-      "Score only how completely the photo shows the tasked thing, 0 through the given ceiling. Do not score photo quality. Return JSON only.",
-    messages: [
-      {
-        role: "user",
-        content: `Task: "${opts.title}". Score fidelity 0-${opts.photoBonusMax}.`,
-      },
-    ],
-    images: [opts.image],
-    schema: PHOTO_FIDELITY_SCHEMA,
-    tier: "fast",
-    thinkingBudget: 0,
-  }), timeoutMs, "gemini.vision.fidelity");
-  if (!scoreRaw) return { shows_task: true, fidelity: 0 };
+  const ceiling = Math.max(0, opts.photoBonusMax);
+  // A yes is worth at least 1: a match that paid nothing read as a rejection.
+  const floor = Math.min(1, ceiling);
+  let scoreRaw = "";
   try {
-    const parsed = JSON.parse(scoreRaw) as { fidelity?: number };
-    const ceiling = Math.max(0, opts.photoBonusMax);
-    const fidelity = Math.min(
-      ceiling,
-      Math.max(0, Math.round(Number(parsed.fidelity) || 0)),
-    );
-    return { shows_task: true, fidelity };
+    scoreRaw = await withTimeout(provider.complete({
+      system: PHOTO_FIDELITY_SYSTEM,
+      messages: [{ role: "user", content: `Task: "${opts.title}". Maximum: ${ceiling}.` }],
+      images: [opts.image],
+      schema: PHOTO_FIDELITY_SCHEMA,
+      tier: "fast",
+      thinkingBudget: 0,
+      temperature: 0,
+    }), timeoutMs, "gemini.vision.fidelity");
   } catch {
-    return { shows_task: true, fidelity: 0 };
+    // The yes stands; a failed score costs only the difference above 1.
+    scoreRaw = "";
   }
+  const scored = Number(parseJsonObject(scoreRaw)?.fidelity);
+  const fidelity = Number.isFinite(scored)
+    ? Math.min(ceiling, Math.max(floor, Math.round(scored)))
+    : floor;
+  return { shows_task: true, fidelity, seen, raw: { relates: relatesRaw, fidelity: scoreRaw || null } };
 }
 
 export const FREEFORM_EXTRACT_SCHEMA = {

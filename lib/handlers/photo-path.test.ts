@@ -72,6 +72,13 @@ function a1Claim() {
 
 let photoBytes: Buffer;
 
+const verdict = (relates: boolean, fidelity: number) => ({
+  shows_task: relates,
+  fidelity,
+  seen: "a photo",
+  raw: { relates: JSON.stringify({ seen: "a photo", relates }), fidelity: relates ? `{"fidelity":${fidelity}}` : null },
+});
+
 beforeEach(async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(NOON_JST);
@@ -127,7 +134,7 @@ afterEach(() => {
 
 describe("photo with a code as the caption", () => {
   it("awards the base points and the photo bonus in one confirmation", async () => {
-    h.vision.mockResolvedValue({ shows_task: true, fidelity: 2 });
+    h.vision.mockResolvedValue(verdict(true, 2));
     await dispatchLinqEvent(message([photoPart, text("A1")]));
 
     const claim = a1Claim();
@@ -161,7 +168,7 @@ describe("photo with a code as the caption", () => {
 
 describe("photo sent alone after claiming", () => {
   it("binds to the recent claim inside the bonus window", async () => {
-    h.vision.mockResolvedValue({ shows_task: true, fidelity: 3 });
+    h.vision.mockResolvedValue(verdict(true, 3));
     await dispatchLinqEvent(message([text("A1")]));
     expect(a1Claim()?.awarded_points).toBe(8);
 
@@ -192,7 +199,7 @@ describe("photo sent alone after claiming", () => {
   });
 
   it("answers when the photo does not show the task", async () => {
-    h.vision.mockResolvedValue({ shows_task: false, fidelity: 0 });
+    h.vision.mockResolvedValue(verdict(false, 0));
     await dispatchLinqEvent(message([text("A1")]));
     vi.setSystemTime(new Date(NOON_JST.getTime() + 10 * 60 * 1000));
     await dispatchLinqEvent(message([photoPart]));
@@ -200,5 +207,22 @@ describe("photo sent alone after claiming", () => {
     expect(h.sent.at(-1)?.text).toBe(
       "doesn't look like A1, so no photo bonus. a clearer shot still counts.",
     );
+  });
+  it("says the check failed, not 'doesn't look like', when the model answer is unreadable", async () => {
+    h.vision.mockResolvedValue(null);
+    await dispatchLinqEvent(message([text("A1")]));
+    vi.setSystemTime(new Date(NOON_JST.getTime() + 10 * 60 * 1000));
+    await dispatchLinqEvent(message([photoPart]));
+    expect(h.sent.at(-1)?.text).toBe("couldn't check that photo for A1. send it again in a minute.");
+  });
+
+  it("sends the model an upright, downscaled jpeg", async () => {
+    h.vision.mockResolvedValue(verdict(true, 2));
+    await dispatchLinqEvent(message([text("A1")]));
+    photoBytes = await patternJpeg("vertical", { exifDate: "2026:09:19 11:40:00" });
+    await dispatchLinqEvent(message([{ ...photoPart, mime_type: "image/jpeg" }]));
+    const image = h.vision.mock.calls[0][0].image as { data: string; mime: string };
+    expect(image.mime).toBe("image/jpeg");
+    expect(Buffer.from(image.data, "base64").subarray(0, 3).toString("hex")).toBe("ffd8ff");
   });
 });

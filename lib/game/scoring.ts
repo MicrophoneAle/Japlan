@@ -9,37 +9,43 @@ export type Axes = {
 
 export type Tier = "Light" | "Medium" | "Challenging";
 
+// Points reward what makes a story: social boldness, rarity, and being
+// specific to this place. Not length, effort or prettiness: walking further
+// must never out-earn talking to a stranger.
 export const AXIS_WEIGHTS = {
-  boldness: 1.5,
-  physical: 1.3,
-  time: 1.3,
-  scarcity: 1.2,
-  cultural: 1.0,
-  aesthetics: 0.7,
+  boldness: 1.6,
+  scarcity: 1.5,
+  cultural: 1.4,
+  time: 0.9,
+  physical: 0.8,
+  aesthetics: 0.6,
 } as const;
 
+// All-1s scores 7 and all-5s scores 34 (weights sum to 6.8); three bands
+// across that range.
 export const TIER_BANDS: Record<Tier, { min: number; max: number }> = {
-  Light: { min: 1, max: 10 },
-  Medium: { min: 11, max: 20 },
-  Challenging: { min: 21, max: 30 },
+  Light: { min: 1, max: 15 },
+  Medium: { min: 16, max: 24 },
+  Challenging: { min: 25, max: 34 },
 };
 
+// Integer tenths, so the weights never meet floating point.
 export function computePoints(axes: Axes): number {
   const tenths =
-    15 * axes.boldness +
-    13 * axes.physical +
-    13 * axes.time +
-    12 * axes.scarcity +
-    10 * axes.cultural +
-    7 * axes.aesthetics;
+    16 * axes.boldness +
+    15 * axes.scarcity +
+    14 * axes.cultural +
+    9 * axes.time +
+    8 * axes.physical +
+    6 * axes.aesthetics;
   return Math.round(tenths / 10);
 }
 
 export function tierForPoints(points: number): Tier | null {
-  if (points >= 1 && points <= 10) return "Light";
-  if (points >= 11 && points <= 20) return "Medium";
-  if (points >= 21 && points <= 30) return "Challenging";
-  // TODO: weighted totals can exceed 30 (all-5s rounds to 35); plan has no band above Challenging.
+  for (const tier of ["Light", "Medium", "Challenging"] as const) {
+    const band = TIER_BANDS[tier];
+    if (points >= band.min && points <= band.max) return tier;
+  }
   return null;
 }
 

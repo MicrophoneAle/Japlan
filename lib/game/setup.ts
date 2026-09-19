@@ -71,7 +71,7 @@ export function matchDifficulty(text: string): Difficulty | null {
 export function difficultyGuidance(difficulty: string | null | undefined): string | null {
   switch (difficulty) {
     case "chill":
-      return "Difficulty: chill. Favour low boldness and low physical effort; nothing embarrassing.";
+      return "Difficulty: chill. Low physical effort and short tasks, nothing embarrassing. Chill is not antisocial: small friendly asks of people are welcome.";
     case "normal":
       return "Difficulty: normal. A mix of easy and stretch tasks.";
     case "unhinged":

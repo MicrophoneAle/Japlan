@@ -7,21 +7,39 @@ import {
   assignOwnedDayCodes,
   fillTemplatesDeterministically,
   generateTasksForAssignee,
+  isCurveballBoard,
   pickBounty,
-  TASKS_PER_CALL,
   type ExistingDayCode,
+  type GenerationPlan,
 } from "@/lib/game/generate";
+import {
+  candidatesToRequest,
+  dayMinutes,
+  maxTaskMinutes,
+  paceFor,
+  parseClockMinutes,
+  planDay,
+  selectForDay,
+  targetMinutes,
+  usableWindow,
+  type DayWindow,
+} from "@/lib/game/day-plan";
+import {
+  boardConflict,
+  planAssigneeBoard,
+  prepareCandidates,
+  type Candidate,
+  type PlannedTask,
+  type PrepareContext,
+} from "@/lib/game/plan-board";
+import { boardTemplates } from "@/lib/game/templates";
 import { peerLapsedLine } from "@/lib/game/copy";
 import { answerValue, type SurveyAnswers } from "@/lib/game/survey";
 import {
   pointsForBoard,
   tripLengthDays,
 } from "@/lib/game/scoring";
-import {
-  validateGeneratedTask,
-  type AssigneeConstraints,
-  type ProposedTask,
-} from "@/lib/game/validate";
+import type { ProposedTask } from "@/lib/game/validate";
 import {
   fetchDayWeather,
   formatWeatherLine,
@@ -32,7 +50,7 @@ import type { ParticipantRow, TaskRow, TripRow } from "@/lib/db/types";
 import { sendDM, sendText } from "@/lib/linq/send";
 import { applySoloVerification } from "@/lib/game/solo";
 // Plan does not specify the exact expiry instant; tasks end with the trip's local day.
-import { endOfLocalDay, localDateString, localHour } from "@/lib/game/time";
+import { endOfLocalDay, localDateString, localHour, localTimeHHMM } from "@/lib/game/time";
 import { buildStandingsRows } from "@/lib/game/standings";
 import { teamsWithMembers } from "@/lib/handlers/teams";
 
@@ -200,57 +218,159 @@ function trailingPlayer(people: ParticipantRow[]): ParticipantRow | null {
   return sorted[0];
 }
 
-function filterValid(
-  proposals: ProposedTask[],
-  assignees: AssigneeConstraints[],
-  completed: string[],
-  expiresAt: Date,
-): ProposedTask[] {
-  const kept: ProposedTask[] = [];
-  for (const task of proposals) {
-    const reason = validateGeneratedTask(task, {
-      assignees,
-      completedTitles: completed,
-      expiresAt,
-    });
-    if (reason) {
-      logReject(reason, task.title);
-      continue;
-    }
-    kept.push(task);
-    completed.push(task.title);
-  }
-  return kept;
+// Every title already on this trip's boards, oldest first, for the prompt.
+async function tripBoardTitles(tripId: string): Promise<string[]> {
+  const { data, error } = await getServiceClient()
+    .from("tasks")
+    .select("title, day")
+    .eq("trip_id", tripId)
+    .order("day");
+  if (error) throw error;
+  return [...new Set((data ?? []).map((t) => (t as { title: string }).title))];
 }
 
-async function proposalsForAssignee(opts: {
+function clockText(minutes: number): string {
+  const h = Math.floor(minutes / 60) % 24;
+  const m = Math.round(minutes % 60);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+// The usable part of the day for these people: board_time to a pace-based
+// end of day, or now to then when the board is for today (see usableWindow).
+export function dayWindowFor(
+  trip: TripRow,
+  people: ParticipantRow[],
+  date: string,
+  now: Date,
+): DayWindow {
+  const timezone = trip.timezone || "UTC";
+  const pace = paceFor(
+    people.map((p) => answerValue((p.survey_json ?? {}) as SurveyAnswers, "pace")),
+  );
+  const today = localDateString(now, timezone);
+  const nowMinutes = date === today ? parseClockMinutes(localTimeHHMM(now, timezone)) : null;
+  return usableWindow({ boardTime: trip.board_time, pace, nowMinutes });
+}
+
+// One assignee's day: ask the model for enough candidates to fill 60-70% of
+// their usable hours, gate and time them in code, top up from templates if
+// short, then order along a route with a time of day on each.
+async function planForAssignee(opts: {
+  trip: TripRow;
   assignee: Assignee;
   profile: DestinationProfile;
   weather: DayWeather;
-  completed: string[];
+  date: string;
+  now: Date;
+  day: number;
   ratings: string;
   gap: string;
-  day: number;
-  difficulty?: string | null;
-}): Promise<ProposedTask[]> {
-  const answers = (opts.assignee.people[0]?.survey_json ?? {}) as SurveyAnswers;
-  return generateTasksForAssignee({
+  boardTitles: string[];
+}): Promise<{ tasks: PlannedTask[]; usedFallback: boolean; window: DayWindow }> {
+  const { trip, assignee } = opts;
+  const window = dayWindowFor(trip, assignee.people, opts.date, opts.now);
+  const completed = await completedTitles(trip.id, assignee.people.map((p) => p.id));
+  const solo = Boolean(trip.is_solo);
+  const templates = boardTemplates({ solo });
+  const curveball = isCurveballBoard(`${trip.id}:${opts.day}:${assignee.id}`);
+  const ctx: PrepareContext = {
     profile: opts.profile,
-    weather: opts.weather,
-    preferenceText: preferenceText(answers),
-    completedTitles: opts.completed,
-    yesterdayRatings: opts.ratings,
-    scoreGap: opts.gap,
-    day: opts.day,
-    difficulty: opts.difficulty,
+    solo,
+    window,
+    assignees: assignee.people.map((p) => ({ answers: (p.survey_json ?? {}) as SurveyAnswers })),
+    completedTitles: completed,
+    expiresAt: endOfLocalDay(opts.date, trip.timezone || "UTC"),
+    now: opts.now,
+    onReject: (reason, title) => logReject(reason, title, { assignee: assignee.label }),
+  };
+  const plan: GenerationPlan = {
+    windowText: `${clockText(window.startMinutes)} to ${clockText(window.endMinutes)}`,
+    usableMinutes: window.usableMinutes,
+    targetMinutes: targetMinutes(window),
+    maxTaskMinutes: maxTaskMinutes(window),
+    lateStart: window.startMinutes >= 12 * 60,
+  };
+  const answers = (assignee.people[0]?.survey_json ?? {}) as SurveyAnswers;
+
+  let pool: Candidate[] = [];
+  let curveballProposed = false;
+  for (let round = 1; round <= 2 && window.usableMinutes > 0; round++) {
+    let proposals: ProposedTask[] = [];
+    try {
+      proposals = await generateTasksForAssignee({
+        profile: opts.profile,
+        weather: opts.weather,
+        preferenceText: preferenceText(answers),
+        completedTitles: completed,
+        yesterdayRatings: opts.ratings,
+        scoreGap: opts.gap,
+        day: opts.day,
+        difficulty: trip.difficulty,
+        boardTitles: opts.boardTitles,
+        templates,
+        plan,
+        curveball,
+        count: candidatesToRequest(window),
+      });
+    } catch (err) {
+      console.error("[japlan.generate] llm failed", { round, assignee: assignee.label, err });
+    }
+    curveballProposed ||= proposals.some((t) => t.template === "curveball");
+    const fresh = prepareCandidates(proposals, {
+      ...ctx,
+      completedTitles: [...completed, ...pool.map((t) => t.title)],
+    });
+    pool = [...pool, ...fresh];
+    if (dayMinutes(selectForDay(pool, window, { conflicts: boardConflict })) >= targetMinutes(window) * 0.5) break;
+    console.info("[japlan.generate] regenerating; model fell short of half the day", {
+      round,
+      assignee: assignee.label,
+      pool: pool.length,
+    });
+  }
+
+  // Every board template, filled a few ways (different neighborhoods,
+  // dishes, places), so a refill can reuse a template with new slots.
+  const fills = [0, 1, 2, 3].flatMap((variant) =>
+    fillTemplatesDeterministically({
+      profile: opts.profile,
+      weather: opts.weather,
+      templates,
+      count: templates.length,
+      seed: opts.day * 7 + variant * 5,
+    }),
+  );
+  const fallbackPool = prepareCandidates(
+    fills,
+    { ...ctx, onReject: (reason, title) => logReject(reason, title, { assignee: assignee.label, fallback: true }) },
+  );
+  const planned = planAssigneeBoard({ modelPool: pool, fallbackPool, window });
+  console.info("[japlan.generate] day plan", {
+    tripId: trip.id,
+    assignee: assignee.label,
+    pace: window.pace,
+    window: plan.windowText,
+    usableMinutes: window.usableMinutes,
+    targetMinutes: plan.targetMinutes,
+    plannedMinutes: dayMinutes(planned.tasks),
+    tasks: planned.tasks.map((t) => ({ title: t.title, minutes: t.minutes, slot: t.slot, template: t.template })),
+    usedFallback: planned.usedFallback,
+    curveball: !curveball
+      ? "none"
+      : planned.tasks.some((t) => t.source === "curveball")
+        ? "landed"
+        : curveballProposed
+          ? "rejected"
+          : "not_proposed",
   });
+  return { ...planned, window };
 }
 
 export function persistableTask(opts: {
   tripId: string;
   day: number;
   tripDays: number | null;
-  task: ProposedTask;
+  task: ProposedTask & Partial<Pick<PlannedTask, "slot" | "minutes" | "resolvedNeighborhood">>;
   participantId: string | null;
   teamId: string | null;
   expiresAt: Date;
@@ -276,8 +396,15 @@ export function persistableTask(opts: {
       verification: rowTask.verification,
       day: opts.day,
       expires_at: opts.expiresAt.toISOString(),
-      neighborhood: rowTask.neighborhood || null,
+      // A planned task stores only a neighborhood it actually resolved to (the
+      // board header's route); "can be anywhere" is null, not the city name.
+      neighborhood:
+        opts.task.minutes !== undefined
+          ? (opts.task.resolvedNeighborhood ?? null)
+          : rowTask.neighborhood || null,
       source: rowTask.source ?? "generated",
+      slot: opts.task.slot ?? null,
+      duration_minutes: opts.task.minutes ?? null,
     },
   };
 }
@@ -301,75 +428,31 @@ export async function generateValidatedBoard(opts: {
   const assignees = await loadAssignees(opts.trip.id, opts.people);
   const ratings = await yesterdayRatings(opts.trip.id);
   const gap = scoreGapText(opts.people);
-  const wanted = Math.max(TASKS_PER_CALL, assignees.length * TASKS_PER_CALL);
+  const boardTitles = await tripBoardTitles(opts.trip.id);
 
-  async function run(round: number): Promise<ProposedTask[]> {
-    const collected: ProposedTask[] = [];
-    for (const assignee of assignees) {
-      const completed = await completedTitles(
-        opts.trip.id,
-        assignee.people.map((p) => p.id),
-      );
-      const constraints: AssigneeConstraints[] = assignee.people.map((p) => ({
-        answers: (p.survey_json ?? {}) as SurveyAnswers,
-      }));
-      let proposals: ProposedTask[] = [];
-      try {
-        proposals = await proposalsForAssignee({
-          assignee,
-          profile: opts.profile,
-          weather: opts.weather,
-          completed,
-          ratings,
-          gap,
-          day,
-          difficulty: opts.trip.difficulty,
-        });
-      } catch (err) {
-        console.error("[japlan.generate] llm failed", {
-          round,
-          assignee: assignee.label,
-          err,
-        });
-      }
-      const valid = filterValid(proposals, constraints, completed, expiresAt);
-      collected.push(
-        ...valid.map((task) => ({
-          ...task,
-          neighborhood: task.neighborhood || opts.profile.destination,
-          participantId: assignee.participantId,
-          teamId: assignee.teamId,
-        })),
-      );
-    }
-    return collected;
-  }
-
-  let kept = await run(1);
+  let kept: (PlannedTask & { participantId: string | null; teamId: string | null })[] = [];
   let usedFallback = false;
-  if (kept.length < wanted / 2) {
-    console.info("[japlan.generate] regenerating; more than half rejected", {
-      kept: kept.length,
-      wanted,
-    });
-    kept = await run(2);
-  }
-  if (kept.length < wanted / 2) {
-    usedFallback = true;
-    const completed = await completedTitles(
-      opts.trip.id,
-      opts.people.map((p) => p.id),
-    );
-    const constraints: AssigneeConstraints[] = opts.people.map((p) => ({
-      answers: (p.survey_json ?? {}) as SurveyAnswers,
-    }));
-    const fallback = fillTemplatesDeterministically({
+  for (const assignee of assignees) {
+    const planned = await planForAssignee({
+      trip: opts.trip,
+      assignee,
       profile: opts.profile,
       weather: opts.weather,
-      count: wanted,
+      date,
+      now,
+      day,
+      ratings,
+      gap,
+      boardTitles,
     });
-    kept = filterValid(fallback, constraints, completed, expiresAt);
-    console.info("[japlan.generate] fallback templates", { kept: kept.length });
+    usedFallback ||= planned.usedFallback;
+    kept.push(
+      ...planned.tasks.map((task) => ({
+        ...task,
+        participantId: assignee.participantId,
+        teamId: assignee.teamId,
+      })),
+    );
   }
 
   const trailer = trailingPlayer(opts.people);
@@ -388,8 +471,31 @@ export async function generateValidatedBoard(opts: {
       onReject: (reason, title, attempt) =>
         logReject(reason, title, { bounty: true, attempt }),
     });
-    if (bounty) kept.push(bounty);
-    else logReject("no_valid_bounty", "(none)", { bounty: true, trailer: trailer.id });
+    const window = dayWindowFor(opts.trip, [trailer], date, now);
+    const [timed] = bounty
+      ? prepareCandidates([bounty], {
+          profile: opts.profile,
+          solo: Boolean(opts.trip.is_solo),
+          window,
+          assignees: [{ answers: (trailer.survey_json ?? {}) as SurveyAnswers }],
+          completedTitles: trailerDone,
+          expiresAt,
+          now,
+          onReject: (reason, title) => logReject(reason, title, { bounty: true }),
+        })
+      : [];
+    if (timed) {
+      // The bounty is extra to the day's fill: it joins the trailer's route.
+      const theirs = kept.filter((t) => t.participantId === trailer.id);
+      const replanned = planDay([...theirs, timed], window).map((task) => ({
+        ...task,
+        participantId: trailer.id,
+        teamId: null,
+      }));
+      kept = [...kept.filter((t) => t.participantId !== trailer.id), ...replanned];
+    } else {
+      logReject("no_valid_bounty", "(none)", { bounty: true, trailer: trailer.id });
+    }
   }
 
   const soloAdjusted = applySoloVerification(
@@ -678,7 +784,7 @@ export async function tasksForDay(tripId: string, day: number): Promise<TaskRow[
   const { data, error } = await getServiceClient()
     .from("tasks")
     .select(
-      "id, trip_id, participant_id, team_id, code, title, tier, axes_json, base_points, photo_bonus_max, verification, day, expires_at, neighborhood, source",
+      "id, trip_id, participant_id, team_id, code, title, tier, axes_json, base_points, photo_bonus_max, verification, day, expires_at, neighborhood, source, slot, duration_minutes",
     )
     .eq("trip_id", tripId)
     .eq("day", day);
@@ -1017,6 +1123,8 @@ async function deliverMorningBoards(opts: {
             code: row.code,
             title: row.title,
             base_points: row.base_points,
+            slot: row.slot ?? null,
+            neighborhood: row.neighborhood,
           })),
         }),
       );
@@ -1099,9 +1207,9 @@ export async function refillPersonalTasksIfNeeded(opts: {
     }
   }
 
-  const completed = await completedTitles(opts.trip.id, [opts.claimant.id]);
   const ratings = await yesterdayRatings(opts.trip.id);
   const gap = scoreGapText(people);
+  const boardTitles = await tripBoardTitles(opts.trip.id);
   const assignee: Assignee = {
     kind: "person",
     id: opts.claimant.id,
@@ -1110,44 +1218,24 @@ export async function refillPersonalTasksIfNeeded(opts: {
     people: [opts.claimant],
     label: opts.claimant.display_name,
   };
-  let proposals: ProposedTask[] = [];
-  try {
-    proposals = await proposalsForAssignee({
-      assignee,
-      profile,
-      weather,
-      completed,
-      ratings,
-      gap,
-      day,
-      difficulty: opts.trip.difficulty,
-    });
-  } catch (err) {
-    console.error("[japlan.generate] refill llm failed", err);
-  }
+  // Same planner as the morning board, over whatever is left of that day.
+  const planned = await planForAssignee({
+    trip: opts.trip,
+    assignee,
+    profile,
+    weather,
+    date: today,
+    now,
+    day,
+    ratings,
+    gap,
+    boardTitles,
+  });
   const expiresAt = endOfLocalDay(today, timezone);
-  const constraints: AssigneeConstraints[] = [
-    { answers: (opts.claimant.survey_json ?? {}) as SurveyAnswers },
-  ];
-  let kept = filterValid(proposals, constraints, completed, expiresAt);
-  if (kept.length < TASKS_PER_CALL / 2) {
-    kept = filterValid(
-      fillTemplatesDeterministically({
-        profile,
-        weather,
-        count: TASKS_PER_CALL,
-        seed: Date.now() % 1000,
-      }),
-      constraints,
-      completed,
-      expiresAt,
-    );
-  }
-  kept = kept.slice(0, TASKS_PER_CALL).map((task) => ({
+  const kept = planned.tasks.map((task) => ({
     ...task,
     participantId: opts.claimant.id,
     teamId: null,
-    source: "generated" as const,
   }));
   const existing = await supabase
     .from("tasks")
@@ -1205,6 +1293,8 @@ export async function refillPersonalTasksIfNeeded(opts: {
       code: row.code,
       title: row.title,
       base_points: row.base_points,
+      slot: row.slot ?? null,
+      neighborhood: row.neighborhood,
     })),
   });
   try {

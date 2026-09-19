@@ -44,7 +44,7 @@ import {
   unknownCodeLine,
   visionRejectedLine,
 } from "@/lib/game/copy";
-import { endOfLocalDayContaining } from "@/lib/game/time";
+import { endOfLocalDayContaining, localDateString } from "@/lib/game/time";
 import { isBoardRequest } from "@/lib/game/board-schedule";
 import {
   FREEFORM_PHOTO_BONUS_MAX,
@@ -54,7 +54,7 @@ import {
   parseFreeformExtraction,
   type FreeformExtraction,
 } from "@/lib/game/freeform";
-import { imageFingerprint, imageTakenAt, sniffImageMime } from "@/lib/game/image-hash";
+import { imageFingerprint, imageTakenAt, prepareForVision, sniffImageMime } from "@/lib/game/image-hash";
 import { fetchWithTimeout, withTimeout } from "@/lib/timeout";
 import { nextFreeformCode } from "@/lib/game/generate";
 import {
@@ -92,7 +92,7 @@ import {
 import { sendText } from "@/lib/linq/send";
 
 const TASK_COLS =
-  "id, trip_id, participant_id, team_id, code, title, tier, axes_json, base_points, photo_bonus_max, verification, day, expires_at, neighborhood, source";
+  "id, trip_id, participant_id, team_id, code, title, tier, axes_json, base_points, photo_bonus_max, verification, day, expires_at, neighborhood, source, slot, duration_minutes";
 const PARTICIPANT_COLS =
   "id, trip_id, phone, display_name, score, survey_json, survey_state, sidequests_muted, consented_at";
 const CLAIM_COLS =
@@ -427,6 +427,8 @@ type LoadedPhoto = {
   hash: string;
   mime: string;
   takenAt: Date | null;
+  // Upright and downscaled for the vision model (original if undecodable).
+  vision: { data: string; mime: string };
 };
 
 // fetch -> sniff -> fingerprint -> EXIF, each step logged .before/.after.
@@ -452,7 +454,25 @@ async function loadPhoto(
   claimStep("photo.hash.kind", { reason, kind: fingerprint.kind });
   const takenAt = await claimAwait("photo.exif", { reason }, () => imageTakenAt(bytes));
   claimStep("photo.exif.result", { reason, takenAt: takenAt?.toISOString() ?? null });
-  return { bytes, hash: fingerprint.hash, mime, takenAt };
+  const prepared = await claimAwait("photo.prepare", { reason }, () => prepareForVision(bytes, mime));
+  claimStep("photo.prepare.result", {
+    reason,
+    prepared: prepared.prepared,
+    bytesIn: bytes.length,
+    bytesOut: prepared.data.length,
+    mime: prepared.mime,
+  });
+  return {
+    bytes,
+    hash: fingerprint.hash,
+    mime,
+    takenAt,
+    vision: { data: prepared.data.toString("base64"), mime: prepared.mime },
+  };
+}
+
+function taskCreatedOn(task: TaskRow, trip: TripRow): string | null {
+  return task.created_at ? localDateString(new Date(task.created_at), trip.timezone) : null;
 }
 
 type VisionResult =
@@ -471,19 +491,31 @@ async function scoreVision(opts: {
   try {
     const scored = await claimAwait(
       "gemini.vision",
-      { code: opts.code, reason: opts.reason, mime: opts.photo.mime },
+      { code: opts.code, reason: opts.reason, mime: opts.photo.vision.mime },
       () =>
         scorePhotoFidelity({
           provider: opts.provider,
           title: opts.title,
           photoBonusMax: opts.photoBonusMax,
-          image: { data: opts.photo.bytes.toString("base64"), mime: opts.photo.mime },
+          image: opts.photo.vision,
         }),
     );
+    if (!scored) {
+      // An empty or unreadable answer is our failure, not a "no".
+      claimStep("gemini.vision.unreadable", { code: opts.code, reason: opts.reason });
+      return { status: "failed", error: "empty or unreadable vision response" };
+    }
+    claimStep("gemini.vision.raw", {
+      code: opts.code,
+      task: opts.title.slice(0, 120),
+      seen: scored.seen,
+      relates: scored.raw.relates.slice(0, 400),
+      fidelity: scored.raw.fidelity?.slice(0, 200) ?? null,
+    });
     const result: VisionResult = {
       status: "scored",
-      showsTask: Boolean(scored?.shows_task),
-      fidelity: scored?.fidelity ?? 0,
+      showsTask: scored.shows_task,
+      fidelity: scored.fidelity,
     };
     claimStep("gemini.vision.result", { code: opts.code, ...result });
     return result;
@@ -996,6 +1028,7 @@ async function resolveKnownTask(opts: {
           tripStart: opts.trip.start_date,
           tripEnd: opts.trip.end_date,
           photoBonusMax: opts.task.photo_bonus_max,
+          taskCreatedOn: taskCreatedOn(opts.task, opts.trip),
         });
         claimStep("photo_bonus.rules", {
           code: opts.task.code,
@@ -1157,6 +1190,7 @@ async function tryHandleFreeform(opts: {
         takenAt,
         tripStart: opts.trip.start_date,
         tripEnd: opts.trip.end_date,
+        taskCreatedOn: localDateString(new Date(), opts.trip.timezone),
       });
       if (!bonus.reject) {
         photoBonus = Math.min(bonus.bonus, FREEFORM_PHOTO_BONUS_MAX);
@@ -1368,6 +1402,7 @@ export async function applyLatePhotoBonus(opts: {
     tripStart: opts.trip.start_date,
     tripEnd: opts.trip.end_date,
     photoBonusMax: opts.task.photo_bonus_max,
+    taskCreatedOn: taskCreatedOn(opts.task, opts.trip),
   });
   if (bonus.reject) {
     claimStep("photo_bonus.exif_reject", { code: opts.task.code });

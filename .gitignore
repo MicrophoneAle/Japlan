@@ -45,3 +45,6 @@ next-env.d.ts
 .captures/
 
 .vercel
+
+# vision fixture photo cache (scripts/vision-fixtures.ts)
+.vision-fixtures/

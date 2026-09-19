@@ -106,26 +106,28 @@ Six axes, each 1-5:
 
 | Axis | Weight | What it measures |
 | --- | --- | --- |
-| Boldness | 1.5 | Social friction, willingness to look silly |
-| Physical | 1.3 | Effort, distance, stairs |
-| Time | 1.3 | Wall clock: 1 is under 15 min, 5 is a half day |
-| Scarcity | 1.2 | How rare or hard to find |
-| Cultural relevance | 1.0 | How specific to this place |
-| Aesthetics | 0.7 | How good it looks |
+| Boldness | 1.6 | Social friction, willingness to look silly |
+| Scarcity | 1.5 | How rare or hard to find |
+| Cultural relevance | 1.4 | How specific to this place |
+| Time | 0.9 | Wall clock: 1 is under 20 min (a sidequest), 2 is 20-45 min, 3 is 45 min-2 h, 4-5 is 2 h or more |
+| Physical | 0.8 | Effort, distance, stairs |
+| Aesthetics | 0.6 | How good it looks |
 
-Boldness is weighted highest because social friction is what produces the stories people retell. Aesthetics is lowest because it is the most gameable.
+Boldness is weighted highest because social friction is what produces the stories people retell. A task earns points for being socially bold, hard to find, and specific to this place, not for being long, tiring or pretty: walking further should never out-earn talking to a stranger. Aesthetics is lowest because it is the most gameable. (Reweighted 2026-09-19 from 1.5 / 1.3 / 1.3 / 1.2 / 1.0 / 0.7.)
 
 Time was the missing axis in the original notes. The other five measure how hard, how rare, how bold, how pretty, how local, and none of them capture that a trivially easy task can still cost two hours of a five-day trip.
 
 ```latex
-base = \mathrm{round}(1.5b + 1.3p + 1.3t + 1.2s + 1.0c + 0.7a)
+base = \mathrm{round}(1.6b + 1.5s + 1.4c + 0.9t + 0.8p + 0.6a)
 ```
 
-Tier bands off the weighted total:
+Tier bands off the weighted total, which runs from 7 (all 1s) to 34 (all 5s):
 
-- Light: 1-10
-- Medium: 11-20
-- Challenging: 21-30
+- Light: 7-15
+- Medium: 16-24
+- Challenging: 25-34
+
+The model proposes the time axis; code estimates duration (venue time from the place category, travel from coordinates, friction from boldness) and overrides the axis when the two are more than one band apart.
 
 ### Photo bonus, de-exploited
 

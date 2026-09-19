@@ -1,3 +1,4 @@
+import { minutesForTimeAxis } from "./duration";
 import { answerValue, type SurveyAnswers } from "./survey";
 
 export type RejectionReason =
@@ -28,8 +29,29 @@ export type ProposedTask = {
   neighborhood: string;
   participantId?: string | null;
   teamId?: string | null;
-  source?: "generated" | "freeform";
+  source?: "generated" | "freeform" | "curveball";
+  // Generation-time only (not stored): what sort of task it is, and the
+  // specific spot it happens at. Used to keep one board varied.
+  kind?: TaskKind;
+  place?: string;
+  // The template it was built from, or "curveball" for the one-in-four task
+  // that fits no template.
+  template?: string;
+  // Named places in order (a route task has two); place is the first.
+  places?: string[];
+  // Needs speaking to someone you do not know.
+  stranger?: boolean;
+  when?: "morning" | "evening";
 };
+
+export const CURVEBALL = "curveball";
+
+export const TASK_KINDS = ["social", "food", "explore", "challenge", "culture", "creative"] as const;
+export type TaskKind = (typeof TASK_KINDS)[number];
+
+export function isTaskKind(value: unknown): value is TaskKind {
+  return typeof value === "string" && (TASK_KINDS as readonly string[]).includes(value);
+}
 
 export type AssigneeConstraints = {
   answers: SurveyAnswers;
@@ -104,12 +126,6 @@ export function normalizeTitle(title: string): string {
   return title.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-function minutesForTimeAxis(time: number): number {
-  const table = [15, 45, 90, 180, 360];
-  const idx = Math.min(5, Math.max(1, Math.round(time))) - 1;
-  return table[idx];
-}
-
 export function validateGeneratedTask(
   task: ProposedTask,
   opts: {
@@ -149,4 +165,66 @@ export function validateGeneratedTask(
   }
 
   return null;
+}
+
+export type MixRejection = "same_place" | "same_template" | "extra_curveball" | "one_kind";
+
+// "Yoyogi Park", "yoyogi park.", "the Yoyogi park" are one place. No place
+// (eat something starting with a-d) is anywhere, and never collides.
+export function placeKey(place: string | undefined): string | null {
+  const key = (place ?? "")
+    .toLowerCase()
+    .replace(/^\s*the\s+/, "")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+  return key || null;
+}
+
+// Board-level rules, in code, after per-task validation: no two tasks on one
+// board at the same place or from the same template, at most one curveball,
+// and a board of two or more is never all one kind. An all-one-kind board
+// keeps only its first task; the fill step then tops it up from templates.
+// oneKind: false applies only the dedupe, for a pool of candidates that the
+// day planner picks from (it keeps kinds varied as it picks).
+export function enforceBoardMix<T extends ProposedTask>(
+  tasks: T[],
+  opts: { oneKind?: boolean; existing?: T[] } = {},
+): { kept: T[]; rejected: { task: T; reason: MixRejection }[] } {
+  const kept: T[] = [];
+  const rejected: { task: T; reason: MixRejection }[] = [];
+  const places = new Set<string>();
+  const templates = new Set<string>();
+  let curveballs = 0;
+  const note = (task: T) => {
+    const key = placeKey(task.place);
+    if (key) places.add(key);
+    if (task.template === CURVEBALL) curveballs += 1;
+    else if (task.template) templates.add(task.template);
+  };
+  for (const task of opts.existing ?? []) note(task);
+  for (const task of tasks) {
+    const key = placeKey(task.place);
+    if (key && places.has(key)) {
+      rejected.push({ task, reason: "same_place" });
+      continue;
+    }
+    if (task.template === CURVEBALL && curveballs > 0) {
+      rejected.push({ task, reason: "extra_curveball" });
+      continue;
+    }
+    if (task.template && task.template !== CURVEBALL && templates.has(task.template)) {
+      rejected.push({ task, reason: "same_template" });
+      continue;
+    }
+    note(task);
+    kept.push(task);
+  }
+  if (opts.oneKind === false) return { kept, rejected };
+  const kinds = kept.map((task) => task.kind);
+  const oneKind =
+    kept.length >= 2 && kinds.every((kind) => kind !== undefined && kind === kinds[0]);
+  if (oneKind) {
+    for (const task of kept.splice(1)) rejected.push({ task, reason: "one_kind" });
+  }
+  return { kept, rejected };
 }
