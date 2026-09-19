@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@browserbasehq/sdk": "^2.20.0",
+    "@browserbasehq/stagehand": "^4.1.0",
     "@google/genai": "^2.23.0",
     "@linqapp/sdk": "^0.69.2",
     "@supabase/supabase-js": "^2.116.0",
@@ -18,7 +19,8 @@
     "playwright-core": "^1.63.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "sharp": "^0.35.4"
+    "sharp": "^0.35.4",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
