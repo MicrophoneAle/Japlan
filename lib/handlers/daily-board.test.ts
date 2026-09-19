@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeSupabase } from "@/lib/test/fake-supabase";
-import type { ParticipantRow } from "@/lib/db/types";
+import type { ParticipantRow, TripRow } from "@/lib/db/types";
 
 const h = vi.hoisted(() => ({ db: null as unknown as FakeSupabase }));
 vi.mock("@/lib/db/client", () => ({ getServiceClient: () => h.db }));
@@ -32,43 +32,55 @@ describe("loadAssignees", () => {
     h.db = new FakeSupabase();
   });
 
-  function person(id: string, display_name: string): ParticipantRow {
+  function trip(playMode: TripRow["play_mode"] = null): TripRow {
+    return {
+      id: "trip-1",
+      linq_chat_id: "group-1",
+      name: "Tokyo trip",
+      destination: "Tokyo",
+      start_date: "2026-10-17",
+      end_date: "2026-10-20",
+      play_mode: playMode,
+      state: "active",
+      difficulty: null,
+      stake_text: null,
+      timezone: "Asia/Tokyo",
+    };
+  }
+
+  function person(id: string, display_name: string, interests: string[] = []): ParticipantRow {
     return {
       id,
       trip_id: "trip-1",
       phone: `+1-${id}`,
       display_name,
       score: 0,
-      survey_json: null,
+      survey_json: interests.length
+        ? { interest_picks: { value: interests.join(",") } }
+        : null,
       survey_state: "done",
       sidequests_muted: false,
       consented_at: null,
     };
   }
 
-  // Boards follow the split model (lib/game/split.ts): no split is one plan
-  // for everyone; a day's split makes day-bound teams, and everyone else
-  // stays on the group plan.
-  it("plans one group board for everyone when nobody has split", async () => {
+  it("keeps legacy trips on one shared board", async () => {
     const people = [person("alice", "Alice"), person("bob", "Bob")];
-    const assignees = await loadAssignees("trip-1", people, 1);
+    const assignees = await loadAssignees(trip(), people, 1);
     expect(assignees).toHaveLength(1);
     expect(assignees[0].kind).toBe("group");
     expect(assignees[0].people.map((p) => p.id).sort()).toEqual(["alice", "bob"]);
   });
 
-  it("still plans for people not on any team once a team exists", async () => {
-    // Regression: loadAssignees once returned ONLY team assignees the moment
-    // any team existed, dropping everyone else from board generation.
-    h.db.seed("teams", [{ trip_id: "trip-1", name: "team 1", day: 1, formed_at: new Date().toISOString() }]);
-    const team = h.db.table("teams")[0];
-    h.db.seed("team_members", [
-      { team_id: team.id, participant_id: "alice" },
-      { team_id: team.id, participant_id: "bob" },
-    ]);
-    const people = [person("alice", "Alice"), person("bob", "Bob"), person("carol", "Carol"), person("dave", "Dave")];
+  it("pairs people with shared interests and leaves unmatched people solo", async () => {
+    const people = [
+      person("alice", "Alice", ["museums"]),
+      person("bob", "Bob", ["museums"]),
+      person("carol", "Carol", ["food"]),
+      person("dave", "Dave", ["nightlife"]),
+    ];
 
-    const assignees = await loadAssignees("trip-1", people, 1);
+    const assignees = await loadAssignees(trip("teams"), people, 1);
 
     const teamAssignee = assignees.find((a) => a.kind === "team");
     expect(teamAssignee?.people.map((p) => p.id).sort()).toEqual(["alice", "bob"]);
@@ -76,11 +88,13 @@ describe("loadAssignees", () => {
     expect(rest.sort()).toEqual(["carol", "dave"]);
   });
 
-  it("a survey pairing (trip-long team) pools points but does not split the plan", async () => {
-    h.db.seed("teams", [{ trip_id: "trip-1", name: "team 1", color: "red", formed_at: new Date().toISOString() }]);
-    const team = h.db.table("teams")[0];
-    h.db.seed("team_members", [{ team_id: team.id, participant_id: "alice" }]);
-    const assignees = await loadAssignees("trip-1", [person("alice", "Alice"), person("bob", "Bob")], 1);
-    expect(assignees.map((a) => a.kind)).toEqual(["group"]);
+  it("gives each person their own assignment in individual mode", async () => {
+    const people = [person("alice", "Alice"), person("bob", "Bob")];
+    const assignees = await loadAssignees(trip("individual"), people, 1);
+
+    expect(assignees.map((assignee) => assignee.people.map((p) => p.id))).toEqual([
+      ["alice"],
+      ["bob"],
+    ]);
   });
 });
