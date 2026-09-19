@@ -12,9 +12,13 @@ function now() { return new Date().toISOString(); }
 function key(candidate: CandidateActivity) { return candidate.name.trim().toLocaleLowerCase(); }
 function dashboardUrl(sessionId: string | null) { return sessionId ? `https://www.browserbase.com/sessions/${sessionId}` : null; }
 function errorMessage(error: unknown): string {
-  if (!(error instanceof Error)) return "Research failed";
-  const cause = error.cause;
-  return cause instanceof Error ? `${error.message}: ${cause.message}` : error.message;
+  const messages: string[] = [];
+  let current: unknown = error;
+  while (current instanceof Error && !messages.includes(current.message)) {
+    messages.push(current.message);
+    current = current.cause;
+  }
+  return messages.join(": ") || "Research failed";
 }
 
 export async function researchActivities(config: TripConfig): Promise<ResearchSnapshot> {
