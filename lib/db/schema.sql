@@ -1,0 +1,123 @@
+-- Japlan Postgres schema, taken from the Data model section of docs/PLAN.md.
+--
+-- TODO: plan does not specify id types; using uuid + gen_random_uuid() (Supabase default).
+-- TODO: plan does not specify created_at/updated_at except ratings.created_at; not added elsewhere.
+-- TODO: plan does not specify FK delete/update behaviour; using the Postgres default (NO ACTION).
+-- TODO: events.trip_id is nullable because inbound webhooks can arrive before a trip row exists.
+-- TODO: places.fsq_id is required later in the Foursquare section but is not in the Data model column list; omitted.
+-- TODO: a `channel` field is required later for RCS/WhatsApp, but is not in the Data model; omitted.
+-- TODO: enum values for trips.state, trips.difficulty, tasks.tier, tasks.verification, claims.status are unspecified; stored as text.
+
+create table trips (
+  id uuid primary key default gen_random_uuid(),
+  linq_chat_id text not null unique,
+  name text not null,
+  destination text not null,
+  start_date date not null,
+  end_date date not null,
+  state text not null,
+  difficulty text not null,
+  stake_text text,
+  timezone text not null
+);
+
+create table participants (
+  id uuid primary key default gen_random_uuid(),
+  trip_id uuid not null references trips (id),
+  phone text not null,
+  display_name text not null,
+  score integer not null default 0,
+  survey_json jsonb,
+  survey_state text,
+  sidequests_muted boolean not null default false,
+  consented_at timestamptz
+);
+
+create table teams (
+  id uuid primary key default gen_random_uuid(),
+  trip_id uuid not null references trips (id),
+  name text not null,
+  color text not null,
+  formed_at timestamptz not null,
+  dissolved_at timestamptz
+);
+
+create table team_members (
+  id uuid primary key default gen_random_uuid(),
+  team_id uuid not null references teams (id),
+  participant_id uuid not null references participants (id)
+);
+
+create table places (
+  id uuid primary key default gen_random_uuid(),
+  trip_id uuid not null references trips (id),
+  name text not null,
+  lat double precision,
+  lng double precision,
+  category text,
+  source text,
+  -- TODO: plan does not specify whether suggested_by is a participant id or a free-text handle.
+  suggested_by text,
+  hours_json jsonb,
+  price_band integer,
+  score numeric
+);
+
+create table itinerary (
+  id uuid primary key default gen_random_uuid(),
+  trip_id uuid not null references trips (id),
+  day integer not null,
+  anchor_order integer not null,
+  place_id uuid not null references places (id),
+  planned_time timestamptz
+);
+
+create table tasks (
+  id uuid primary key default gen_random_uuid(),
+  trip_id uuid not null references trips (id),
+  participant_id uuid references participants (id),
+  team_id uuid references teams (id),
+  code text not null,
+  title text not null,
+  tier text not null,
+  axes_json jsonb not null,
+  base_points integer not null,
+  photo_bonus_max integer not null,
+  verification text not null,
+  day integer not null,
+  expires_at timestamptz,
+  neighborhood text,
+  constraint tasks_exactly_one_assignee check (
+    (participant_id is not null and team_id is null)
+    or (participant_id is null and team_id is not null)
+  )
+);
+
+create table claims (
+  id uuid primary key default gen_random_uuid(),
+  task_id uuid not null references tasks (id),
+  participant_id uuid not null references participants (id),
+  evidence_url text,
+  image_hash text,
+  status text not null,
+  awarded_points integer,
+  resolved_by text,
+  resolution_json jsonb
+);
+
+create table events (
+  id uuid primary key default gen_random_uuid(),
+  trip_id uuid references trips (id),
+  linq_event_id text not null unique,
+  type text not null,
+  payload jsonb not null,
+  processed_at timestamptz
+);
+
+create table ratings (
+  id uuid primary key default gen_random_uuid(),
+  participant_id uuid not null references participants (id),
+  place_id uuid not null references places (id),
+  score integer not null,
+  created_at timestamptz not null default now()
+);
