@@ -16,6 +16,39 @@ bun dev
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
+## Itinerary research lab
+
+`/itinerary` is a development-only draft-itinerary workflow. It uses the
+Toronto fixture in `lib/itinerary/config.ts`; its dates are inclusive calendar
+dates and can be edited in that one file. It is guarded by
+`DEVELOPMENT_ITINERARY_TRIP_ID`, so it cannot be used for an arbitrary trip.
+
+Set these values in `.env.local` before running a real generation:
+
+```env
+DEVELOPMENT_ITINERARY_TRIP_ID=<an existing trips.id>
+NEXT_PUBLIC_DEVELOPMENT_ITINERARY_TRIP_ID=<the same trips.id>
+ITINERARY_RESEARCH_MODE=real
+BROWSERBASE_API_KEY=
+BROWSERBASE_PROJECT_ID=
+GEMINI_API_KEY=
+GEMINI_FAST_MODEL=
+GEMINI_SMART_MODEL=
+STAGEHAND_MODEL=google/gemini-2.5-flash
+SUPABASE_URL=
+SUPABASE_SERVICE_ROLE_KEY=
+```
+
+Apply `lib/db/migrations/20260919_itinerary_research.sql` to Supabase first.
+Then open `/itinerary` and choose **Generate Itinerary**. Real mode uses a
+bounded Browserbase + Stagehand session for source-backed candidates, then
+Gemini selects only those candidates for an unvalidated draft. The developer
+Research Inspector shows persisted URLs, actions, candidates, selections, and
+Browserbase session metadata.
+
+For deterministic UI development only, set `ITINERARY_RESEARCH_MODE=mock`.
+Mock mode is never selected automatically and throws when `NODE_ENV=production`.
+
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
