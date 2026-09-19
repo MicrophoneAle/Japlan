@@ -1,12 +1,20 @@
 import { getServiceClient } from "@/lib/db/client";
 import { evaluateAddress } from "@/lib/game/addressing";
+import { extractTaskCode } from "@/lib/game/claims";
 import { bootstrapGroupIfNeeded } from "@/lib/handlers/bootstrap";
+import {
+  handleGroupClaim,
+  handlePeerReaction,
+  recentCodeFor,
+  rememberTaskMention,
+} from "@/lib/handlers/claims";
 import { handleSurveyDm } from "@/lib/handlers/survey";
 import {
   chatIdFromData,
   isDirectChat,
   isFromMe,
   isGroupChat,
+  mediaFromParts,
   senderFromData,
   textFromParts,
   type LinqEnvelope,
@@ -45,12 +53,18 @@ async function onMessageReceived(data: unknown): Promise<void> {
   }
 
   const text = textFromParts(data.parts);
+  const media = mediaFromParts(data.parts);
   const isDm = isDirectChat(data);
+  const phone = senderFromData(data)?.handle ?? null;
+  const recentCode = chatId && phone ? recentCodeFor(chatId, phone) : null;
+  const codeInText = extractTaskCode(text);
+  if (chatId && phone && codeInText) {
+    rememberTaskMention(chatId, phone, codeInText);
+  }
   const decision = evaluateAddress({
     text,
     isDm,
-    // TODO: nothing sets openTaskContext yet; open task-context tracking is later.
-    openTaskContext: false,
+    openTaskContext: media.length > 0 && Boolean(recentCode),
   });
 
   if (!decision.respond) {
@@ -63,7 +77,6 @@ async function onMessageReceived(data: unknown): Promise<void> {
     return;
   }
 
-  const phone = senderFromData(data)?.handle ?? null;
   const messageId = typeof data.id === "string" ? data.id : null;
   if (messageId) {
     try {
@@ -75,9 +88,10 @@ async function onMessageReceived(data: unknown): Promise<void> {
 
   if (isDm && phone) {
     await handleSurveyDm({ phone, chatId, text });
+    return;
   }
-  // TODO: group addressed messages have no handler in this milestone
-  // (no claims, itinerary, or task generation).
+
+  await handleGroupClaim(data);
 }
 
 export async function dispatchLinqEvent(envelope: LinqEnvelope): Promise<void> {
@@ -93,6 +107,10 @@ export async function dispatchLinqEvent(envelope: LinqEnvelope): Promise<void> {
 
     if (envelope.event_type === "message.received") {
       await onMessageReceived(envelope.data);
+    } else if (envelope.event_type === "reaction.added") {
+      if (isRecord(envelope.data)) {
+        await handlePeerReaction(envelope.data);
+      }
     }
     await markProcessed(envelope.event_id);
   } catch (err) {

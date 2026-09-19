@@ -80,6 +80,14 @@ describe("group vs parts", () => {
       },
     ]);
   });
+
+  it("does not crash on a media-only message with no text part", () => {
+    const parts = [
+      { type: "media", mime: "image/jpeg", url: "https://cdn.example/a.jpg" },
+    ];
+    expect(textFromParts(parts)).toBe("");
+    expect(mediaFromParts(parts)).toHaveLength(1);
+  });
 });
 
 describe("membersFromChatJson", () => {

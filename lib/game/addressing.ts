@@ -1,7 +1,7 @@
 export type AddressingInput = {
   text: string;
   isDm: boolean;
-  // TODO: nothing sets this yet; open task-context tracking is later.
+  // Photo within 60s of a task code, set by dispatch from recentCodeFor.
   openTaskContext?: boolean;
   wakeKeyword?: string;
 };

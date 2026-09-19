@@ -92,11 +92,15 @@ create table tasks (
   day integer not null,
   expires_at timestamptz,
   neighborhood text,
-  constraint tasks_exactly_one_assignee check (
-    (participant_id is not null and team_id is null)
-    or (participant_id is null and team_id is not null)
-  )
+  -- Shared board tasks may have both assignee columns null (first write wins).
+  -- Split-team tasks set team_id; personal tasks set participant_id. Never both.
+  constraint tasks_at_most_one_assignee check (
+    not (participant_id is not null and team_id is not null)
+  ),
+  unique (trip_id, code)
 );
+
+create index tasks_trip_id_day_idx on tasks (trip_id, day);
 
 create table claims (
   id uuid primary key default gen_random_uuid(),
@@ -109,6 +113,9 @@ create table claims (
   resolved_by text,
   resolution_json jsonb
 );
+
+create unique index claims_task_participant_key on claims (task_id, participant_id);
+create index claims_image_hash_idx on claims (image_hash);
 
 create table events (
   id uuid primary key default gen_random_uuid(),
