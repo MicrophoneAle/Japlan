@@ -17,6 +17,7 @@ export type QuestionId =
   | "chaos_alternative"
   | "competitiveness"
   | "attractions"
+  | "team_preference"
   | "social_with"
   | "social_travelled"
   | "social_couples";
@@ -174,10 +175,19 @@ export const QUESTIONS: Record<QuestionId, Question> = {
     kind: "free_text",
     prompt: "anything you already want on the itinerary?",
   },
+  team_preference: {
+    id: "team_preference",
+    kind: "choice",
+    prompt: "want your points paired with a teammate, or kept solo? team / solo",
+    choices: [
+      { id: "team", label: "team" },
+      { id: "solo", label: "solo" },
+    ],
+  },
   social_with: {
     id: "social_with",
     kind: "free_text",
-    prompt: "if the group splits up for an afternoon, who do you want to end up with?",
+    prompt: "who do you want to end up with, if i'm pairing people up (or the group splits for an afternoon)?",
   },
   social_travelled: {
     id: "social_travelled",
@@ -215,6 +225,7 @@ export const QUESTION_ORDER: QuestionId[] = [
   "chaos_alternative",
   "competitiveness",
   "attractions",
+  "team_preference",
   "social_with",
   "social_travelled",
   "social_couples",

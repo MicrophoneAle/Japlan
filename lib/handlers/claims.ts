@@ -1,6 +1,8 @@
 import { getServiceClient } from "@/lib/db/client";
 import type { ClaimRow, ParticipantRow, TaskRow, TripRow } from "@/lib/db/types";
 import { formatMorningStandings } from "@/lib/game/board";
+import { buildStandingsRows } from "@/lib/game/standings";
+import { teamsWithMembers } from "@/lib/handlers/teams";
 import {
   CLAIM_MATCH_CONFIDENCE_MIN,
   applyPhotoBonusRules,
@@ -574,7 +576,7 @@ export async function postDailyBoard(tripId: string, send: SendFn = sendText): P
   const trip = tripRes.data as { id: string; linq_chat_id: string };
   const [tasksRes, peopleRes] = await Promise.all([
     supabase.from("tasks").select("code, title, base_points, day").eq("trip_id", tripId),
-    supabase.from("participants").select("display_name, score").eq("trip_id", tripId),
+    supabase.from("participants").select("id, display_name, score").eq("trip_id", tripId),
   ]);
   if (tasksRes.error) throw tasksRes.error;
   if (peopleRes.error) throw peopleRes.error;
@@ -585,9 +587,11 @@ export async function postDailyBoard(tripId: string, send: SendFn = sendText): P
     day: number;
   }[];
   const day = tasks[0]?.day ?? 1;
+  const people = (peopleRes.data ?? []) as { id: string; display_name: string; score: number }[];
+  const teams = await teamsWithMembers(tripId);
   const text = formatMorningStandings({
     day,
-    standings: (peopleRes.data ?? []) as { display_name: string; score: number }[],
+    standings: buildStandingsRows(people, teams),
   });
   await send(trip.linq_chat_id, text);
 }

@@ -160,6 +160,11 @@ describe("board requests", () => {
       "japlan day 3",
       "japlan friday",
       "what's on the board?",
+      "japlan sidequest",
+      "japlan sidequests",
+      "japlan quest",
+      "japlan quests",
+      "japlan give me a quest",
     ]) {
       expect(isBoardRequest(text), text).toBe(true);
     }

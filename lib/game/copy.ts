@@ -348,6 +348,32 @@ export function twoMatchAskLine(left: string, right: string): string {
   return `${left} or ${right}?`;
 }
 
+// Trip activation, teams edition: one line per pair, plus how to rename.
+export function teamsAnnounceLine(
+  teams: { name: string; members: string[] }[],
+): string {
+  const rosters = teams
+    .map((t) => `${t.name}: ${t.members.join(" + ")}`)
+    .join("\n");
+  return `${rosters}\nnot feeling the name? "japlan we're team <name>" changes it.`;
+}
+
+export function teamRenamedLine(name: string): string {
+  return `you're ${name} now.`;
+}
+
+export function teamNameTakenLine(name: string): string {
+  return `${name} is already someone's team name. try another.`;
+}
+
+export function notOnATeamLine(): string {
+  return "you're not on a team, so there's nothing to rename.";
+}
+
+export function teamNameUnreadableLine(): string {
+  return `couldn't read a name there. try "japlan we're team <name>".`;
+}
+
 export const HELP_TEXT = {
   group: `here's the deal
 
@@ -355,6 +381,7 @@ export const HELP_TEXT = {
 · send the code (like A1) to claim one
 · send a photo after and you get bonus points
 · did something cool i didn't ask for? just tell me, i'll score it
+· on a team? "japlan we're team <name>" names you
 · "japlan standings" for the leaderboard
 · "japlan chill" if i'm being annoying
 

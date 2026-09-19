@@ -33,6 +33,8 @@ import { sendDM, sendText } from "@/lib/linq/send";
 import { applySoloVerification } from "@/lib/game/solo";
 // Plan does not specify the exact expiry instant; tasks end with the trip's local day.
 import { endOfLocalDay, localDateString, localHour } from "@/lib/game/time";
+import { buildStandingsRows } from "@/lib/game/standings";
+import { teamsWithMembers } from "@/lib/handlers/teams";
 
 import { TRIP_COLS } from "@/lib/db/columns";
 import { boardDueNow, tripDayForDate } from "@/lib/game/board-schedule";
@@ -117,7 +119,7 @@ async function yesterdayRatings(tripId: string): Promise<string> {
     .join(", ");
 }
 
-type Assignee = {
+export type Assignee = {
   kind: "person" | "team";
   id: string;
   participantId: string | null;
@@ -126,7 +128,7 @@ type Assignee = {
   label: string;
 };
 
-async function loadAssignees(tripId: string, people: ParticipantRow[]): Promise<Assignee[]> {
+export async function loadAssignees(tripId: string, people: ParticipantRow[]): Promise<Assignee[]> {
   const { data, error } = await getServiceClient()
     .from("teams")
     .select("id, name, dissolved_at")
@@ -146,6 +148,7 @@ async function loadAssignees(tripId: string, people: ParticipantRow[]): Promise<
   }
 
   const assignees: Assignee[] = [];
+  const teamed = new Set<string>();
   for (const team of teams) {
     const { data: members, error: memErr } = await getServiceClient()
       .from("team_members")
@@ -155,6 +158,7 @@ async function loadAssignees(tripId: string, people: ParticipantRow[]): Promise<
     const ids = new Set(
       (members ?? []).map((m) => (m as { participant_id: string }).participant_id),
     );
+    for (const id of ids) teamed.add(id);
     assignees.push({
       kind: "team",
       id: team.id,
@@ -162,6 +166,19 @@ async function loadAssignees(tripId: string, people: ParticipantRow[]): Promise<
       teamId: team.id,
       people: people.filter((p) => ids.has(p.id)),
       label: team.name,
+    });
+  }
+  // Anyone not on a team (survey answer was "solo", or teams don't cover
+  // everyone) still gets their own personal board.
+  for (const person of people) {
+    if (teamed.has(person.id)) continue;
+    assignees.push({
+      kind: "person",
+      id: person.id,
+      participantId: person.id,
+      teamId: null,
+      people: [person],
+      label: person.display_name,
     });
   }
   return assignees;
@@ -1018,13 +1035,11 @@ async function deliverMorningBoards(opts: {
   // A solo trip's chat IS the player's DM, which just got their board: a
   // one-person standings post would be a second message saying nothing.
   if (opts.trip.is_solo) return;
+  const teams = await teamsWithMembers(opts.trip.id);
   const standings = formatMorningStandings({
     day: opts.day,
     weatherLine: opts.weatherLine,
-    standings: (opts.allPeople ?? opts.people).map((p) => ({
-      display_name: p.display_name,
-      score: p.score,
-    })),
+    standings: buildStandingsRows(opts.allPeople ?? opts.people, teams),
   });
   await sendText(opts.trip.linq_chat_id, standings);
 }

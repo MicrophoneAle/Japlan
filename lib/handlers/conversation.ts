@@ -22,7 +22,9 @@ import {
   CONVERSATION_PRIVACY_LINE,
   CONVERSATION_SYSTEM_PROMPT,
   conversationRedirect,
+  standingsLine,
 } from "@/lib/game/copy";
+import { isStandingsRequest } from "@/lib/game/commands";
 import type { FreeformExtraction } from "@/lib/game/freeform";
 import {
   isOpenTask,
@@ -31,6 +33,7 @@ import {
   tasksClaimableBy,
 } from "@/lib/game/claims";
 import type { Axes } from "@/lib/game/scoring";
+import { buildStandingsRows } from "@/lib/game/standings";
 import type { SurveyAnswers } from "@/lib/game/survey";
 import { currentTripDay } from "@/lib/handlers/daily-board";
 import {
@@ -44,6 +47,7 @@ import {
   submitFreeformClaim,
   type ClaimFallthrough,
 } from "@/lib/handlers/claims";
+import { teamsWithMembers } from "@/lib/handlers/teams";
 import type { LLMProvider, ToolContent, ToolTurn } from "@/lib/llm";
 import { GeminiProvider } from "@/lib/llm/gemini";
 import {
@@ -220,6 +224,17 @@ function boardInfo(miss: ClaimFallthrough, now: number): Record<string, unknown>
   };
 }
 
+// "japlan lb": the same numbers get_standings would fetch, sent directly,
+// same as answerBoardRequest short-circuits a plans/tasks request.
+async function sendStandingsReply(miss: ClaimFallthrough): Promise<void> {
+  const send = miss.send ?? sendText;
+  const teams = await teamsWithMembers(miss.trip.id);
+  const rows = buildStandingsRows(miss.people, teams).sort(
+    (a, b) => b.score - a.score || a.display_name.localeCompare(b.display_name),
+  );
+  await send(miss.chatId, standingsLine(rows));
+}
+
 export async function handleConversation(
   miss: ClaimFallthrough,
   deps: { provider?: LLMProvider } = {},
@@ -238,6 +253,13 @@ export async function handleConversation(
   // does not exist yet. No model; asking before a board exists is normal.
   if (isBoardRequest(miss.text)) {
     await answerBoardRequest(miss, now);
+    return;
+  }
+  // "lb", "leader", "leaderboard", "standings", "scores": read straight from
+  // the database and reply, same numbers get_standings would give the model,
+  // without spending a model call on a request this unambiguous.
+  if (isStandingsRequest(miss.text)) {
+    await sendStandingsReply(miss);
     return;
   }
   // No hourly reply cap: it refused people who had addressed the bot, which
@@ -399,9 +421,10 @@ async function executeConversationTool(
   miss: ClaimFallthrough,
 ): Promise<{ result: Record<string, unknown>; sent: boolean }> {
   if (name === "get_standings") {
-    const rows = [...miss.people]
-      .sort((a, b) => b.score - a.score || a.display_name.localeCompare(b.display_name))
-      .map((person) => ({ name: person.display_name, score: person.score }));
+    const teams = await teamsWithMembers(miss.trip.id);
+    const rows = buildStandingsRows(miss.people, teams)
+      .map((row) => ({ name: row.display_name, score: row.score }))
+      .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
     return { result: { standings: rows }, sent: false };
   }
   if (name === "get_open_tasks") {

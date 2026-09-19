@@ -18,6 +18,7 @@ import {
 import { losersOf } from "@/lib/game/setup";
 import { formatBoardTime } from "@/lib/game/board-schedule";
 import { soloModeEnabled } from "@/lib/game/solo";
+import { buildStandingsRows } from "@/lib/game/standings";
 import { sendDM, sendText } from "@/lib/linq/send";
 import {
   bootstrapGroupIfNeeded,
@@ -29,6 +30,7 @@ import {
 } from "./bootstrap";
 import { beginSetup } from "./setup";
 import { bootstrapSoloIfNeeded } from "./solo";
+import { teamsWithMembers } from "./teams";
 
 type SendFn = (chatId: string, text: string) => Promise<{ messageId: string }>;
 
@@ -185,9 +187,10 @@ export async function handleTripCommand(opts: {
     return;
   }
   lifecycleStep("trip.completed", { tripId: trip.id });
-  const standings = [...people]
-    .sort((a, b) => b.score - a.score || a.display_name.localeCompare(b.display_name))
-    .map((p) => ({ name: p.display_name, score: p.score }));
+  const teams = await teamsWithMembers(trip.id);
+  const standings = buildStandingsRows(people, teams)
+    .map((row) => ({ name: row.display_name, score: row.score }))
+    .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
   // Final standings belong in the trip's own chat, even if confirmed by DM.
   await send(
     trip.linq_chat_id,

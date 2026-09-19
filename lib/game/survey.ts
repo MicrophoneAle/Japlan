@@ -72,6 +72,7 @@ export const GROUP_ONLY_QUESTIONS: ReadonlySet<QuestionId> = new Set<QuestionId>
   "social_travelled",
   "social_couples",
   "competitiveness",
+  "team_preference",
 ]);
 
 export function includeQuestion(
