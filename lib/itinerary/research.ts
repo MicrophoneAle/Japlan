@@ -1,4 +1,4 @@
-import { browserbase, Stagehand } from "@browserbasehq/stagehand";
+import { browserbase, Stagehand, type StagehandBrowser } from "@browserbasehq/stagehand";
 import { z } from "zod";
 import { researchMode, type TripConfig } from "./config";
 import { mockResearch } from "./mock-research";
@@ -32,11 +32,12 @@ export async function researchActivities(config: TripConfig): Promise<ResearchSn
   const visitedUrls: string[] = [];
   const candidates: CandidateActivity[] = [];
   let sessionId: string | null = null;
+  let browser: StagehandBrowser | undefined;
   let stagehand: Stagehand | undefined;
   try {
-    const browser = await browserbase.launch({ apiKey: browserbaseKey, projectId });
+    browser = await browserbase.launch({ apiKey: browserbaseKey, projectId });
     sessionId = (browser as unknown as { sessionId?: string }).sessionId ?? null;
-    stagehand = await Stagehand.create({ browser, model: { modelName: (process.env.STAGEHAND_MODEL ?? "google/gemini-2.5-flash") as never, apiKey: geminiKey }, logging: { level: "info", format: "json" } });
+    stagehand = await Stagehand.create({ browser, model: { modelName: (process.env.STAGEHAND_MODEL ?? "google/gemini-3.6-flash") as never, apiKey: geminiKey }, logging: { level: "info", format: "json" } });
     const [page] = await browser.context.pages();
     if (!page) throw new Error("Browserbase did not provide an active page");
     const queries = [
@@ -65,7 +66,14 @@ export async function researchActivities(config: TripConfig): Promise<ResearchSn
       }
     }
     const unique = [...new Map(candidates.map(candidate => [key(candidate), candidate])).values()];
-    if (unique.length < 3) throw new Error("research returned too few suitable, source-backed candidates");
+    if (unique.length < 3) {
+      const extractionErrors = actions
+        .filter(action => action.type === "error")
+        .map(action => action.detail)
+        .filter((detail, index, entries) => entries.indexOf(detail) === index)
+        .join(" | ");
+      throw new Error(`research returned too few suitable, source-backed candidates${extractionErrors ? `: ${extractionErrors}` : ""}`);
+    }
     return { mode: "real", status: "researched", sessionId, dashboardUrl: dashboardUrl(sessionId), visitedUrls, actions, candidates: unique, error: null };
   } catch (error) {
     const message = errorMessage(error);
@@ -73,5 +81,6 @@ export async function researchActivities(config: TripConfig): Promise<ResearchSn
     throw new Error(`itinerary research failed: ${message}`);
   } finally {
     await stagehand?.close();
+    await browser?.close().catch(() => undefined);
   }
 }

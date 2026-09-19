@@ -32,7 +32,7 @@ BROWSERBASE_PROJECT_ID=
 GEMINI_API_KEY=
 GEMINI_FAST_MODEL=
 GEMINI_SMART_MODEL=
-STAGEHAND_MODEL=google/gemini-2.5-flash
+STAGEHAND_MODEL=google/gemini-3.6-flash
 ```
 
 Open `/itinerary` and choose **Generate Itinerary**. Real mode uses a
