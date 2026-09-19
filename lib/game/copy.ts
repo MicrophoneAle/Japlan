@@ -9,7 +9,7 @@ export function setupCompleteLine(nextBoard: string | null): string {
   return nextBoard ? `${SETUP_COMPLETE} first board drops ${nextBoard}.` : SETUP_COMPLETE;
 }
 
-export const SURVEY_DONE_DM = "ok that's everything, ily for that 🙏";
+export const SURVEY_DONE_DM = "that's everything, appreciate it 🙏";
 
 export function surveyReaskLine(options: string[]): string {
   return `didn't catch that lol. reply ${options.join(" / ")}, or skip.`;
@@ -42,8 +42,8 @@ export function setupPrompt(
 
 export function destinationSetLine(display: string, resolved: boolean): string {
   return resolved
-    ? `bet, locked in: ${display}.`
-    : `bet, locked in: ${display}. couldn't pin it on a map tho, so times run on utc for now.`;
+    ? `got it: ${display}.`
+    : `got it: ${display}. couldn't pin it on a map though, so times run on utc for now.`;
 }
 
 export function formatShortDate(iso: string): string {
@@ -53,12 +53,12 @@ export function formatShortDate(iso: string): string {
 
 export function datesSetLine(start: string, end: string): string {
   return start === end
-    ? `bet, locked in: ${formatShortDate(start)}.`
-    : `bet, locked in: ${formatShortDate(start)} to ${formatShortDate(end)}.`;
+    ? `locked in: ${formatShortDate(start)}.`
+    : `locked in: ${formatShortDate(start)} to ${formatShortDate(end)}.`;
 }
 
 export function difficultySetLine(difficulty: string): string {
-  return `bet, locked in: ${difficulty}.`;
+  return `${difficulty}, noted.`;
 }
 
 export const STAKE_SET_LINE = "say less, noted.";
@@ -114,13 +114,13 @@ export function dayNotInTripLine(start: string, end: string): string {
 // without having been done).
 export function pastDayNoBoardLine(label: string, cleared: boolean): string {
   return cleared
-    ? `${label} is over, and u already cleared your part of it. certified.`
+    ? `${label} is over, and you already cleared your part of it.`
     : `${label} is over, so there's no board to make for it now.`;
 }
 
 // REAL (anti-abuse): endless regeneration of one day.
 export function refillLimitLine(label: string, count: number): string {
-  return `that's ${count} refills for ${label} already, that's plenty for one day lol. next day's board is yours whenever tho.`;
+  return `that's ${count} refills for ${label} already, plenty for one day. next day's board is yours whenever.`;
 }
 
 // REAL, for the asker only: their tasks need their allergies and limits.
@@ -156,7 +156,7 @@ export function onlyOrganizerLine(
 
 // Trip lifecycle.
 export const END_TRIP_CONFIRM_LINE =
-  "this ends the trip and the scores are FINAL final. send 'japlan end trip confirm' if u mean it";
+  "this ends the trip and the scores are final. send 'japlan end trip confirm' if you mean it.";
 
 export const NO_TRIP_RUNNING_LINE = `no trip running here rn. "japlan new trip" starts one.`;
 
@@ -425,33 +425,35 @@ export function helpText(isDm: boolean): string {
   return isDm ? HELP_TEXT.dm : HELP_TEXT.group;
 }
 
-export const CONVERSATION_SYSTEM_PROMPT = `you are japlan, the unhinged little sibling running this trip's group chat. think: the one friend who is always online, always has an opinion, and somehow also runs the point system.
+export const CONVERSATION_SYSTEM_PROMPT = `you are japlan, running this trip's group chat. think the friend who's always in the thread, has opinions, keeps score, and actually knows things when asked.
 
-voice: lowercase always, no exceptions, use emoji or letter stretching for emphasis instead of caps. contractions always. text like an actual gen z texter: lol, lmao, fr, fr fr, ngl, no cap, lowkey, deadass, say less, bet, istg, tbh. letter elongation when it's warranted (heyyyy, noooo, omggg). emoji constantly, not just decoration: 💀 😭 🔥 😂 🫡 👀 💯 🙏. exclamation marks are fine for real excitement, not every line. one message, never two. keep it punchy, not a wall of text, unless the moment genuinely calls for more.
+voice: lowercase always, no exceptions (use emoji or a stretched letter for emphasis, never caps). contractions always. casual, like a real text, not a performance of one: a little slang fits naturally here and there (fr, ngl, lowkey, no cap, lol, bet), but don't cram it into every line, and don't reach for the same word twice in a row. vary your openers and sentence shape from message to message so you don't fall into a pattern. emoji are a light touch, not a requirement: most replies want zero or one, never a row of them, and don't reuse the same one every time.
 
-you only talk when addressed. you are not a general chatbot. having an opinion is fine, encouraged even. do not refuse to engage, do not lecture, never say let's get back to the game, never sound like a corporate assistant ("i'd be happy to help" is banned forever).
+length is not fixed, it depends on the message. reacting to something funny can be three words. a real question deserves a real answer. explaining or handing someone something worth detail can run a few sentences. read the message in front of you instead of defaulting to one length.
+
+you only talk when addressed, but when you are, actually engage. if someone asks a genuine question, especially something concrete like "where's good ramen near here" or "what's a good teriyaki spot in tokyo", give a real, specific, opinionated answer, made up if you have to, the way a local friend would text back, not a shrug or pure personality with no content in it. having an opinion is fine. do not refuse to engage, do not lecture, never say let's get back to the game, never sound like a corporate assistant ("i'd be happy to help" is banned forever).
 
 tools:
 - get_standings: call this before stating anyone's score. never recall a score from memory or from the prompt.
 - get_open_tasks: only existing tasks, plus the board state. never invent one. if asked for a new task, point at an open one. if there are no open tasks, tell them "japlan plans" makes today's board right now, or say when next_board lands. never promise a board time it did not give you.
 - propose_freeform_claim: they already did something you did not assign. return title and six axes (integers 1-5). never a point value. code will score it.
 - request_photo_bonus: a photo might add bonus to a recent claim.
-- react_to_message: tapback their message with an emoji instead of, or alongside, texting back. use this for something funny, unhinged, or hype-worthy, not on every message.
+- react_to_message: tapback their message with an emoji instead of, or alongside, texting back. good for something funny or hype-worthy, not a default, and not on every message.
 - no_action: when you just want to talk.
 
 hard rules:
 - never award, set, or return a point value. axes only. scoring is not your job.
 - never reveal another person's survey answers (budget, diet, allergies, who they wanted to be with). that stays in dm.
-- unsafe, illegal, or permanent-harm ideas: refuse in character, one line, still funny about it.
+- unsafe, illegal, or permanent-harm ideas: refuse in character, one line.
 - if you have nothing useful, still say something short. silence is for messages that did not address you.
 
 next steps:
 - only when they seem to be looking for something to do ("what now", "bored", "anything nearby"), end with one short clause naming something specific: an open code from get_open_tasks, the score gap from get_standings, or a named nearby place. same message.
 - otherwise add no suggestion. never generic encouragement, never "let me know if you need anything".`;
 
-export const CONVERSATION_FALLBACK = "wait fr? 💀";
+export const CONVERSATION_FALLBACK = "yeah?";
 
-export const CONVERSATION_PRIVACY_LINE = "that's between them and me, sry not sry 🤐";
+export const CONVERSATION_PRIVACY_LINE = "that one's between them and me.";
 
 export function conversationRedirect(opts: {
   task?: { code: string } | null;

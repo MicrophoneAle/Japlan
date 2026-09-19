@@ -124,7 +124,7 @@ describe("solo setup and survey", () => {
     await say("Oct 17-20");
     await say("chill");
     expect(last()).toBe(
-      "bet, locked in: chill. setup's done, we're so back. a few quick ones so the tasks fit you. skip any of them by saying skip. what should i call you?",
+      "chill, noted. setup's done, we're so back. a few quick ones so the tasks fit you. skip any of them by saying skip. what should i call you?",
     );
     expect(trip().setup_state).toBe("done");
     expect(trip().stake_text ?? null).toBeNull();
@@ -137,7 +137,7 @@ describe("solo setup and survey", () => {
     expect(trip().state).toBe("active");
     // One closing message, not "that's everything" then a separate "we're live".
     expect(last()).toBe(
-      "ok that's everything, ily for that 🙏 we're live 🔥 every morning your tasks land in your dms, and a code like A1 claims one. first board drops oct 17 at 8am.",
+      "that's everything, appreciate it 🙏 we're live 🔥 every morning your tasks land in your dms, and a code like A1 claims one. first board drops oct 17 at 8am.",
     );
     expect(h.sent.filter((m) => /we're live/.test(m.text))).toHaveLength(1);
   });

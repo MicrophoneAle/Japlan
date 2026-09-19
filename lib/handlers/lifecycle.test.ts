@@ -153,12 +153,12 @@ describe("organizer setup", () => {
     expect(openTrip()!.destination).toBe("tokyo, japan");
     expect(openTrip()!.timezone).toBe("Asia/Tokyo");
     expect(h.near).toHaveBeenCalledWith("tokyo");
-    expect(lastTo(MIKE_DM)).toMatch(/^bet, locked in: tokyo, japan\. when's this happening\?/);
+    expect(lastTo(MIKE_DM)).toMatch(/^got it: tokyo, japan\. when's this happening\?/);
 
     await send(MIKE, MIKE_DM, "oct 17-20");
     expect(openTrip()!.start_date).toBe("2026-10-17");
     expect(openTrip()!.end_date).toBe("2026-10-20");
-    expect(lastTo(MIKE_DM)).toMatch(/^bet, locked in: oct 17 to oct 20\. how unhinged/);
+    expect(lastTo(MIKE_DM)).toMatch(/^locked in: oct 17 to oct 20\. how unhinged/);
 
     await send(MIKE, MIKE_DM, "unhinged");
     expect(openTrip()!.difficulty).toBe("unhinged");
@@ -218,7 +218,7 @@ describe("organizer setup", () => {
     await send(MIKE, MIKE_DM, "that island my cousin went to");
     expect(openTrip()!.destination).toBe("that island my cousin went to");
     expect(openTrip()!.timezone ?? null).toBeNull(); // "JST" is not an IANA zone
-    expect(lastTo(MIKE_DM)).toMatch(/couldn't pin it on a map tho, so times run on utc/);
+    expect(lastTo(MIKE_DM)).toMatch(/couldn't pin it on a map though, so times run on utc/);
   });
 
   it("sets the live DM's dates and Tokyo timezone with Gemini down", async () => {
@@ -232,14 +232,14 @@ describe("organizer setup", () => {
     await send(MIKE, MIKE_DM, "Tokyo");
     expect(openTrip()!.destination).toBe("Tokyo");
     expect(openTrip()!.timezone).toBe("Asia/Tokyo");
-    expect(lastTo(MIKE_DM)).toMatch(/^bet, locked in: Tokyo\. when's this happening\?/);
+    expect(lastTo(MIKE_DM)).toMatch(/^got it: Tokyo\. when's this happening\?/);
     expect(lastTo(MIKE_DM)).not.toMatch(/utc/);
     expect(h.tz).not.toHaveBeenCalled();
 
     await send(MIKE, MIKE_DM, "Oct 20-26");
     expect(openTrip()!.start_date).toBe("2026-10-20");
     expect(openTrip()!.end_date).toBe("2026-10-26");
-    expect(lastTo(MIKE_DM)).toMatch(/^bet, locked in: oct 20 to oct 26\./);
+    expect(lastTo(MIKE_DM)).toMatch(/^locked in: oct 20 to oct 26\./);
     expect(h.dates).not.toHaveBeenCalled();
   });
 
@@ -333,7 +333,7 @@ describe("end trip and new trip", () => {
     expect(lastTo(GROUP)).toBe("only Mike can end the trip, that's the rule lol.");
     await send(MIKE, GROUP, "japlan end trip");
     expect(lastTo(GROUP)).toBe(
-      "this ends the trip and the scores are FINAL final. send 'japlan end trip confirm' if u mean it",
+      "this ends the trip and the scores are final. send 'japlan end trip confirm' if you mean it.",
     );
     expect(openTrip()?.state).toBe("active");
 
