@@ -1,12 +1,14 @@
 export type Photo = { src: string; alt: string };
 
 export type Person = {
+  id?: string;
   name: string;
   score: number;
   rank: number;
   quests: number;
   favorite: string;
   moment: string;
+  recap?: string;
   photo: Photo | null;
 };
 
