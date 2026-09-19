@@ -67,6 +67,7 @@ export function personProfile(opts: {
   partnerName?: string | null;
 }): string {
   const { name, answers } = opts;
+  const isYou = name.toLowerCase() === "you";
   const prefs = opts.prefs ?? prefsOf(null, answers);
   const lines: string[] = [];
 
@@ -74,15 +75,27 @@ export function personProfile(opts: {
     .sort((a, b) => b.eff - a.eff);
   const hard = ranked.filter((r) => strength(r.eff) === "hard").slice(0, 3).map((r) => DIM_WORDS[r.d]);
   const some = ranked.filter((r) => strength(r.eff) === "some").slice(0, 2).map((r) => DIM_WORDS[r.d]);
-  const low = ranked.filter((r) => r.eff <= 0.38).slice(-2).map((r) => DIM_WORDS[r.d]);
+  const low = ranked.filter((r) => r.eff <= 0.38 && r.c !== "low").slice(-2).map((r) => DIM_WORDS[r.d]);
   const guessy = ranked.slice(0, 3).every((r) => r.c === "low");
-  const lean = hard.length
-    ? `${name} leans hard toward ${listWords(hard)}${some.length ? `, with some pull toward ${listWords(some)}` : ""}`
-    : some.length
-      ? `${name} leans toward ${listWords(some)}`
-      : `${name} hasn't shown a strong lean yet`;
-  const pace = answers.ab_pace?.value ? PACE_WORDS[answers.ab_pace.value] : null;
-  lines.push(`${lean}${pace ? `, and ${pace}` : ""}.${guessy ? " (mostly guesses so far.)" : ""}`);
+  const directions = hard.length ? listWords(hard) : listWords(some);
+  const prefix = isYou ? "you" : name;
+  const lean = guessy
+    ? directions
+      ? `${prefix} might enjoy ${directions}, but that's only an early guess`
+      : isYou
+        ? "i don't know your preferences well yet"
+        : `there aren't enough answers yet to tell what ${name} enjoys`
+    : hard.length
+      ? `${prefix} ${isYou ? "lean" : "leans"} hard toward ${listWords(hard)}${some.length ? `, with some pull toward ${listWords(some)}` : ""}`
+      : some.length
+        ? `${prefix} ${isYou ? "lean" : "leans"} toward ${listWords(some)}`
+        : isYou
+          ? "you haven't shown a clear preference yet"
+          : `${name} hasn't shown a clear preference yet`;
+  const pace = answers.ab_pace?.value
+    ? `${isYou ? "you " : ""}${PACE_WORDS[answers.ab_pace.value]}`
+    : null;
+  lines.push(`${lean}${pace ? `, and ${pace}` : ""}.`);
   if (low.length) lines.push(`Less into ${listWords(low)}.`);
 
   const constraints = constraintsOf(answers);

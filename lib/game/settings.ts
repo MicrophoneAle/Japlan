@@ -1,5 +1,11 @@
 import { BUDGET_CEILING } from "./validate";
-import { interestPicksOf, recordAnswer, answerValue, type SurveyAnswers } from "./survey";
+import {
+  displayNameFromFirstName,
+  interestPicksOf,
+  recordAnswer,
+  answerValue,
+  type SurveyAnswers,
+} from "./survey";
 import { QUESTIONS, type QuestionId } from "./survey-questions";
 
 // Everyone's own survey answers are theirs to change, any time, in plain
@@ -131,6 +137,7 @@ export function showSetting(id: QuestionId, answers: SurveyAnswers): string {
   }
   const value = answerValue(answers, id);
   if (!value) return "not set";
+  if (id === "first_name") return displayNameFromFirstName(value, value);
   const choice = QUESTIONS[id].choices?.find((c) => c.id === value);
   return choice?.label ?? value;
 }
@@ -146,7 +153,13 @@ export function applySettingUpdate(opts: {
 }): SettingUpdate {
   const id = settingIdFor(opts.setting);
   if (!id) return { ok: false, id: null, options: [] };
-  const value = opts.value.trim();
+  let value = opts.value.trim();
+  if (id === "first_name") {
+    value = value
+      .replace(/^(?:(?:please|actually|well)\s+)*(?:call me|my name is|i am|i'm)\s+/i, "")
+      .trim();
+    if (!value) return { ok: false, id, options: [] };
+  }
   const lower = value.toLowerCase();
   let answers: SurveyAnswers | null = null;
 
@@ -215,6 +228,7 @@ export const SETTING_LABELS: Partial<Record<QuestionId, string>> = {
   drinking: "drinking",
   blackout: "off-limits times",
   food_adventure: "food adventure",
+  first_name: "name",
 };
 
 export function settingsSummary(answers: SurveyAnswers): string[] {

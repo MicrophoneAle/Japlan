@@ -139,10 +139,16 @@ export async function statePreference(trip: TripRow, personId: string, dims: Pre
 export async function profileFor(trip: TripRow, personId: string): Promise<string | null> {
   const person = await freshPerson(personId);
   if (!person) return null;
-  if (person.profile_md) return person.profile_md;
-  if (!person.survey_json) return null;
+  if (!person.survey_json) return person.profile_md ?? null;
   const answers = person.survey_json as SurveyAnswers;
-  const saved = await saveProfile(person, answers, prefsOf(person.prefs_json, answers), null);
-  void trip;
-  return saved.profile;
+  const prefs = prefsOf(person.prefs_json, answers);
+  const partner = partnerOf(answers, person, await tripPeople(trip.id));
+  // Build this private summary from current data so name or copy updates are
+  // reflected immediately instead of returning a stale cached paragraph.
+  return personProfile({
+    name: "you",
+    answers: compatAnswers(answers, prefs, partner),
+    prefs,
+    partnerName: partner,
+  });
 }
