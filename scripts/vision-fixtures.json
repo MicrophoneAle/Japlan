@@ -1,0 +1,32 @@
+{
+  "note": "Photo fixtures for the vision check. Public photos from Wikimedia Commons and the nokiatech HEIF samples (downloaded to .vision-fixtures/, not committed) plus the repo's public/assets. expect true means the photo bonus should fire.",
+  "photos": {
+    "bench": "https://thumb.wikimedia.org/wikipedia/commons/thumb/0/0b/Bredevoort_%28NL%29%2C_Parkbank_--_2016_--_1398.jpg/960px-Bredevoort_%28NL%29%2C_Parkbank_--_2016_--_1398.jpg",
+    "ramen": "https://thumb.wikimedia.org/wikipedia/commons/thumb/1/11/Ramen_4.jpg/960px-Ramen_4.jpg",
+    "vending": "https://thumb.wikimedia.org/wikipedia/commons/thumb/0/07/Sriracha_Vending_Machine_in_Tokyo%2C_Japan.jpg/960px-Sriracha_Vending_Machine_in_Tokyo%2C_Japan.jpg",
+    "torii": "https://thumb.wikimedia.org/wikipedia/commons/thumb/0/0e/Itsukushima_Gate.jpg/960px-Itsukushima_Gate.jpg",
+    "crossing": "https://thumb.wikimedia.org/wikipedia/commons/thumb/8/88/Shibuya_Crossing%2C_Aerial.jpg/960px-Shibuya_Crossing%2C_Aerial.jpg",
+    "onigiri": "https://thumb.wikimedia.org/wikipedia/commons/thumb/2/22/Japanese_rice_balls_%28onigiri%29.jpg/960px-Japanese_rice_balls_%28onigiri%29.jpg",
+    "mural": "https://thumb.wikimedia.org/wikipedia/commons/thumb/a/aa/Mural_en_Santiago%2C_Chile_A74178720240526.jpg/960px-Mural_en_Santiago%2C_Chile_A74178720240526.jpg",
+    "autumn-heic": "https://raw.githubusercontent.com/nokiatech/heif/gh-pages/content/images/autumn_1440x960.heic",
+    "cat": "https://thumb.wikimedia.org/wikipedia/commons/thumb/4/4d/Cat_November_2010-1a.jpg/960px-Cat_November_2010-1a.jpg",
+    "road": "public/assets/images (1).jpg",
+    "backpacker": "public/assets/images.jpg"
+  },
+  "cases": [
+    { "photo": "bench", "task": "Find a serene bench in Yoyogi Park and photograph the surrounding canopy", "expect": true },
+    { "photo": "ramen", "task": "Eat a bowl of ramen at a counter-seat shop", "expect": true },
+    { "photo": "vending", "task": "Buy a drink from the weirdest vending machine you can find", "expect": true },
+    { "photo": "torii", "task": "Walk through a torii gate", "expect": true },
+    { "photo": "crossing", "task": "Cross the Shibuya scramble at rush hour", "expect": true },
+    { "photo": "onigiri", "task": "Try an onigiri flavour you have never had", "expect": true },
+    { "photo": "mural", "task": "Find a street mural and photograph it", "expect": true },
+    { "photo": "autumn-heic", "task": "Find a tree with autumn leaves", "expect": true },
+    { "photo": "cat", "task": "Spot a cat on a Yanaka side street", "expect": true },
+    { "photo": "cat", "task": "Find a serene bench in Yoyogi Park and photograph the surrounding canopy", "expect": false },
+    { "photo": "road", "task": "Eat a bowl of ramen at a counter-seat shop", "expect": false },
+    { "photo": "backpacker", "task": "Ask a fellow visitor near Meiji Jingu Shrine to verify the path to the main hall", "expect": false },
+    { "photo": "ramen", "task": "Walk through a torii gate", "expect": false },
+    { "photo": "vending", "task": "Stroll through Kokyo Gaien Outer Gardens to view the historic black pines", "expect": false }
+  ]
+}

@@ -390,6 +390,21 @@ describe("photo bonus is never a gate", () => {
       }).reject,
     ).toBe(true);
   });
+
+  it("counts a fresh photo for a task made before the trip, not an older one", () => {
+    const rules = (taken: string) =>
+      applyPhotoBonusRules({
+        fidelity: 2,
+        hasExif: true,
+        takenAt: new Date(`${taken}Z`),
+        tripStart: "2026-10-17",
+        tripEnd: "2026-10-20",
+        taskCreatedOn: "2026-09-19",
+      });
+    expect(rules("2026-09-19T15:00:00")).toEqual({ bonus: 2, reject: false });
+    expect(rules("2026-09-04T15:30:32").reject).toBe(true); // camera roll
+    expect(rules("2026-10-21T09:00:00").reject).toBe(true); // after the trip
+  });
 });
 
 describe("open tasks", () => {
@@ -416,8 +431,8 @@ describe("board and confirmation copy", () => {
       ],
     });
     expect(text).toContain("Day 1");
-    expect(text).toContain("A1 · first (7)");
-    expect(text).toContain("A2 · second (10)");
+    expect(text).toContain("A1 · first · light (7)");
+    expect(text).toContain("A2 · second · light (10)");
     expect(text).toContain("Michael 20 · Sarah 10");
     expect(text).not.toContain("⚓");
   });
@@ -436,9 +451,20 @@ describe("board and confirmation copy", () => {
   it("formats a personal board for DM", () => {
     const text = formatPersonalBoard({
       day: 1,
-      tasks: [{ code: "A1", title: "first", base_points: 7 }],
+      tasks: [
+        { code: "A1", title: "first", base_points: 7 },
+        { code: "A2", title: "second", base_points: 13 },
+        { code: "A3", title: "third", base_points: 26 },
+        { code: "A4", title: "fourth", base_points: 34 },
+      ],
     });
-    expect(text).toContain("A1 · first (7)");
+    // Tier from the points beside it, one line per task.
+    expect(text.split("\n").slice(2)).toEqual([
+      "A1 · first · light (7)",
+      "A2 · second · medium (13)",
+      "A3 · third · challenging (26)",
+      "A4 · fourth · challenging (34)",
+    ]);
     expect(text).not.toContain("Michael");
   });
 

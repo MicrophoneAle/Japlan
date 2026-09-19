@@ -71,7 +71,7 @@ vi.mock("@/lib/llm/gemini", async (importOriginal) => {
 import { dispatchLinqEvent } from "./dispatch";
 import { runDailyBoards } from "./daily-board";
 import { TOKYO_HAND_PROFILE } from "@/lib/game/tokyo-profile";
-import { PROVISIONAL_NOTE, finishYourSurveyLine } from "@/lib/game/copy";
+import { finishYourSurveyLine } from "@/lib/game/copy";
 import { REFILLS_PER_DAY } from "./board-request";
 
 let n = 0;
@@ -169,8 +169,8 @@ describe("asking for a board makes one", () => {
   it("makes a future day provisional", async () => {
     seedTrip({});
     await say(MIKE, DM[MIKE], "japlan tomorrow");
-    expect(last(DM[MIKE])).toMatch(/^Day 2/);
-    expect(last(DM[MIKE])).toContain(PROVISIONAL_NOTE);
+    expect(last(DM[MIKE])).toMatch(/^Day 2, subject to change\n/);
+    expect(last(DM[MIKE])).not.toMatch(/provisional|weather/);
     expect(board(2)).toMatchObject({ status: "ready", provisional: true });
   });
 
@@ -178,7 +178,7 @@ describe("asking for a board makes one", () => {
     seedTrip({});
     for (const ask of ["japlan plans", "japlan tomorrow", "japlan day 3", "japlan the last day"]) {
       await say(MIKE, DM[MIKE], ask);
-      expect(last(DM[MIKE]), ask).toMatch(/^Day \d\n/);
+      expect(last(DM[MIKE]), ask).toMatch(/^Day \d(, subject to change)?\n/);
     }
     expect([1, 2, 3, 5].map((d) => Boolean(board(d)))).toEqual([true, true, true, true]);
     expect(board(3)).toMatchObject({ provisional: true });
@@ -188,7 +188,7 @@ describe("asking for a board makes one", () => {
   it("reads a calendar date and names like first and last day", async () => {
     seedTrip({});
     await say(MIKE, DM[MIKE], "japlan sep 21");
-    expect(last(DM[MIKE])).toMatch(/^Day 3\n/);
+    expect(last(DM[MIKE])).toMatch(/^Day 3, subject to change\n/);
     await say(MIKE, DM[MIKE], "japlan first day");
     expect(last(DM[MIKE])).toMatch(/^Day 1\n/);
   });
@@ -196,8 +196,7 @@ describe("asking for a board makes one", () => {
   it("shows day 1 when asked before the trip starts", async () => {
     seedTrip({ start: "2026-09-25", end: "2026-09-28" });
     await say(MIKE, DM[MIKE], "japlan plans");
-    expect(last(DM[MIKE])).toMatch(/^Day 1\n/);
-    expect(last(DM[MIKE])).toContain(PROVISIONAL_NOTE);
+    expect(last(DM[MIKE])).toMatch(/^Day 1, subject to change\n/);
     expect(board(1)).toMatchObject({ provisional: true });
   });
 
@@ -236,7 +235,7 @@ describe("asking for a board makes one", () => {
     );
     // Other days are never limited by it.
     await say(MIKE, DM[MIKE], "japlan tomorrow");
-    expect(last(DM[MIKE])).toMatch(/^Day 2\n/);
+    expect(last(DM[MIKE])).toMatch(/^Day 2, subject to change\n/);
   });
 });
 

@@ -76,6 +76,28 @@ export type ImageFingerprint = {
 // Perceptual hash when sharp can decode the image; otherwise an exact SHA-256
 // of the bytes (prefixed, so it never collides with a perceptual hash). An
 // undecodable photo used to throw here and take the whole claim down with it.
+export const VISION_MAX_EDGE = 1280;
+
+// What the vision model is sent. iPhone JPEGs store rotation as an EXIF tag
+// the model does not apply, so a portrait photo arrives on its side; and a
+// 5MB original is slower than it needs to be. Auto-rotate and downscale.
+// Anything sharp cannot decode (HEIC) goes as-is: Gemini reads HEIC itself.
+export async function prepareForVision(
+  bytes: Buffer,
+  mime: string,
+): Promise<{ data: Buffer; mime: string; prepared: boolean }> {
+  try {
+    const data = await sharp(bytes)
+      .rotate()
+      .resize({ width: VISION_MAX_EDGE, height: VISION_MAX_EDGE, fit: "inside", withoutEnlargement: true })
+      .jpeg({ quality: 85 })
+      .toBuffer();
+    return { data, mime: "image/jpeg", prepared: true };
+  } catch {
+    return { data: bytes, mime, prepared: false };
+  }
+}
+
 export async function imageFingerprint(bytes: Buffer): Promise<ImageFingerprint> {
   try {
     return { hash: await perceptualHash(bytes), kind: "perceptual" };

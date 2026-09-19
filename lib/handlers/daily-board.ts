@@ -18,6 +18,7 @@ import {
   tripLengthDays,
 } from "@/lib/game/scoring";
 import {
+  enforceBoardMix,
   validateGeneratedTask,
   type AssigneeConstraints,
   type ProposedTask,
@@ -203,7 +204,20 @@ function filterValid(
     kept.push(task);
     completed.push(task.title);
   }
-  return kept;
+  const mixed = enforceBoardMix(kept);
+  for (const { task, reason } of mixed.rejected) logReject(reason, task.title);
+  return mixed.kept;
+}
+
+// Every title already on this trip's boards, oldest first, for the prompt.
+async function tripBoardTitles(tripId: string): Promise<string[]> {
+  const { data, error } = await getServiceClient()
+    .from("tasks")
+    .select("title, day")
+    .eq("trip_id", tripId)
+    .order("day");
+  if (error) throw error;
+  return [...new Set((data ?? []).map((t) => (t as { title: string }).title))];
 }
 
 async function proposalsForAssignee(opts: {
@@ -215,6 +229,7 @@ async function proposalsForAssignee(opts: {
   gap: string;
   day: number;
   difficulty?: string | null;
+  boardTitles?: string[];
 }): Promise<ProposedTask[]> {
   const answers = (opts.assignee.people[0]?.survey_json ?? {}) as SurveyAnswers;
   return generateTasksForAssignee({
@@ -226,6 +241,7 @@ async function proposalsForAssignee(opts: {
     scoreGap: opts.gap,
     day: opts.day,
     difficulty: opts.difficulty,
+    boardTitles: opts.boardTitles,
   });
 }
 
@@ -284,6 +300,7 @@ export async function generateValidatedBoard(opts: {
   const assignees = await loadAssignees(opts.trip.id, opts.people);
   const ratings = await yesterdayRatings(opts.trip.id);
   const gap = scoreGapText(opts.people);
+  const boardTitles = await tripBoardTitles(opts.trip.id);
   const wanted = Math.max(TASKS_PER_CALL, assignees.length * TASKS_PER_CALL);
 
   async function run(round: number): Promise<ProposedTask[]> {
@@ -307,6 +324,7 @@ export async function generateValidatedBoard(opts: {
           gap,
           day,
           difficulty: opts.trip.difficulty,
+          boardTitles,
         });
       } catch (err) {
         console.error("[japlan.generate] llm failed", {
@@ -1087,6 +1105,7 @@ export async function refillPersonalTasksIfNeeded(opts: {
   const completed = await completedTitles(opts.trip.id, [opts.claimant.id]);
   const ratings = await yesterdayRatings(opts.trip.id);
   const gap = scoreGapText(people);
+  const boardTitles = await tripBoardTitles(opts.trip.id);
   const assignee: Assignee = {
     kind: "person",
     id: opts.claimant.id,
@@ -1106,6 +1125,7 @@ export async function refillPersonalTasksIfNeeded(opts: {
       gap,
       day,
       difficulty: opts.trip.difficulty,
+      boardTitles,
     });
   } catch (err) {
     console.error("[japlan.generate] refill llm failed", err);

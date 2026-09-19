@@ -3,6 +3,13 @@ import {
   dailyBoardTaskLine,
   standingsLine,
 } from "./copy";
+import { tierForPoints } from "./scoring";
+
+// From the points, not the stored tier, so the label always matches the
+// number beside it. Weighted totals can pass 30; that is still the top tier.
+function tierLabel(points: number): string {
+  return tierForPoints(points) ?? "Challenging";
+}
 
 export type BoardTask = {
   code: string;
@@ -33,7 +40,7 @@ export function formatDailyBoard(opts: {
     dailyBoardHeader(opts.day, opts.weatherLine),
     "",
     ...tasks.map((task) =>
-      dailyBoardTaskLine(task.code, task.title, task.base_points),
+      dailyBoardTaskLine(task.code, task.title, task.base_points, tierLabel(task.base_points)),
     ),
     "",
     standingsLine(standings),
@@ -53,7 +60,7 @@ export function formatPersonalBoard(opts: {
     dailyBoardHeader(opts.day, opts.weatherLine),
     "",
     ...tasks.map((task) =>
-      dailyBoardTaskLine(task.code, task.title, task.base_points),
+      dailyBoardTaskLine(task.code, task.title, task.base_points, tierLabel(task.base_points)),
     ),
   ].join("\n");
 }

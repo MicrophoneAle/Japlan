@@ -89,11 +89,12 @@ export function boardRefillLine(board: string): string {
   return `you cleared that board, so here's more.\n${board}`;
 }
 
-export const PROVISIONAL_NOTE =
-  "provisional: it gets remade that morning with the latest weather, unless you claim something first.";
+// A future day's board can be remade on its morning (unless something on it
+// was claimed). People need the useful part only: it may change.
+export const PROVISIONAL_TAG = "subject to change";
 
 export function provisionalBoard(board: string): string {
-  return `${board}\n${PROVISIONAL_NOTE}`;
+  return board.replace(/^Day (\d+)/, `Day $1, ${PROVISIONAL_TAG}`);
 }
 
 export const BOARD_IN_DM_LINE = "your board's in your dm.";
@@ -186,12 +187,15 @@ export function dailyBoardHeader(
   return `Day ${day}`;
 }
 
+// One line per task, tier before points so people can pick by effort:
+//   A1 · find a bench in yoyogi park · light (13)
 export function dailyBoardTaskLine(
   code: string,
   title: string,
   points: number,
+  tier: string,
 ): string {
-  return `${code} · ${title} (${points})`;
+  return `${code} · ${title} · ${tier.toLowerCase()} (${points})`;
 }
 
 export function standingsLine(

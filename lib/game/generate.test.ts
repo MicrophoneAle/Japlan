@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   assignOwnedDayCodes,
+  boldTasksWanted,
   buildGenerationPrompt,
   nextFreeformCode,
   parseGeneratedTasks,
@@ -8,11 +9,16 @@ import {
 } from "./generate";
 import { pointsForBoard } from "./scoring";
 import type { SurveyAnswers } from "./survey";
+import { TEMPLATES } from "./templates";
 import {
   BUDGET_CEILING,
+  enforceBoardMix,
   lowestBudgetCeiling,
+  placeKey,
+  TASK_KINDS,
   validateGeneratedTask,
   type ProposedTask,
+  type TaskKind,
 } from "./validate";
 
 const allFives = {
@@ -297,5 +303,96 @@ describe("generation prompt", () => {
     });
     expect(prompt).toContain("Verification is not a photo gate");
     expect(prompt).toContain("Only peer requires someone else's tapback");
+  });
+});
+
+describe("boldness and variety", () => {
+  const input = (difficulty: string | null, boardTitles: string[] = []) => ({
+    profile: {
+      assembled_at: "2026-09-19T00:00:00Z",
+      destination: "Tokyo",
+      neighborhoods: [],
+      transit_lines: [],
+      dishes: [],
+      landmarks: [],
+      price_bands: [],
+      center: null,
+    },
+    weather: { summary: "clear", indoorPreferred: false, temperatureC: 22, precipitationChance: 0 },
+    preferenceText: "food",
+    completedTitles: [],
+    yesterdayRatings: "",
+    scoreGap: "",
+    day: 2,
+    difficulty,
+    boardTitles,
+  });
+
+  it("asks for bold tasks by count, even on chill", () => {
+    expect(boldTasksWanted("unhinged", 3)).toBe(3);
+    expect(boldTasksWanted("normal", 3)).toBe(2);
+    expect(boldTasksWanted(null, 3)).toBe(2);
+    expect(boldTasksWanted("chill", 3)).toBe(1);
+    const prompt = buildGenerationPrompt(input("chill"));
+    expect(prompt).toContain("At least 1 of the 3 tasks must honestly rate boldness 3 or more.");
+    expect(prompt).toContain('"Go somewhere and look at something" is boldness 1');
+    expect(prompt).not.toMatch(/favour low boldness/i);
+  });
+
+  it("shows the model what is already on the trip's boards", () => {
+    const prompt = buildGenerationPrompt(input(null, ["find a bench in yoyogi park"]));
+    expect(prompt).toContain("do not repeat or rephrase): find a bench in yoyogi park");
+  });
+
+  it("reads kind and place from the model, ignoring unknown kinds", () => {
+    const [a, b] = parseGeneratedTasks(
+      JSON.stringify([
+        { code: "", title: "t1", axes: {}, verification: "honor", photo_bonus_max: 0, neighborhood: "Shibuya", kind: "social", place: " Yoyogi Park " },
+        { code: "", title: "t2", axes: {}, verification: "honor", photo_bonus_max: 0, neighborhood: "Shibuya", kind: "sightseeing", place: "" },
+      ]),
+    );
+    expect(a).toMatchObject({ kind: "social", place: "Yoyogi Park" });
+    expect(b.kind).toBeUndefined();
+    expect(b.place).toBeUndefined();
+  });
+
+  const task = (title: string, kind?: TaskKind, place?: string): ProposedTask => ({
+    code: "",
+    title,
+    axes: { boldness: 1, physical: 1, time: 1, scarcity: 1, cultural: 1, aesthetics: 1 },
+    verification: "photo",
+    photo_bonus_max: 2,
+    neighborhood: "Shibuya",
+    kind,
+    place,
+  });
+
+  it("drops a second task at the same place", () => {
+    const { kept, rejected } = enforceBoardMix([
+      task("find a bench in yoyogi park", "explore", "Yoyogi Park"),
+      task("ask a local for their favourite ramen", "social", ""),
+      task("rest on a shaded bench", "explore", "the yoyogi park."),
+    ]);
+    expect(kept.map((t) => t.title)).toEqual(["find a bench in yoyogi park", "ask a local for their favourite ramen"]);
+    expect(rejected.map((r) => r.reason)).toEqual(["same_place"]);
+    expect(placeKey("Meiji Jingu")).not.toBe(placeKey("Yoyogi Park"));
+  });
+
+  it("never keeps a board that is all one kind", () => {
+    const { kept, rejected } = enforceBoardMix([
+      task("look at a pine", "explore", "Kokyo Gaien"),
+      task("look at a statue", "explore", "Kusunoki statue"),
+      task("look at a waterfall", "explore", "Shinjuku Chuo Park"),
+    ]);
+    expect(kept).toHaveLength(1);
+    expect(rejected.map((r) => r.reason)).toEqual(["one_kind", "one_kind"]);
+    // Mixed kinds, distinct places: all kept.
+    expect(
+      enforceBoardMix([task("a", "explore", "x"), task("b", "social", "y"), task("c", "explore", "z")]).kept,
+    ).toHaveLength(3);
+  });
+
+  it("gives template fallbacks a kind so the same rules apply", () => {
+    for (const t of TEMPLATES) expect(TASK_KINDS).toContain(t.kind);
   });
 });

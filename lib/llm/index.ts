@@ -37,6 +37,7 @@ export interface LLMProvider {
     images?: { data: string; mime: string }[];
     tier: "fast" | "smart";
     thinkingBudget?: number;
+    temperature?: number;
   }): Promise<string>;
   completeTurn?(opts: {
     system: string;

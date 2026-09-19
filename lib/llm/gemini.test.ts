@@ -42,35 +42,52 @@ describe("matchClaimText", () => {
 
 describe("scorePhotoFidelity", () => {
   const image = { data: "aaaa", mime: "image/jpeg" };
+  const relates = (yes: boolean) => JSON.stringify({ seen: "a park bench", relates: yes });
 
-  it("stops after a no without asking for a score", async () => {
-    const calls: unknown[] = [];
+  it("asks whether the photo plausibly relates, as evidence not proof", async () => {
+    const systems: string[] = [];
     const provider: LLMProvider = {
       async complete(opts) {
-        calls.push(opts.system);
-        return JSON.stringify({ shows_task: false });
+        systems.push(opts.system);
+        return relates(false);
       },
     };
-    const scored = await scorePhotoFidelity({
-      provider,
-      title: "photograph a doorway older than you",
-      photoBonusMax: 2,
-      image,
-    });
-    expect(scored).toEqual({ shows_task: false, fidelity: 0 });
-    expect(calls).toHaveLength(1);
+    const scored = await scorePhotoFidelity({ provider, title: "find a bench in yoyogi park", photoBonusMax: 2, image });
+    expect(scored).toMatchObject({ shows_task: false, fidelity: 0, seen: "a park bench" });
+    expect(systems).toHaveLength(1); // no score after a no
+    expect(systems[0]).toMatch(/evidence, not proof/i);
+    expect(systems[0]).toMatch(/when unsure, relates is true/i);
+    expect(systems[0]).not.toMatch(/does this photo show/i);
   });
 
-  it("asks for a bounded score only after yes", async () => {
+  it("scores within 1..max after a yes, so a match always pays", async () => {
+    const score = async (fidelity: unknown) =>
+      (await scorePhotoFidelity({
+        provider: providerWith([relates(true), JSON.stringify({ fidelity })]),
+        title: "find a bench",
+        photoBonusMax: 2,
+        image,
+      }))?.fidelity;
+    expect(await score(9)).toBe(2);
+    expect(await score(0)).toBe(1);
+    expect(await score("junk")).toBe(1);
+  });
+
+  it("keeps the raw answers for the logs", async () => {
     const scored = await scorePhotoFidelity({
-      provider: providerWith([
-        JSON.stringify({ shows_task: true }),
-        JSON.stringify({ fidelity: 9 }),
-      ]),
-      title: "photograph a doorway older than you",
-      photoBonusMax: 2,
+      provider: providerWith([relates(true), JSON.stringify({ fidelity: 2 })]),
+      title: "find a bench",
+      photoBonusMax: 3,
       image,
     });
-    expect(scored).toEqual({ shows_task: true, fidelity: 2 });
+    expect(scored?.raw).toEqual({ relates: relates(true), fidelity: JSON.stringify({ fidelity: 2 }) });
+  });
+
+  it("returns null for an empty or unreadable answer instead of a no", async () => {
+    for (const raw of ["", "not json", JSON.stringify({ seen: "x" })]) {
+      expect(
+        await scorePhotoFidelity({ provider: providerWith([raw]), title: "find a bench", photoBonusMax: 2, image }),
+      ).toBeNull();
+    }
   });
 });

@@ -29,7 +29,18 @@ export type ProposedTask = {
   participantId?: string | null;
   teamId?: string | null;
   source?: "generated" | "freeform";
+  // Generation-time only (not stored): what sort of task it is, and the
+  // specific spot it happens at. Used to keep one board varied.
+  kind?: TaskKind;
+  place?: string;
 };
+
+export const TASK_KINDS = ["social", "food", "explore", "challenge", "culture", "creative"] as const;
+export type TaskKind = (typeof TASK_KINDS)[number];
+
+export function isTaskKind(value: unknown): value is TaskKind {
+  return typeof value === "string" && (TASK_KINDS as readonly string[]).includes(value);
+}
 
 export type AssigneeConstraints = {
   answers: SurveyAnswers;
@@ -149,4 +160,45 @@ export function validateGeneratedTask(
   }
 
   return null;
+}
+
+export type MixRejection = "same_place" | "one_kind";
+
+// "Yoyogi Park", "yoyogi park.", "the Yoyogi park" are one place. No place
+// (eat something starting with a-d) is anywhere, and never collides.
+export function placeKey(place: string | undefined): string | null {
+  const key = (place ?? "")
+    .toLowerCase()
+    .replace(/^\s*the\s+/, "")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+  return key || null;
+}
+
+// Board-level rules, in code, after per-task validation: no two tasks on one
+// board at the same place, and a board of two or more is never all one kind.
+// An all-one-kind board keeps only its first task; the caller's usual "more
+// than half rejected" path then regenerates or falls back to templates.
+export function enforceBoardMix<T extends ProposedTask>(
+  tasks: T[],
+): { kept: T[]; rejected: { task: T; reason: MixRejection }[] } {
+  const kept: T[] = [];
+  const rejected: { task: T; reason: MixRejection }[] = [];
+  const places = new Set<string>();
+  for (const task of tasks) {
+    const key = placeKey(task.place);
+    if (key && places.has(key)) {
+      rejected.push({ task, reason: "same_place" });
+      continue;
+    }
+    if (key) places.add(key);
+    kept.push(task);
+  }
+  const kinds = kept.map((task) => task.kind);
+  const oneKind =
+    kept.length >= 2 && kinds.every((kind) => kind !== undefined && kind === kinds[0]);
+  if (oneKind) {
+    for (const task of kept.splice(1)) rejected.push({ task, reason: "one_kind" });
+  }
+  return { kept, rejected };
 }

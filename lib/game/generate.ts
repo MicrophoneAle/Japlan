@@ -10,6 +10,8 @@ import {
 import type { SurveyAnswers } from "./survey";
 import { difficultyGuidance } from "./setup";
 import {
+  isTaskKind,
+  TASK_KINDS,
   validateGeneratedTask,
   type ProposedTask,
   type RejectionReason,
@@ -48,6 +50,8 @@ export const GENERATED_TASK_SCHEMA = {
       verification: { type: "string", enum: ["photo", "honor", "peer"] },
       photo_bonus_max: { type: "integer" },
       neighborhood: { type: "string" },
+      kind: { type: "string", enum: [...TASK_KINDS] },
+      place: { type: "string" },
     },
     required: [
       "code",
@@ -56,6 +60,8 @@ export const GENERATED_TASK_SCHEMA = {
       "verification",
       "photo_bonus_max",
       "neighborhood",
+      "kind",
+      "place",
     ],
   },
 };
@@ -108,6 +114,8 @@ export function parseGeneratedTasks(raw: string): ProposedTask[] {
       photo_bonus_max: Math.max(0, Math.round(Number(row.photo_bonus_max) || 0)),
       neighborhood:
         typeof row.neighborhood === "string" ? row.neighborhood : "",
+      ...(isTaskKind(row.kind) ? { kind: row.kind } : {}),
+      ...(typeof row.place === "string" && row.place.trim() ? { place: row.place.trim() } : {}),
     });
   }
   return tasks;
@@ -199,7 +207,26 @@ export type GenerationInput = {
   count?: number;
   // Organizer setup answer: chill / normal / unhinged.
   difficulty?: string | null;
+  // Titles already on this trip's boards (any day), so day 2 is not day 1
+  // again with different adjectives.
+  boardTitles?: string[];
 };
+
+// Boldness is the highest-weighted axis and the one that makes a story, so
+// the prompt asks for it by count. Chill still gets one: chill means low
+// effort and nothing embarrassing, not no people.
+export function boldTasksWanted(difficulty: string | null | undefined, count: number): number {
+  if (difficulty === "unhinged") return count;
+  if (difficulty === "chill") return Math.min(1, count);
+  return Math.min(2, count);
+}
+
+export const BOLDNESS_GUIDANCE = [
+  "What makes this game: social friction and a story afterwards. Boldness is the highest-weighted axis.",
+  "Bold means involving people or stepping out of your comfort zone: ask a local for their favourite thing and go, get a stranger to teach you something, order the thing you cannot read, trade or haggle, join in with something already happening, make a small public ask. Safe, legal, nothing permanent, no bookings.",
+  "\"Go somewhere and look at something\" is boldness 1. At most one task on a board may be that.",
+  "Rate axes honestly; make the tasks bolder, do not inflate the numbers.",
+].join(" ");
 
 export function buildGenerationPrompt(input: GenerationInput): string {
   const count = input.count ?? TASKS_PER_CALL;
@@ -208,8 +235,9 @@ export function buildGenerationPrompt(input: GenerationInput): string {
     : "Weather is fair. Outdoor tasks are fine.";
   const templates = TEMPLATES.map(
     (t) =>
-      `- ${t.id}: ${t.archetype} [${t.verification}, indoor=${t.indoor}]`,
+      `- ${t.id} (${t.kind}): ${t.archetype} [${t.verification}, indoor=${t.indoor}]`,
   ).join("\n");
+  const bold = boldTasksWanted(input.difficulty, count);
   return [
     `Destination: ${input.profile.destination}`,
     `Neighborhoods: ${input.profile.neighborhoods.map((n) => n.name).join(", ") || "(none yet)"}`,
@@ -221,9 +249,13 @@ export function buildGenerationPrompt(input: GenerationInput): string {
     `Preferences: ${input.preferenceText}`,
     ...(difficultyGuidance(input.difficulty) ? [difficultyGuidance(input.difficulty) as string] : []),
     `Already completed (do not repeat): ${input.completedTitles.join("; ") || "(none)"}`,
+    `Already on this trip's boards (do not repeat or rephrase): ${input.boardTitles?.slice(-40).join("; ") || "(none)"}`,
     `Yesterday's ratings: ${input.yesterdayRatings || "(none)"}`,
     `Score gap: ${input.scoreGap}`,
     `Template bank:\n${templates}`,
+    BOLDNESS_GUIDANCE,
+    `At least ${bold} of the ${count} tasks must honestly rate boldness 3 or more.`,
+    `Variety: each task has a kind (${TASK_KINDS.join(", ")}); a board is never all one kind, and different kinds are better. place is the specific spot (a park, shrine, market, street, shop); no two tasks share a place, and a task that can happen anywhere has an empty place.`,
     `Return exactly ${count} tasks as JSON matching the schema. Fill slots from the destination profile. Axes are integers 1-5. Never include a point value.`,
     "Verification is not a photo gate. honor and photo are both claimable by code immediately; photo_bonus_max is the optional bonus ceiling for a matching photo. Only peer requires someone else's tapback.",
   ].join("\n");
@@ -293,6 +325,12 @@ export function slotValuesFor(
   return values;
 }
 
+// A filled template's place: its landmark, else its neighborhood, else none.
+function templatePlace(values: Record<string, string>): { place?: string } {
+  const place = values.subject ?? values.neighborhood;
+  return place ? { place } : {};
+}
+
 const BOUNTY_ATTEMPTS = 12;
 
 // Catch-up bounty for the trailing player. Peer templates first; the seed
@@ -327,6 +365,8 @@ export function pickBounty(opts: {
       verification: template.verification,
       photo_bonus_max: template.photo_bonus_max,
       neighborhood: values.neighborhood ?? opts.profile.destination,
+      kind: template.kind,
+      ...templatePlace(values),
       participantId: opts.trailer.id,
       teamId: null,
     };
@@ -364,6 +404,8 @@ export function fillTemplatesDeterministically(opts: {
       verification: template.verification,
       photo_bonus_max: template.photo_bonus_max,
       neighborhood: values.neighborhood ?? opts.profile.destination,
+      kind: template.kind,
+      ...templatePlace(values),
     });
   }
   return out;

@@ -347,11 +347,21 @@ export function applyPhotoBonusRules(opts: {
   tripStart: string | null;
   tripEnd: string | null;
   photoBonusMax?: number;
+  // Local date the task was made. Boards exist before the trip starts now,
+  // so a fresh photo for a task made today counts even if the trip is weeks
+  // off; the check still catches camera-roll shots older than the task.
+  taskCreatedOn?: string | null;
 }): { bonus: number; reject: boolean } {
   if (opts.takenAt && (opts.tripStart || opts.tripEnd)) {
+    // EXIF has no zone: takenAt carries local wall-clock time as UTC, so it
+    // compares directly against local date strings at UTC midnight.
     const taken = opts.takenAt.getTime();
-    if (opts.tripStart) {
-      const start = Date.parse(opts.tripStart);
+    const earliest =
+      opts.tripStart && opts.taskCreatedOn && opts.taskCreatedOn < opts.tripStart
+        ? opts.taskCreatedOn
+        : opts.tripStart;
+    if (earliest) {
+      const start = Date.parse(earliest);
       if (!Number.isNaN(start) && taken < start) {
         return { bonus: 0, reject: true };
       }
