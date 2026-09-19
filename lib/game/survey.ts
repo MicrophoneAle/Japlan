@@ -428,7 +428,7 @@ export function recordAnswer(
   return { ...answers, [questionId]: { value: text.trim() } };
 }
 
-export function startSurvey(answers: SurveyAnswers = {}): SurveyStep & { prompt: string } {
+export function startSurvey(answers: SurveyAnswers = {}): SurveyStep {
   return {
     state: { awaiting: FIRST_QUESTION_ID, answers },
     prompt: `${SURVEY_INTRO} ${QUESTIONS[FIRST_QUESTION_ID].prompt}`,

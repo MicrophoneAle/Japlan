@@ -107,6 +107,9 @@ export async function handleSurveyDm(opts: {
 
   if (!state || state === "not_started") {
     const started = startSurvey();
+    if (started.prompt === null) {
+      throw new Error("initial survey step must include a prompt");
+    }
     await persistSurveyProgress({
       participantId: participant.id,
       awaiting: started.state.awaiting,
