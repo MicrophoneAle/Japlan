@@ -21,10 +21,11 @@ import {
   matchDifficulty,
   missingRequiredSetup,
   nextSetupQuestion,
-  parseIsoRange,
+  parseLooseDates,
   type SetupFields,
   type SetupQuestionId,
 } from "@/lib/game/setup";
+import { lookupCityTimezone } from "@/lib/game/city-timezones";
 import { startSurvey } from "@/lib/game/survey";
 import { QUESTIONS, type QuestionId } from "@/lib/game/survey-questions";
 import {
@@ -74,39 +75,83 @@ export type ResolvedDestination = {
   center: { lat: number; lng: number } | null;
 };
 
-// Places layer first (Foursquare `near`), then Gemini names the place and its
-// IANA zone from that evidence. The zone is kept only if it is a real zone
-// that fits the longitude. Unresolved: the raw text is stored as typed.
+export type TimezonePath = "lookup" | "gemini" | "none";
+
+// Timezone, in order, logging which path set it and why:
+//  1. Plain lookup (lib/game/city-timezones): "tokyo" -> Asia/Tokyo, no API.
+//  2. Gemini, only when the lookup has nothing: ambiguous or unusual places.
+//     Kept only if it is a real IANA zone that fits the longitude.
+// The places layer (Foursquare `near`) runs regardless for the centre and a
+// clean name; while it has no credits the raw text is stored as typed.
 export async function resolveDestinationAnswer(
   text: string,
   deps: SetupDeps = {},
-): Promise<ResolvedDestination> {
+): Promise<ResolvedDestination & { timezonePath: TimezonePath }> {
   const raw = text.trim().replace(/\s+/g, " ").slice(0, 100);
-  setupStep("destination.resolve.before", { length: raw.length });
-  const area = await resolveNearArea(raw);
-  setupStep("destination.resolve.after", { resolved: Boolean(area), country: area?.country ?? null });
 
-  let named: { display: string; timezone: string } | null = null;
-  try {
-    named = await inferPlaceTimezone({ provider: deps.provider, text: raw, area });
-  } catch (err) {
-    setupStep("destination.timezone.failed", {
-      error: err instanceof Error ? err.message : String(err),
+  const looked = lookupCityTimezone(raw);
+  setupStep("destination.timezone.lookup", {
+    input: raw,
+    hit: looked ? `${looked.matched} -> ${looked.timezone} (${looked.source})` : null,
+  });
+
+  setupStep("destination.places.before", { input: raw });
+  const area = await resolveNearArea(raw);
+  setupStep("destination.places.after", {
+    resolved: Boolean(area),
+    country: area?.country ?? null,
+    lat: area?.lat ?? null,
+    lng: area?.lng ?? null,
+  });
+  const lng = area?.lng ?? null;
+  if (looked && !zonePlausibleForLongitude(looked.timezone, lng)) {
+    // The lookup wins for a name it knows; log so a wrong alias shows up.
+    setupStep("destination.timezone.lookup_disagrees_with_places", {
+      timezone: looked.timezone,
+      lng,
     });
   }
-  const lng = area?.lng ?? null;
-  const timezone =
-    named && isValidTimeZone(named.timezone) && zonePlausibleForLongitude(named.timezone, lng)
-      ? named.timezone
-      : null;
-  setupStep("destination.timezone", { proposed: named?.timezone ?? null, kept: timezone });
 
+  let timezone: string | null = looked?.timezone ?? null;
+  let timezonePath: TimezonePath = looked ? "lookup" : "none";
+  let named: { display: string; timezone: string } | null = null;
+
+  if (!looked || area) {
+    // Gemini: the timezone when the lookup missed, and a clean display name
+    // when the places layer resolved the place.
+    setupStep("destination.gemini.before", { input: raw, placesResolved: Boolean(area) });
+    try {
+      named = await inferPlaceTimezone({ provider: deps.provider, text: raw, area });
+      setupStep("destination.gemini.after", { response: named });
+    } catch (err) {
+      setupStep("destination.gemini.failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    if (!looked) {
+      const valid = named ? isValidTimeZone(named.timezone) : false;
+      const plausible = named && valid ? zonePlausibleForLongitude(named.timezone, lng) : false;
+      if (named && valid && plausible) {
+        timezone = named.timezone;
+        timezonePath = "gemini";
+      }
+      setupStep("destination.timezone.gemini_check", {
+        proposed: named?.timezone ?? null,
+        validIana: valid,
+        fitsLongitude: plausible,
+        kept: timezone,
+      });
+    }
+  }
+
+  setupStep("destination.timezone.result", { input: raw, path: timezonePath, timezone });
   const center =
     area && area.lat !== null && area.lng !== null ? { lat: area.lat, lng: area.lng } : null;
   return {
     // Spec: an unresolved destination is stored as the raw string.
     destination: area && named?.display ? named.display : raw,
     timezone,
+    timezonePath,
     resolved: Boolean(area),
     center,
   };
@@ -197,19 +242,29 @@ export async function answerSetup(opts: {
       }
       case "dates": {
         const today = localDateString(deps.now ?? new Date(), trip.timezone);
-        let range = parseIsoRange(text);
+        // Deterministic parser first ("oct 17-20", "28 oct - 2 nov",
+        // "next weekend"); the model only for anything it cannot read.
+        const parsed = parseLooseDates(text, today);
+        let range: { start: string; end: string } | null = parsed;
+        let path = parsed ? `parser:${parsed.form}` : "none";
+        setupStep("dates.parser", { input: text, today, result: parsed });
         if (!range) {
+          setupStep("dates.gemini.before", { input: text, today });
           try {
             range = await extractTripDates({ provider: deps.provider, text, today });
+            path = range ? "gemini" : "gemini:not_understood";
+            setupStep("dates.gemini.after", { response: range });
           } catch (err) {
-            setupStep("dates.extract_failed", {
+            path = "gemini:error";
+            setupStep("dates.gemini.failed", {
               error: err instanceof Error ? err.message : String(err),
             });
           }
         }
+        setupStep("dates.path", { input: text, path, range });
         if (!range) return datesRetryLine("unclear");
         const check = checkDateRange(range.start, range.end, today);
-        setupStep("dates.check", { ...range, today, ok: check.ok });
+        setupStep("dates.check", { ...range, today, path, ok: check.ok, reason: check.ok ? null : check.reason });
         if (!check.ok) return datesRetryLine(check.reason);
         patch.start_date = check.start;
         patch.end_date = check.end;

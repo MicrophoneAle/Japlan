@@ -215,6 +215,38 @@ describe("organizer setup", () => {
     expect(lastTo(MIKE_DM)).toMatch(/couldn't pin it on a map, so times run on utc/);
   });
 
+  it("sets the live DM's dates and Tokyo timezone with Gemini down", async () => {
+    // Reproduces the live failure: Foursquare out of credits, every Gemini
+    // call erroring. Neither answer should need a model.
+    h.near.mockResolvedValue(null);
+    h.tz.mockRejectedValue(new Error('{"error":{"code":400,"status":"INVALID_ARGUMENT"}}'));
+    h.dates.mockRejectedValue(new Error('{"error":{"code":400,"status":"INVALID_ARGUMENT"}}'));
+    await bootstrapGroup();
+
+    await send(MIKE, MIKE_DM, "Tokyo");
+    expect(openTrip()!.destination).toBe("Tokyo");
+    expect(openTrip()!.timezone).toBe("Asia/Tokyo");
+    expect(lastTo(MIKE_DM)).toMatch(/^got it: Tokyo\. when\?/);
+    expect(lastTo(MIKE_DM)).not.toMatch(/utc/);
+    expect(h.tz).not.toHaveBeenCalled();
+
+    await send(MIKE, MIKE_DM, "Oct 20-26");
+    expect(openTrip()!.start_date).toBe("2026-10-20");
+    expect(openTrip()!.end_date).toBe("2026-10-26");
+    expect(lastTo(MIKE_DM)).toMatch(/^got it: oct 20 to oct 26\./);
+    expect(h.dates).not.toHaveBeenCalled();
+  });
+
+  it("uses Gemini only for places the lookup does not know", async () => {
+    h.near.mockResolvedValue(null);
+    h.tz.mockResolvedValue({ display: "koh phangan", timezone: "Asia/Bangkok" });
+    await bootstrapGroup();
+    await send(MIKE, MIKE_DM, "koh phangan");
+    expect(h.tz).toHaveBeenCalledOnce();
+    expect(openTrip()!.timezone).toBe("Asia/Bangkok");
+    expect(openTrip()!.destination).toBe("koh phangan"); // unresolved: raw text
+  });
+
   it("re-asks unreadable dates and difficulty instead of storing them", async () => {
     await bootstrapGroup();
     await send(MIKE, MIKE_DM, "tokyo");

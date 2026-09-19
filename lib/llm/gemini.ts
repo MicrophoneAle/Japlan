@@ -1,6 +1,7 @@
 import {
   FunctionCallingConfigMode,
   GoogleGenAI,
+  ThinkingLevel,
   type Content,
   type Part,
 } from "@google/genai";
@@ -28,6 +29,45 @@ function apiKey(): string {
   return key;
 }
 
+export type ThinkingConfig = { thinkingBudget?: number; thinkingLevel?: ThinkingLevel };
+
+// Callers say thinkingBudget: 0 to mean "no reasoning, this is a
+// classification". gemini-3.5-flash-lite rejects a zero budget with a bare
+// 400 INVALID_ARGUMENT (verified 2026-09-19), which failed every fast-tier
+// call: photo vision, claim matching, conversation, setup. Zero maps to the
+// minimal thinking level, which every current model accepts.
+export function thinkingConfigFor(budget: number | undefined): ThinkingConfig | undefined {
+  if (budget === undefined) return undefined;
+  if (budget <= 0) return { thinkingLevel: ThinkingLevel.MINIMAL };
+  return { thinkingBudget: budget };
+}
+
+function isInvalidArgument(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /INVALID_ARGUMENT|"code":\s*400/.test(message);
+}
+
+// If a model rejects the thinking config, retry once without it rather than
+// failing the call. Logged loudly: it means a model changed under us.
+async function generateWithThinkingFallback(
+  ai: GoogleGenAI,
+  request: Parameters<GoogleGenAI["models"]["generateContent"]>[0],
+): Promise<Awaited<ReturnType<GoogleGenAI["models"]["generateContent"]>>> {
+  try {
+    return await ai.models.generateContent(request);
+  } catch (err) {
+    if (!request.config?.thinkingConfig || !isInvalidArgument(err)) throw err;
+    console.error("[japlan.llm] model rejected thinkingConfig; retrying without it", {
+      model: request.model,
+      thinkingConfig: request.config.thinkingConfig,
+      error: err instanceof Error ? err.message.slice(0, 200) : String(err),
+    });
+    const { thinkingConfig: _dropped, ...config } = request.config;
+    void _dropped;
+    return ai.models.generateContent({ ...request, config });
+  }
+}
+
 export class GeminiProvider implements LLMProvider {
   async complete(opts: {
     system: string;
@@ -48,7 +88,8 @@ export class GeminiProvider implements LLMProvider {
     }
 
     const ai = new GoogleGenAI({ apiKey: apiKey() });
-    const response = await ai.models.generateContent({
+    const thinkingConfig = thinkingConfigFor(opts.thinkingBudget);
+    const response = await generateWithThinkingFallback(ai, {
       model: modelForTier(opts.tier),
       contents: [{ role: "user", parts }],
       config: {
@@ -59,9 +100,7 @@ export class GeminiProvider implements LLMProvider {
               responseSchema: opts.schema,
             }
           : {}),
-        ...(opts.thinkingBudget !== undefined
-          ? { thinkingConfig: { thinkingBudget: opts.thinkingBudget } }
-          : {}),
+        ...(thinkingConfig ? { thinkingConfig } : {}),
       },
     });
     return response.text?.trim() ?? "";
@@ -77,14 +116,13 @@ export class GeminiProvider implements LLMProvider {
   }): Promise<ToolTurn> {
     const ai = new GoogleGenAI({ apiKey: apiKey() });
     const contents = opts.contents.map((entry) => contentFromTurn(entry));
-    const response = await ai.models.generateContent({
+    const thinkingConfig = thinkingConfigFor(opts.thinkingBudget);
+    const response = await generateWithThinkingFallback(ai, {
       model: modelForTier(opts.tier),
       contents,
       config: {
         systemInstruction: opts.system,
-        ...(opts.thinkingBudget !== undefined
-          ? { thinkingConfig: { thinkingBudget: opts.thinkingBudget } }
-          : {}),
+        ...(thinkingConfig ? { thinkingConfig } : {}),
         ...(opts.toolMode === "none"
           ? {
               toolConfig: {

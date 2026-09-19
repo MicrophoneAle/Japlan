@@ -81,6 +81,119 @@ export function parseIsoRange(text: string): { start: string; end: string } | nu
   return { start: dates[0], end: dates[1] ?? dates[0] };
 }
 
+const MONTHS: Record<string, number> = {
+  jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3, apr: 4, april: 4,
+  may: 5, jun: 6, june: 6, jul: 7, july: 7, aug: 8, august: 8,
+  sep: 9, sept: 9, september: 9, oct: 10, october: 10, nov: 11, november: 11,
+  dec: 12, december: 12,
+};
+const MONTH = "(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?";
+const DAY = "(\\d{1,2})(?:st|nd|rd|th)?";
+const YEAR = "(?:,?\\s*(\\d{4}))?";
+// "-", en dash, em dash, "to", "through", "until", "till".
+const RANGE_SEP = "\\s*(?:-|\\u2013|\\u2014|to|through|thru|until|till)\\s*";
+
+function pad(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+function isoOf(year: number, month: number, day: number): string | null {
+  const d = new Date(Date.UTC(year, month - 1, day));
+  if (d.getUTCMonth() !== month - 1 || d.getUTCDate() !== day) return null; // "feb 30"
+  return `${year}-${pad(month)}-${pad(day)}`;
+}
+
+// A range with no year means the next time it happens: this year unless it
+// has already ended, then next year. "oct 17-20" typed in September is this
+// October; "jan 5-10" typed in September is next January.
+function withYear(
+  parts: { m1: number; d1: number; m2: number; d2: number; year: number | null },
+  today: string,
+): { start: string; end: string } | null {
+  const todayYear = Number(today.slice(0, 4));
+  const crossesYear = parts.m2 < parts.m1; // "dec 28 - jan 3"
+  const build = (y: number) => {
+    const start = isoOf(y, parts.m1, parts.d1);
+    const end = isoOf(crossesYear ? y + 1 : y, parts.m2, parts.d2);
+    return start && end ? { start, end } : null;
+  };
+  if (parts.year !== null) return build(parts.year);
+  const thisYear = build(todayYear);
+  if (!thisYear) return null;
+  return thisYear.end < today ? build(todayYear + 1) : thisYear;
+}
+
+function addDaysIso(iso: string, days: number): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+export type ParsedDates = { start: string; end: string; form: string };
+
+// Deterministic first: the common ways people write trip dates. Returns null
+// only for text none of these forms match; the caller then asks the model.
+export function parseLooseDates(text: string, today: string): ParsedDates | null {
+  const t = text.trim().toLowerCase().replace(/\s+/g, " ").replace(/[.!?]+$/, "");
+
+  const iso = parseIsoRange(t);
+  if (iso) return { ...iso, form: "iso" };
+
+  const month = (s: string) => MONTHS[s.replace(/\.$/, "")];
+  let m: RegExpMatchArray | null;
+
+  // "oct 17-20", "october 17th to 20th, 2026"
+  m = t.match(new RegExp(`^${MONTH}\\s*${DAY}${RANGE_SEP}${DAY}${YEAR}$`));
+  if (m) {
+    const r = withYear({ m1: month(m[1]), d1: +m[2], m2: month(m[1]), d2: +m[3], year: m[4] ? +m[4] : null }, today);
+    if (r) return { ...r, form: "month day-day" };
+  }
+  // "oct 28 - nov 2", "october 28 to november 2 2026"
+  m = t.match(new RegExp(`^${MONTH}\\s*${DAY}${RANGE_SEP}${MONTH}\\s*${DAY}${YEAR}$`));
+  if (m) {
+    const r = withYear({ m1: month(m[1]), d1: +m[2], m2: month(m[3]), d2: +m[4], year: m[5] ? +m[5] : null }, today);
+    if (r) return { ...r, form: "month day-month day" };
+  }
+  // "17-20 oct", "17th to 20th october"
+  m = t.match(new RegExp(`^${DAY}${RANGE_SEP}${DAY}\\s*(?:of\\s+)?${MONTH}${YEAR}$`));
+  if (m) {
+    const r = withYear({ m1: month(m[3]), d1: +m[1], m2: month(m[3]), d2: +m[2], year: m[4] ? +m[4] : null }, today);
+    if (r) return { ...r, form: "day-day month" };
+  }
+  // "28 oct - 2 nov"
+  m = t.match(new RegExp(`^${DAY}\\s*${MONTH}${RANGE_SEP}${DAY}\\s*${MONTH}${YEAR}$`));
+  if (m) {
+    const r = withYear({ m1: month(m[2]), d1: +m[1], m2: month(m[4]), d2: +m[3], year: m[5] ? +m[5] : null }, today);
+    if (r) return { ...r, form: "day month-day month" };
+  }
+  // A single day: "oct 17", "17 oct"
+  m = t.match(new RegExp(`^${MONTH}\\s*${DAY}${YEAR}$`)) ;
+  if (m) {
+    const r = withYear({ m1: month(m[1]), d1: +m[2], m2: month(m[1]), d2: +m[2], year: m[3] ? +m[3] : null }, today);
+    if (r) return { ...r, form: "month day" };
+  }
+  m = t.match(new RegExp(`^${DAY}\\s*${MONTH}${YEAR}$`));
+  if (m) {
+    const r = withYear({ m1: month(m[2]), d1: +m[1], m2: month(m[2]), d2: +m[1], year: m[3] ? +m[3] : null }, today);
+    if (r) return { ...r, form: "day month" };
+  }
+
+  // Weekends. "this weekend" is the coming Saturday and Sunday (the current
+  // one if it is already the weekend); "next weekend" is the one after. The
+  // confirmation echoes the dates so a different reading can be corrected.
+  const weekend = t.match(/^(this|next|the)?\s*weekend$/);
+  if (weekend) {
+    const dow = new Date(`${today}T00:00:00Z`).getUTCDay(); // 0 sun .. 6 sat
+    let saturday = addDaysIso(today, (6 - dow + 7) % 7);
+    if (dow === 0) saturday = addDaysIso(today, -1); // sunday: this weekend began yesterday
+    if (weekend[1] === "next") saturday = addDaysIso(saturday, 7);
+    const start = weekend[1] !== "next" && dow === 0 ? today : saturday;
+    return { start, end: addDaysIso(saturday, 1), form: `${weekend[1] ?? "this"} weekend` };
+  }
+
+  return null;
+}
+
 export const MAX_TRIP_DAYS = 26; // day letters run A-Z
 
 export type DateRangeCheck =
