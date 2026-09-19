@@ -152,7 +152,7 @@ describe("final standings", () => {
     ];
     expect(
       finalStandingsLine({ standings, losers: losersOf(standings), stake: "karaoke solo", wrappedUrl: null }),
-    ).toBe("final: Mike 120 · Sam 40\nSam is on the hook: karaoke solo");
+    ).toBe("it's over 😭 final: Mike 120 · Sam 40\nSam is on the hook, no takebacks: karaoke solo");
   });
 
   it("shares the stake on a tie at the bottom and skips it when unset", () => {
@@ -164,10 +164,10 @@ describe("final standings", () => {
     expect(losersOf(tied)).toEqual(["Sam", "Ana"]);
     expect(
       finalStandingsLine({ standings: tied, losers: losersOf(tied), stake: "buys dinner", wrappedUrl: null }),
-    ).toContain("Sam and Ana are on the hook: buys dinner");
+    ).toContain("Sam and Ana are on the hook, no takebacks: buys dinner");
     expect(
       finalStandingsLine({ standings: tied, losers: losersOf(tied), stake: null, wrappedUrl: null }),
-    ).toBe("final: Mike 90 · Sam 40 · Ana 40");
+    ).toBe("it's over 😭 final: Mike 90 · Sam 40 · Ana 40");
     expect(losersOf([{ name: "Solo", score: 10 }])).toEqual([]);
   });
 
@@ -186,9 +186,9 @@ describe("final standings", () => {
 describe("setup prompts", () => {
   it("shows the current value on a re-run and never asks for a timezone", () => {
     expect(setupPrompt("destination", null, { first: true })).toBe(
-      "trip setup, 4 quick ones. where are you going? a city is plenty. (skip and i'll ask again later)",
+      "trip setup, 4 quick ones. ok where we headed? a city is plenty. (skip and i'll ask again later)",
     );
-    expect(setupPrompt("destination", "tokyo, japan")).toContain("(now: tokyo, japan. skip keeps it)");
+    expect(setupPrompt("destination", "tokyo, japan")).toContain("(rn: tokyo, japan. skip keeps it)");
     expect(setupPrompt("stake", null)).toContain("(skip is fine)");
     for (const id of ["destination", "dates", "difficulty", "stake"] as const) {
       expect(setupPrompt(id, null)).not.toMatch(/timezone|time zone|!/i);

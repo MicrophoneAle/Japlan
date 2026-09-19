@@ -31,6 +31,7 @@ vi.mock("@/lib/linq/send", () => ({
   }),
   markRead: vi.fn(async () => {}),
   sendTyping: vi.fn(async () => {}),
+  react: vi.fn(async () => {}),
 }));
 vi.mock("@/lib/places/foursquare", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/places/foursquare")>()),
@@ -193,7 +194,7 @@ describe("asking for a board makes one", () => {
   it("makes a future day provisional", async () => {
     seedTrip({});
     await say(MIKE, DM[MIKE], "japlan tomorrow");
-    expect(last(DM[MIKE])).toMatch(/^Day 2, subject to change( · [^\n]+)?\n/);
+    expect(last(DM[MIKE])).toMatch(/^Day 2, might still change( · [^\n]+)?\n/);
     expect(last(DM[MIKE])).not.toMatch(/provisional|weather/);
     expect(board(2)).toMatchObject({ status: "ready", provisional: true });
   });
@@ -202,7 +203,7 @@ describe("asking for a board makes one", () => {
     seedTrip({});
     for (const ask of ["japlan plans", "japlan tomorrow", "japlan day 3", "japlan the last day"]) {
       await say(MIKE, DM[MIKE], ask);
-      expect(last(DM[MIKE]), ask).toMatch(/^Day \d(, subject to change)?( · [^\n]+)?\n/);
+      expect(last(DM[MIKE]), ask).toMatch(/^Day \d(, might still change)?( · [^\n]+)?\n/);
     }
     expect([1, 2, 3, 5].map((d) => Boolean(board(d)))).toEqual([true, true, true, true]);
     expect(board(3)).toMatchObject({ provisional: true });
@@ -212,7 +213,7 @@ describe("asking for a board makes one", () => {
   it("reads a calendar date and names like first and last day", async () => {
     seedTrip({});
     await say(MIKE, DM[MIKE], "japlan sep 21");
-    expect(last(DM[MIKE])).toMatch(/^Day 3, subject to change( · [^\n]+)?\n/);
+    expect(last(DM[MIKE])).toMatch(/^Day 3, might still change( · [^\n]+)?\n/);
     await say(MIKE, DM[MIKE], "japlan first day");
     expect(last(DM[MIKE])).toMatch(/^Day 1( · [^\n]+)?\n/);
   });
@@ -220,14 +221,14 @@ describe("asking for a board makes one", () => {
   it("shows day 1 when asked before the trip starts", async () => {
     seedTrip({ start: "2026-09-25", end: "2026-09-28" });
     await say(MIKE, DM[MIKE], "japlan plans");
-    expect(last(DM[MIKE])).toMatch(/^Day 1, subject to change( · [^\n]+)?\n/);
+    expect(last(DM[MIKE])).toMatch(/^Day 1, might still change( · [^\n]+)?\n/);
     expect(board(1)).toMatchObject({ provisional: true });
   });
 
   it("only refuses a day that is not part of the trip, in the person's terms", async () => {
     seedTrip({});
     await say(MIKE, DM[MIKE], "japlan day 9");
-    expect(last(DM[MIKE])).toBe("that day isn't part of this trip. it runs sep 19 to sep 23.");
+    expect(last(DM[MIKE])).toBe("that day isn't part of this trip lol. it runs sep 19 to sep 23.");
   });
 
   it("does not make a board for a day that is over", async () => {
@@ -250,16 +251,16 @@ describe("asking for a board makes one", () => {
     for (let i = 1; i <= REFILLS_PER_DAY; i++) {
       clearDay1();
       await say(MIKE, DM[MIKE], "japlan plans");
-      expect(last(DM[MIKE]), `refill ${i}`).toMatch(/^you cleared that board, so here's more\.\nDay 1/);
+      expect(last(DM[MIKE]), `refill ${i}`).toMatch(/^u cleared that board 🫡 here's more\.\nDay 1/);
     }
     clearDay1();
     await say(MIKE, DM[MIKE], "japlan plans");
     expect(last(DM[MIKE])).toBe(
-      `that's ${REFILLS_PER_DAY} refills for today already, which is plenty for one day. the next day's board is yours whenever.`,
+      `that's ${REFILLS_PER_DAY} refills for today already, that's plenty for one day lol. next day's board is yours whenever tho.`,
     );
     // Other days are never limited by it.
     await say(MIKE, DM[MIKE], "japlan tomorrow");
-    expect(last(DM[MIKE])).toMatch(/^Day 2, subject to change( · [^\n]+)?\n/);
+    expect(last(DM[MIKE])).toMatch(/^Day 2, might still change( · [^\n]+)?\n/);
   });
 });
 
@@ -297,7 +298,7 @@ describe("in a group", () => {
     seedTrip({ solo: false });
     at("2026-09-19T06:00:00"); // before board_time
     await say(MIKE, GROUP, "japlan plans");
-    expect(last(GROUP)).toBe("your board's in your dm.");
+    expect(last(GROUP)).toBe("board's in your dms 📩");
     expect(last(DM[MIKE])).toMatch(/^Day 1/);
     expect(to(DM[SAM])).toEqual([]); // Sam's arrives at board_time
     expect(board(1)?.delivered_at ?? null).toBeNull();
@@ -428,13 +429,13 @@ describe("board time command", () => {
     seedTrip({ solo: false });
     await say(MIKE, GROUP, "japlan board time 7am");
     expect(h.db.table("trips")[0].board_time).toBe("07:00");
-    expect(last(GROUP)).toBe("boards now land at 7am each morning.");
+    expect(last(GROUP)).toBe("boards now land at 7am every morning 🫡");
 
     await say(SAM, GROUP, "japlan board time 10:30");
-    expect(last(GROUP)).toBe("only Mike can change the board time.");
+    expect(last(GROUP)).toBe("only Mike can change the board time, that's the rule lol.");
     expect(h.db.table("trips")[0].board_time).toBe("07:00");
 
     await say(MIKE, GROUP, "japlan board time whenever");
-    expect(last(GROUP)).toMatch(/^couldn't read that time\./);
+    expect(last(GROUP)).toMatch(/^couldn't read that time lol\./);
   });
 });

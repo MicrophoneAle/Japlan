@@ -29,6 +29,7 @@ vi.mock("@/lib/linq/send", () => ({
   }),
   markRead: vi.fn(async () => {}),
   sendTyping: vi.fn(async () => {}),
+  react: vi.fn(async () => {}),
 }));
 vi.mock("@/lib/places/foursquare", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/places/foursquare")>()),
@@ -118,12 +119,12 @@ async function soloThroughSetup() {
 describe("solo setup and survey", () => {
   it("asks three setup questions, no stake, and no group questions", async () => {
     await say("japlan solo");
-    expect(last()).toMatch(/^trip setup, 3 quick ones\. where are you going\?/);
+    expect(last()).toMatch(/^trip setup, 3 quick ones\. ok where we headed\?/);
     await say("Tokyo");
     await say("Oct 17-20");
     await say("chill");
     expect(last()).toBe(
-      "got it: chill. setup's done. a few quick ones so the tasks fit you. skip any of them by saying skip. what should i call you?",
+      "bet, locked in: chill. setup's done, we're so back. a few quick ones so the tasks fit you. skip any of them by saying skip. what should i call you?",
     );
     expect(trip().setup_state).toBe("done");
     expect(trip().stake_text ?? null).toBeNull();
@@ -136,7 +137,7 @@ describe("solo setup and survey", () => {
     expect(trip().state).toBe("active");
     // One closing message, not "that's everything" then a separate "we're live".
     expect(last()).toBe(
-      "that's everything, thanks. we're live. every morning your tasks arrive by dm, and a code like A1 claims one. first board lands oct 17 at 8am.",
+      "ok that's everything, ily for that 🙏 we're live 🔥 every morning your tasks land in your dms, and a code like A1 claims one. first board drops oct 17 at 8am.",
     );
     expect(h.sent.filter((m) => /we're live/.test(m.text))).toHaveLength(1);
   });
@@ -150,7 +151,7 @@ describe("asking for the day's plan", () => {
 
     // The trip (oct 17-20) has not started: "the plans" means its first day.
     await say("Please give me the first day plans");
-    expect(last()).toMatch(/^Day 1, subject to change( · [^\n]+)?\n/);
+    expect(last()).toMatch(/^Day 1, might still change( · [^\n]+)?\n/);
     expect(last()).not.toMatch(/starts|scheduled|timezone/);
     expect(h.sent.some((m) => /something broke/.test(m.text))).toBe(false);
   });

@@ -89,7 +89,22 @@ import {
   senderFromData,
   textFromParts,
 } from "@/lib/linq/payload";
-import { sendText } from "@/lib/linq/send";
+import { react, sendText } from "@/lib/linq/send";
+
+// A claim that scores something: react on the claiming message itself,
+// alongside the text confirmation, instead of only ever replying with words.
+const CLAIM_REACTION_EMOJI = "🔥";
+
+async function reactToClaim(messageId: string | null | undefined): Promise<void> {
+  if (!messageId) return;
+  try {
+    await react(messageId, { emoji: CLAIM_REACTION_EMOJI });
+  } catch (err) {
+    // A tapback is flavor, never load-bearing: losing it must not touch the
+    // claim, the score, or the text confirmation already sent.
+    console.error("[japlan.claim] reaction failed", { messageId, err });
+  }
+}
 
 const TASK_COLS =
   "id, trip_id, participant_id, team_id, code, title, tier, axes_json, base_points, photo_bonus_max, verification, day, expires_at, neighborhood, source, slot, duration_minutes";
@@ -678,6 +693,9 @@ async function applyAwards(opts: {
   // A claim made by DM: the confirmation goes to the group (the scoreboard)
   // and to the DM (the answer to what they sent).
   alsoConfirmTo?: string | null;
+  // The inbound message that made the claim, if known: reacted to alongside
+  // the text confirmation.
+  sourceMessageId?: string | null;
 }): Promise<void> {
   const memberIds = opts.task.team_id
     ? Array.from(
@@ -788,6 +806,7 @@ async function applyAwards(opts: {
     at: new Date().toISOString(),
   });
   resetOffTopicOnClaim(confirmChatId);
+  if (!claimantCapped) await reactToClaim(opts.sourceMessageId);
 
   if (personalBoardTask) {
     // The claim is already confirmed; a refill failure must not surface as a
@@ -860,6 +879,7 @@ async function resolveKnownTask(opts: {
   decision: ClaimDecision;
   photoBonusOverride?: number;
   nextStep: string;
+  sourceMessageId?: string | null;
 }): Promise<void> {
   // Safety net: callers already filter to claimable tasks, but never award a
   // task to someone it does not belong to.
@@ -1068,6 +1088,7 @@ async function resolveKnownTask(opts: {
       send: opts.send,
       photoClaimedAt,
       alsoConfirmTo: opts.chatId !== opts.trip.linq_chat_id ? opts.chatId : null,
+      sourceMessageId: opts.sourceMessageId,
     });
   } catch (err) {
     if (isClaimConflict(err)) {
@@ -1570,6 +1591,7 @@ async function handleGroupClaimInner(
     claimStep("handler.no_chat");
     return;
   }
+  const sourceMessageId = typeof data.id === "string" ? data.id : null;
 
   const sender = senderFromData(data);
   if (!sender) {
@@ -1804,6 +1826,7 @@ async function handleGroupClaimInner(
       send,
       provider: decision.withPhoto ? deps.provider : undefined,
       decision,
+      sourceMessageId,
     });
     return;
   }
@@ -1849,6 +1872,7 @@ async function handleGroupClaimInner(
       send,
       provider: deps.provider,
       decision,
+      sourceMessageId,
     });
     return;
   }
@@ -1911,6 +1935,7 @@ async function handleGroupClaimInner(
       provider: deps.provider,
       decision,
       photoBonusOverride: scored[0].fidelity,
+      sourceMessageId,
     });
     return null;
   }

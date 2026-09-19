@@ -239,8 +239,8 @@ describe("DM stays in DM", () => {
 
 describe("conversation redirect copy", () => {
   it("points at something real instead of lecturing", () => {
-    expect(conversationRedirect({ task: { code: "A3" } })).toBe("A3 is still open.");
-    expect(conversationRedirect({ nearby: "asakusa" })).toBe("asakusa is right there.");
+    expect(conversationRedirect({ task: { code: "A3" } })).toBe("A3 is still open btw.");
+    expect(conversationRedirect({ nearby: "asakusa" })).toBe("asakusa is literally right there.");
   });
 });
 

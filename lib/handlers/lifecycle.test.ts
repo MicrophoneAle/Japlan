@@ -33,6 +33,7 @@ vi.mock("@/lib/linq/send", () => ({
   }),
   markRead: vi.fn(async () => {}),
   sendTyping: vi.fn(async () => {}),
+  react: vi.fn(async () => {}),
 }));
 vi.mock("@/lib/linq/client", () => ({
   getLinqClient: () => ({
@@ -144,7 +145,7 @@ describe("organizer setup", () => {
     expect(trip.organizer_participant_id).toBe(person(MIKE)!.id);
     expect(trip.setup_state).toBe("destination");
     expect(lastTo(MIKE_DM)).toBe(
-      "trip setup, 4 quick ones. where are you going? a city is plenty. (skip and i'll ask again later)",
+      "trip setup, 4 quick ones. ok where we headed? a city is plenty. (skip and i'll ask again later)",
     );
     expect(lastTo(SAM_DM)).toMatch(/what should i call you\?$/); // Sam gets the personal survey
 
@@ -152,12 +153,12 @@ describe("organizer setup", () => {
     expect(openTrip()!.destination).toBe("tokyo, japan");
     expect(openTrip()!.timezone).toBe("Asia/Tokyo");
     expect(h.near).toHaveBeenCalledWith("tokyo");
-    expect(lastTo(MIKE_DM)).toMatch(/^got it: tokyo, japan\. when\?/);
+    expect(lastTo(MIKE_DM)).toMatch(/^bet, locked in: tokyo, japan\. when's this happening\?/);
 
     await send(MIKE, MIKE_DM, "oct 17-20");
     expect(openTrip()!.start_date).toBe("2026-10-17");
     expect(openTrip()!.end_date).toBe("2026-10-20");
-    expect(lastTo(MIKE_DM)).toMatch(/^got it: oct 17 to oct 20\. how hard/);
+    expect(lastTo(MIKE_DM)).toMatch(/^bet, locked in: oct 17 to oct 20\. how unhinged/);
 
     await send(MIKE, MIKE_DM, "unhinged");
     expect(openTrip()!.difficulty).toBe("unhinged");
@@ -166,7 +167,7 @@ describe("organizer setup", () => {
     expect(openTrip()!.stake_text).toBe("karaoke solo in shinjuku");
     expect(openTrip()!.setup_state).toBe("done");
     expect(lastTo(MIKE_DM)).toBe(
-      "got it. setup's done. a few quick ones so the tasks fit you. skip any of them by saying skip. what should i call you?",
+      "say less, noted. setup's done, we're so back. a few quick ones so the tasks fit you. skip any of them by saying skip. what should i call you?",
     );
     expect(person(MIKE)!.survey_state).toBe("first_name");
   });
@@ -178,14 +179,14 @@ describe("organizer setup", () => {
     await send(MIKE, MIKE_DM, "chill");
     await send(MIKE, MIKE_DM, "skip");
     expect(openTrip()!.setup_state).toBe("deferred");
-    expect(lastTo(MIKE_DM)).toMatch(/setup's paused\. i still need where and when/);
+    expect(lastTo(MIKE_DM)).toMatch(/setup's paused rq\. still need where and when/);
 
     await finishSurvey(SAM, SAM_DM);
     expect(lastTo(SAM_DM)).toContain("waiting on 1 more person and the trip setup");
     await finishSurvey(MIKE, MIKE_DM);
     expect(openTrip()!.state).toBe("surveying"); // every survey done, still blocked
     // Asked again on his next message, in the same reply as the survey end.
-    expect(lastTo(MIKE_DM)).toMatch(/where are you going\?/);
+    expect(lastTo(MIKE_DM)).toMatch(/ok where we headed\?/);
     expect(openTrip()!.setup_state).toBe("destination");
 
     await send(MIKE, MIKE_DM, "tokyo");
@@ -195,7 +196,7 @@ describe("organizer setup", () => {
     expect(openTrip()!.state).toBe("active");
     // Trip runs oct 17-20; boards start on its first morning, not before.
     expect(lastTo(GROUP)).toBe(
-      "we're live. every morning your tasks arrive by dm, and a code like A1 claims one. first board lands oct 17 at 8am.",
+      "we're live 🔥 every morning your tasks land in your dms, and a code like A1 claims one. first board drops oct 17 at 8am.",
     );
   });
 
@@ -207,7 +208,7 @@ describe("organizer setup", () => {
     vi.setSystemTime(new Date("2026-09-20T03:00:00Z")); // a day passes: nothing sent
     expect(h.sent.length).toBe(before);
     await send(MIKE, MIKE_DM, "hey");
-    expect(lastTo(MIKE_DM)).toBe("where are you going? a city is plenty. (skip and i'll ask again later)");
+    expect(lastTo(MIKE_DM)).toBe("ok where we headed? a city is plenty. (skip and i'll ask again later)");
   });
 
   it("stores the raw string when the places layer cannot resolve it", async () => {
@@ -217,7 +218,7 @@ describe("organizer setup", () => {
     await send(MIKE, MIKE_DM, "that island my cousin went to");
     expect(openTrip()!.destination).toBe("that island my cousin went to");
     expect(openTrip()!.timezone ?? null).toBeNull(); // "JST" is not an IANA zone
-    expect(lastTo(MIKE_DM)).toMatch(/couldn't pin it on a map, so times run on utc/);
+    expect(lastTo(MIKE_DM)).toMatch(/couldn't pin it on a map tho, so times run on utc/);
   });
 
   it("sets the live DM's dates and Tokyo timezone with Gemini down", async () => {
@@ -231,14 +232,14 @@ describe("organizer setup", () => {
     await send(MIKE, MIKE_DM, "Tokyo");
     expect(openTrip()!.destination).toBe("Tokyo");
     expect(openTrip()!.timezone).toBe("Asia/Tokyo");
-    expect(lastTo(MIKE_DM)).toMatch(/^got it: Tokyo\. when\?/);
+    expect(lastTo(MIKE_DM)).toMatch(/^bet, locked in: Tokyo\. when's this happening\?/);
     expect(lastTo(MIKE_DM)).not.toMatch(/utc/);
     expect(h.tz).not.toHaveBeenCalled();
 
     await send(MIKE, MIKE_DM, "Oct 20-26");
     expect(openTrip()!.start_date).toBe("2026-10-20");
     expect(openTrip()!.end_date).toBe("2026-10-26");
-    expect(lastTo(MIKE_DM)).toMatch(/^got it: oct 20 to oct 26\./);
+    expect(lastTo(MIKE_DM)).toMatch(/^bet, locked in: oct 20 to oct 26\./);
     expect(h.dates).not.toHaveBeenCalled();
   });
 
@@ -263,7 +264,7 @@ describe("organizer setup", () => {
     expect(openTrip()!.setup_state).toBe("dates");
     await send(MIKE, MIKE_DM, "2026-10-17 to 2026-10-20");
     await send(MIKE, MIKE_DM, "medium-ish");
-    expect(lastTo(MIKE_DM)).toBe("didn't catch that. reply chill / normal / unhinged, or skip.");
+    expect(lastTo(MIKE_DM)).toBe("didn't catch that lol. reply chill / normal / unhinged, or skip.");
     expect(openTrip()!.setup_state).toBe("difficulty");
   });
 });
@@ -283,8 +284,8 @@ describe("japlan setup mid-trip", () => {
   it("lets the organizer change the destination and refreshes the profile", async () => {
     await activeTrip();
     await send(MIKE, GROUP, "japlan setup");
-    expect(lastTo(GROUP)).toBe("setup questions are in your dm.");
-    expect(lastTo(MIKE_DM)).toContain("(now: tokyo, japan. skip keeps it)");
+    expect(lastTo(GROUP)).toBe("setup questions are in your dms 📩");
+    expect(lastTo(MIKE_DM)).toContain("(rn: tokyo, japan. skip keeps it)");
 
     h.tz.mockResolvedValue({ display: "osaka, japan", timezone: "Asia/Tokyo" });
     await send(MIKE, MIKE_DM, "osaka");
@@ -297,7 +298,7 @@ describe("japlan setup mid-trip", () => {
     expect(openTrip()!.setup_state).toBe("done");
     expect(openTrip()!.state).toBe("active");
     expect(openTrip()!.start_date).toBe("2026-10-17"); // skip kept it
-    expect(lastTo(MIKE_DM)).toBe("setup's done.");
+    expect(lastTo(MIKE_DM)).toBe("setup's done, we're so back.");
   });
 
   it("keeps the profile when the destination is unchanged", async () => {
@@ -310,7 +311,7 @@ describe("japlan setup mid-trip", () => {
   it("refuses anyone but the organizer", async () => {
     await activeTrip();
     await send(SAM, GROUP, "japlan setup");
-    expect(lastTo(GROUP)).toBe("only Mike can change the setup.");
+    expect(lastTo(GROUP)).toBe("only Mike can change the setup, that's the rule lol.");
   });
 });
 
@@ -329,17 +330,17 @@ describe("end trip and new trip", () => {
   it("ends only after confirmation and posts final standings with the stake", async () => {
     await activeTripWithScores();
     await send(SAM, GROUP, "japlan end trip");
-    expect(lastTo(GROUP)).toBe("only Mike can end the trip.");
+    expect(lastTo(GROUP)).toBe("only Mike can end the trip, that's the rule lol.");
     await send(MIKE, GROUP, "japlan end trip");
     expect(lastTo(GROUP)).toBe(
-      "this ends the trip and the scores are final. send 'japlan end trip confirm'",
+      "this ends the trip and the scores are FINAL final. send 'japlan end trip confirm' if u mean it",
     );
     expect(openTrip()?.state).toBe("active");
 
     await send(MIKE, GROUP, "japlan end trip confirm");
     expect(trips()[0].state).toBe("complete");
     expect(trips()[0].completed_at).toBeTruthy();
-    expect(lastTo(GROUP)).toBe("final: Mike 120 · Sam 40\nSam is on the hook: karaoke solo");
+    expect(lastTo(GROUP)).toBe("it's over 😭 final: Mike 120 · Sam 40\nSam is on the hook, no takebacks: karaoke solo");
   });
 
   it("keeps the chat quiet after the end until someone asks for a new trip", async () => {
@@ -352,7 +353,7 @@ describe("end trip and new trip", () => {
     expect(h.sent.length).toBe(sentBefore);
 
     await send(SAM, GROUP, "A1");
-    expect(lastTo(GROUP)).toBe(`this trip is over. "japlan new trip" starts another.`);
+    expect(lastTo(GROUP)).toBe(`this trip's over. "japlan new trip" starts another one.`);
 
     await send(SAM, GROUP, "japlan new trip");
     expect(trips()).toHaveLength(2);
@@ -360,10 +361,10 @@ describe("end trip and new trip", () => {
     expect(second.state).toBe("surveying");
     expect(second.organizer_participant_id).toBe(person(SAM)!.id); // whoever asked
     expect(lastTo(SAM_DM)).toMatch(/^trip setup, 4 quick ones\./);
-    expect(allTo(GROUP).filter((t) => /^hi, i'm japlan\./.test(t))).toHaveLength(2);
+    expect(allTo(GROUP).filter((t) => /^heyyyy i'm japlan/.test(t))).toHaveLength(2);
 
     await send(MIKE, GROUP, "japlan new trip");
-    expect(lastTo(GROUP)).toBe(`there's already a trip running. "japlan end trip" first.`);
+    expect(lastTo(GROUP)).toBe(`there's already a trip running lol. "japlan end trip" first.`);
     expect(trips()).toHaveLength(2);
   });
 
@@ -371,6 +372,6 @@ describe("end trip and new trip", () => {
     await activeTripWithScores();
     await send(MIKE, GROUP, "japlan end trip confirm");
     await send(MIKE, GROUP, "japlan end trip");
-    expect(lastTo(GROUP)).toBe(`this trip is over. "japlan new trip" starts another.`);
+    expect(lastTo(GROUP)).toBe(`this trip's over. "japlan new trip" starts another one.`);
   });
 });

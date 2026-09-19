@@ -55,7 +55,7 @@ import {
   isFromMe,
   textFromParts,
 } from "@/lib/linq/payload";
-import { sendText } from "@/lib/linq/send";
+import { react, sendText } from "@/lib/linq/send";
 
 const CONVERSATION_TOOL_DEFS = [
   {
@@ -110,6 +110,22 @@ const CONVERSATION_TOOL_DEFS = [
     parameters: {
       type: "object",
       properties: { code: { type: "string" } },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "react_to_message",
+    description:
+      "Tapback the message they just sent instead of (or in addition to) texting back. Use this for something funny, unhinged, or hype-worthy where a reaction hits harder than words. Not for every message, and not instead of answering a real question.",
+    parameters: {
+      type: "object",
+      properties: {
+        emoji: {
+          type: "string",
+          description: "A single emoji to react with, e.g. 💀 😭 🔥 😂 🫡 👑.",
+        },
+      },
+      required: ["emoji"],
       additionalProperties: false,
     },
   },
@@ -512,6 +528,23 @@ async function executeConversationTool(
       provider: miss.provider,
     });
     return { result: { ok: true, code: task.code }, sent: true };
+  }
+  if (name === "react_to_message") {
+    const emoji = typeof args.emoji === "string" ? args.emoji.trim() : "";
+    const messageId = typeof miss.data.id === "string" ? miss.data.id : null;
+    if (!emoji || !messageId) {
+      return { result: { ok: false, reason: "no_message" }, sent: false };
+    }
+    try {
+      await react(messageId, { emoji });
+    } catch (err) {
+      console.error("[japlan.conversation] reaction failed", { messageId, err });
+      return { result: { ok: false, reason: "failed" }, sent: false };
+    }
+    // A reaction alone can be the whole response: it does not force a text
+    // reply, but doesn't block one either if the model still has something
+    // to say this turn.
+    return { result: { ok: true, emoji }, sent: false };
   }
   return { result: { ok: false, reason: "unknown_tool" }, sent: false };
 }

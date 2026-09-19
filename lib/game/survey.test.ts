@@ -144,7 +144,7 @@ describe("choice answers never store raw text", () => {
     expect(step.state.awaiting).toBe("dietary");
     expect(step.state.answers.dietary).toBeUndefined();
     expect(step.completed).toBe(false);
-    expect(step.prompt).toBe("didn't catch that. reply none / yes, or skip.");
+    expect(step.prompt).toBe("didn't catch that lol. reply none / yes, or skip.");
   });
 
   it("then asks strictness once the restriction is picked", () => {
@@ -184,7 +184,7 @@ describe("choice answers never store raw text", () => {
 
 describe("survey ending", () => {
   it("says what happens next", () => {
-    expect(surveyDoneLine(0)).toBe(`${SURVEY_DONE_DM} your first board lands in the morning.`);
+    expect(surveyDoneLine(0)).toBe(`${SURVEY_DONE_DM} your first board drops in the morning.`);
     expect(surveyDoneLine(1)).toContain("waiting on 1 more person");
     expect(surveyDoneLine(3)).toContain("waiting on 3 more people");
     expect(surveyDoneLine(2)).not.toContain("\n");
