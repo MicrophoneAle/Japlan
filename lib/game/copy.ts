@@ -179,12 +179,23 @@ export function finalStandingsLine(opts: {
   return lines.join("\n");
 }
 
+// "Day 3 · Asakusa → Ueno · 22° clear": the route and the weather when known.
 export function dailyBoardHeader(
   day: number,
   weatherLine?: string | null,
+  route?: string | null,
 ): string {
-  if (weatherLine) return `Day ${day} · ${weatherLine}`;
-  return `Day ${day}`;
+  return [`Day ${day}`, route, weatherLine].filter(Boolean).join(" · ");
+}
+
+export function boardRouteLabel(first: string, last: string): string {
+  return first === last ? first : `${first} → ${last}`;
+}
+
+// Rough time of day, never clock times: nobody is actually on a schedule.
+// Padded so the codes line up where the font allows.
+export function boardSlotLabel(slot: string): string {
+  return slot.padEnd(11);
 }
 
 // One line per task, tier before points so people can pick by effort:
@@ -194,8 +205,10 @@ export function dailyBoardTaskLine(
   title: string,
   points: number,
   tier: string,
+  slot?: string | null,
 ): string {
-  return `${code} · ${title} · ${tier.toLowerCase()} (${points})`;
+  const line = `${code} · ${title} · ${tier.toLowerCase()} (${points})`;
+  return slot ? `${boardSlotLabel(slot)}${line}` : line;
 }
 
 export function standingsLine(

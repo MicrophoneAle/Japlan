@@ -90,7 +90,7 @@ import {
 import { sendText } from "@/lib/linq/send";
 
 const TASK_COLS =
-  "id, trip_id, participant_id, team_id, code, title, tier, axes_json, base_points, photo_bonus_max, verification, day, expires_at, neighborhood, source";
+  "id, trip_id, participant_id, team_id, code, title, tier, axes_json, base_points, photo_bonus_max, verification, day, expires_at, neighborhood, source, slot, duration_minutes";
 const PARTICIPANT_COLS =
   "id, trip_id, phone, display_name, score, survey_json, survey_state, sidequests_muted, consented_at";
 const CLAIM_COLS =

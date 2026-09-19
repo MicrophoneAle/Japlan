@@ -38,6 +38,10 @@ export type TaskRow = {
   expires_at: string | null;
   neighborhood: string | null;
   source?: string;
+  // Rough time of day on the board (morning / afternoon / evening) and the
+  // code's duration estimate. Null on tasks made before day planning.
+  slot?: string | null;
+  duration_minutes?: number | null;
   created_at?: string;
 };
 

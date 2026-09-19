@@ -2,14 +2,15 @@ import type { LLMProvider } from "@/lib/llm";
 import { GeminiProvider } from "@/lib/llm/gemini";
 import type { DestinationProfile } from "./destination";
 import {
+  boardTemplates,
   fillArchetype,
   midpointAxes,
-  TEMPLATES,
   type TaskTemplate,
 } from "./templates";
 import type { SurveyAnswers } from "./survey";
 import { difficultyGuidance } from "./setup";
 import {
+  CURVEBALL,
   isTaskKind,
   TASK_KINDS,
   validateGeneratedTask,
@@ -18,7 +19,11 @@ import {
 } from "./validate";
 import type { DayWeather } from "./weather";
 import { dayLetter, type Axes } from "./scoring";
+import { haversineKm } from "./duration";
+import { lookupCityTimezone } from "./city-timezones";
 
+// How many tasks to ask for when the caller has no day plan (tests, tools).
+// The board pipeline asks for candidatesToRequest(window) instead.
 export const TASKS_PER_CALL = 3;
 
 export const GENERATED_TASK_SCHEMA = {
@@ -26,7 +31,7 @@ export const GENERATED_TASK_SCHEMA = {
   items: {
     type: "object",
     properties: {
-      code: { type: "string" },
+      template: { type: "string" },
       title: { type: "string" },
       axes: {
         type: "object",
@@ -50,18 +55,19 @@ export const GENERATED_TASK_SCHEMA = {
       verification: { type: "string", enum: ["photo", "honor", "peer"] },
       photo_bonus_max: { type: "integer" },
       neighborhood: { type: "string" },
+      places: { type: "array", items: { type: "string" } },
+      involves_stranger: { type: "boolean" },
       kind: { type: "string", enum: [...TASK_KINDS] },
-      place: { type: "string" },
     },
     required: [
-      "code",
+      "template",
       "title",
       "axes",
       "verification",
       "photo_bonus_max",
       "neighborhood",
-      "kind",
-      "place",
+      "places",
+      "involves_stranger",
     ],
   },
 };
@@ -106,6 +112,15 @@ export function parseGeneratedTasks(raw: string): ProposedTask[] {
     for (const key of AXIS_KEYS) {
       axes[key] = clampAxis(row.axes[key]);
     }
+    const places = (Array.isArray(row.places) ? row.places : [])
+      .filter((p): p is string => typeof p === "string" && p.trim().length > 0)
+      .map((p) => p.trim())
+      .slice(0, 2);
+    // Older shape: a single place string.
+    if (places.length === 0 && typeof row.place === "string" && row.place.trim()) {
+      places.push(row.place.trim());
+    }
+    const template = typeof row.template === "string" ? row.template.trim() : "";
     tasks.push({
       code: typeof row.code === "string" ? row.code : "",
       title,
@@ -115,7 +130,9 @@ export function parseGeneratedTasks(raw: string): ProposedTask[] {
       neighborhood:
         typeof row.neighborhood === "string" ? row.neighborhood : "",
       ...(isTaskKind(row.kind) ? { kind: row.kind } : {}),
-      ...(typeof row.place === "string" && row.place.trim() ? { place: row.place.trim() } : {}),
+      ...(places.length > 0 ? { places, place: places[0] } : {}),
+      ...(template ? { template } : {}),
+      ...(typeof row.involves_stranger === "boolean" ? { stranger: row.involves_stranger } : {}),
     });
   }
   return tasks;
@@ -196,6 +213,18 @@ export function nextFreeformCode(codes: string[]): string {
   return `X${max + 1}`;
 }
 
+// What the day planner tells the model about time, so duration shapes what
+// gets generated rather than only what gets rejected afterwards.
+export type GenerationPlan = {
+  // "09:30 to 21:00", or "18:10 to 21:00" asked in the evening.
+  windowText: string;
+  usableMinutes: number;
+  targetMinutes: number;
+  maxTaskMinutes: number;
+  // Asked late in the day: say so.
+  lateStart: boolean;
+};
+
 export type GenerationInput = {
   profile: DestinationProfile;
   weather: DayWeather;
@@ -210,6 +239,12 @@ export type GenerationInput = {
   // Titles already on this trip's boards (any day), so day 2 is not day 1
   // again with different adjectives.
   boardTitles?: string[];
+  // The bank the model may build from: main-task templates only (sidequests
+  // never go on the board), no group templates on a solo trip.
+  templates?: TaskTemplate[];
+  plan?: GenerationPlan;
+  // One board in four also gets one task that fits no template.
+  curveball?: boolean;
 };
 
 // Boldness is the highest-weighted axis and the one that makes a story, so
@@ -221,23 +256,50 @@ export function boldTasksWanted(difficulty: string | null | undefined, count: nu
   return Math.min(2, count);
 }
 
-export const BOLDNESS_GUIDANCE = [
-  "What makes this game: social friction and a story afterwards. Boldness is the highest-weighted axis.",
-  "Bold means involving people or stepping out of your comfort zone: ask a local for their favourite thing and go, get a stranger to teach you something, order the thing you cannot read, trade or haggle, join in with something already happening, make a small public ask. Safe, legal, nothing permanent, no bookings.",
-  "\"Go somewhere and look at something\" is boldness 1. At most one task on a board may be that.",
-  "Rate axes honestly; make the tasks bolder, do not inflate the numbers.",
+export const TASK_QUALITY_GUIDANCE = [
+  "What makes this game: social friction and a story afterwards. Boldness, scarcity and being specific to this place earn the points; length, effort and prettiness barely do.",
+  "A task that can be completed without speaking to anyone, without going somewhere unusual, and without doing anything slightly embarrassing is a weak task. Avoid weak tasks.",
+  "\"Go look at X\" (find a bench, locate a statue, view a waterfall) is the weakest possible archetype. Avoid it.",
+  "At least one task on the board must involve a stranger (involves_stranger: true).",
+  "No two tasks on the board share a location, and no two use the same template.",
+  "Safe, legal, nothing permanent, no bookings. Rate axes honestly; make the tasks bolder, do not inflate the numbers.",
 ].join(" ");
+
+export const CURVEBALL_GUIDANCE = [
+  `Exactly one task uses template "${CURVEBALL}": invent it, fitting no template in the bank.`,
+  "Make it specific and strange, something that only makes sense in this city and that a local would find funny. No template could have produced it.",
+  "Same six axes, same rules. Give it a kind.",
+].join(" ");
+
+function templateLine(t: TaskTemplate): string {
+  const tags = [t.kind, t.duration, t.stranger ? "stranger" : null, t.lookOnly ? "weak" : null]
+    .filter(Boolean)
+    .join(", ");
+  return `- ${t.id} (${tags}): ${t.archetype} [${t.verification}, indoor=${t.indoor}]`;
+}
+
+function hoursText(minutes: number): string {
+  const hours = Math.round((minutes / 60) * 2) / 2;
+  return `${hours} hour${hours === 1 ? "" : "s"}`;
+}
 
 export function buildGenerationPrompt(input: GenerationInput): string {
   const count = input.count ?? TASKS_PER_CALL;
   const indoor = input.weather.indoorPreferred
     ? "Weather is wet. Prefer indoor tasks. Do not generate an outdoor board with a rain warning attached."
     : "Weather is fair. Outdoor tasks are fine.";
-  const templates = TEMPLATES.map(
-    (t) =>
-      `- ${t.id} (${t.kind}): ${t.archetype} [${t.verification}, indoor=${t.indoor}]`,
-  ).join("\n");
+  const bank = input.templates ?? boardTemplates({ solo: false });
   const bold = boldTasksWanted(input.difficulty, count);
+  const plan = input.plan;
+  const timing = plan
+    ? [
+        plan.lateStart
+          ? `It is already late in the day: the board covers ${plan.windowText}, about ${hoursText(plan.usableMinutes)} of usable time.`
+          : `The board covers ${plan.windowText}, about ${hoursText(plan.usableMinutes)} of usable time.`,
+        `Main tasks should add up to about ${hoursText(plan.targetMinutes)}; the rest of the day is deliberate gaps.`,
+        `No task may take longer than ${plan.maxTaskMinutes} minutes, travel included. Time axis: 1 under 20 min (a sidequest, not wanted here), 2 is 20-45 min, 3 is 45 min-2 h, 4-5 is 2 h or more.`,
+      ]
+    : [];
   return [
     `Destination: ${input.profile.destination}`,
     `Neighborhoods: ${input.profile.neighborhoods.map((n) => n.name).join(", ") || "(none yet)"}`,
@@ -252,11 +314,14 @@ export function buildGenerationPrompt(input: GenerationInput): string {
     `Already on this trip's boards (do not repeat or rephrase): ${input.boardTitles?.slice(-40).join("; ") || "(none)"}`,
     `Yesterday's ratings: ${input.yesterdayRatings || "(none)"}`,
     `Score gap: ${input.scoreGap}`,
-    `Template bank:\n${templates}`,
-    BOLDNESS_GUIDANCE,
+    ...timing,
+    `Template bank (build each task from one, and say which in template):\n${bank.map(templateLine).join("\n")}`,
+    TASK_QUALITY_GUIDANCE,
     `At least ${bold} of the ${count} tasks must honestly rate boldness 3 or more.`,
-    `Variety: each task has a kind (${TASK_KINDS.join(", ")}); a board is never all one kind, and different kinds are better. place is the specific spot (a park, shrine, market, street, shop); no two tasks share a place, and a task that can happen anywhere has an empty place.`,
-    `Return exactly ${count} tasks as JSON matching the schema. Fill slots from the destination profile. Axes are integers 1-5. Never include a point value.`,
+    ...(input.curveball ? [CURVEBALL_GUIDANCE] : []),
+    "title: the full instruction as the player reads it, lowercase, one short sentence (\"ask a stranger in koenji for their single best recommendation, then actually do it\"), not a headline.",
+    "places: the specific spots the task happens at, named as in the neighborhoods or landmarks above where possible; a route task names its start then its end; a task that can happen anywhere has none.",
+    `Return exactly ${count} tasks as JSON matching the schema, best first. Fill slots from the destination profile. Axes are integers 1-5. Never include a point value.`,
     "Verification is not a photo gate. honor and photo are both claimable by code immediately; photo_bonus_max is the optional bonus ceiling for a matching photo. Only peer requires someone else's tapback.",
   ].join("\n");
 }
@@ -280,7 +345,68 @@ export async function generateTasksForAssignee(
   }
 }
 
+// Roughly one board in four gets a curveball. Seeded by trip, day and
+// assignee, so a regenerated board makes the same call.
+export function isCurveballBoard(seed: string): boolean {
+  let hash = 2166136261;
+  for (let i = 0; i < seed.length; i++) {
+    hash ^= seed.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) % 4 === 0;
+}
+
 const LETTER_RANGES = ["a-d", "e-h", "i-l", "m-p", "q-t", "u-z"];
+
+// Something small to spend, in the destination's own money, from the city's
+// timezone. Static data; anywhere unknown gets a currency-free amount.
+const AMOUNT_BY_ZONE: [RegExp, string][] = [
+  [/^Asia\/Tokyo$/, "1,000 yen"],
+  [/^Asia\/Seoul$/, "10,000 won"],
+  [/^Asia\/(Shanghai|Chongqing)$/, "50 yuan"],
+  [/^Asia\/Taipei$/, "300 taiwan dollars"],
+  [/^Asia\/(Hong_Kong|Macau)$/, "80 hong kong dollars"],
+  [/^Asia\/Bangkok$/, "300 baht"],
+  [/^Asia\/Ho_Chi_Minh$/, "200,000 dong"],
+  [/^Asia\/Singapore$/, "10 singapore dollars"],
+  [/^Asia\/(Kolkata|Calcutta)$/, "500 rupees"],
+  [/^Europe\/London$/, "£8"],
+  [/^Europe\/Zurich$/, "10 francs"],
+  [/^Europe\/Prague$/, "250 koruna"],
+  [/^Europe\/Warsaw$/, "40 zloty"],
+  [/^Europe\/Budapest$/, "4,000 forint"],
+  [/^Europe\/(Stockholm|Oslo|Copenhagen)$/, "100 kronor"],
+  [/^Europe\/Istanbul$/, "300 lira"],
+  [/^Europe\//, "€10"],
+  [/^America\/(Mexico_City|Cancun)$/, "150 pesos"],
+  [/^America\//, "$10"],
+  [/^Australia\//, "15 australian dollars"],
+];
+
+export function localAmount(destination: string): string {
+  const zone = lookupCityTimezone(destination)?.timezone;
+  if (zone) {
+    for (const [match, amount] of AMOUNT_BY_ZONE) if (match.test(zone)) return amount;
+  }
+  return "the price of a coffee";
+}
+
+type NamedPoint = { name: string; lat: number | null; lng: number | null };
+
+// A second place for a route task: ideally 2-5 km from the first (a real
+// walk, not a marathon), else whichever other place is closest to 3 km.
+function routePartner(from: NamedPoint, places: NamedPoint[]): NamedPoint | null {
+  const others = places.filter((p) => p.name !== from.name);
+  if (others.length === 0) return null;
+  if (from.lat === null || from.lng === null) return others[0];
+  const origin = { lat: from.lat, lng: from.lng };
+  const scored = others.map((p) => ({
+    p,
+    km: p.lat !== null && p.lng !== null ? haversineKm(origin, { lat: p.lat, lng: p.lng }) : 99,
+  }));
+  scored.sort((a, b) => Math.abs(a.km - 3) - Math.abs(b.km - 3));
+  return scored[0].p;
+}
 
 export function slotValuesFor(
   template: TaskTemplate,
@@ -296,6 +422,7 @@ export function slotValuesFor(
   const dish =
     profile.dishes[seed % Math.max(1, profile.dishes.length)] ??
     "something local";
+  const points: NamedPoint[] = [...profile.landmarks, ...profile.neighborhoods];
   const values: Record<string, string> = {};
   for (const slot of template.slots) {
     switch (slot.kind) {
@@ -304,6 +431,9 @@ export function slotValuesFor(
         break;
       case "time":
         values[slot.key] = "4pm";
+        break;
+      case "early_time":
+        values[slot.key] = "6am";
         break;
       case "transport_mode":
         values[slot.key] = profile.transit_lines[0] ? "the train" : "a taxi";
@@ -320,15 +450,56 @@ export function slotValuesFor(
       case "phrase":
         values[slot.key] = "thank you";
         break;
+      case "place_a": {
+        values[slot.key] = points[seed % Math.max(1, points.length)]?.name ?? hood;
+        break;
+      }
+      case "place_b": {
+        const from = points[seed % Math.max(1, points.length)];
+        values[slot.key] = (from && routePartner(from, points)?.name) ?? landmark;
+        break;
+      }
+      case "transit_line":
+        values[slot.key] =
+          profile.transit_lines[seed % Math.max(1, profile.transit_lines.length)] ??
+          "the nearest train line";
+        break;
+      case "amount":
+        values[slot.key] = localAmount(profile.destination);
+        break;
     }
   }
   return values;
 }
 
-// A filled template's place: its landmark, else its neighborhood, else none.
-function templatePlace(values: Record<string, string>): { place?: string } {
-  const place = values.subject ?? values.neighborhood;
-  return place ? { place } : {};
+// A filled template's places, in order: a route's two ends, else its
+// landmark, else its neighborhood, else none (it can happen anywhere).
+function templatePlaces(values: Record<string, string>): { places?: string[]; place?: string } {
+  const places = values.place_a
+    ? [values.place_a, values.place_b].filter(Boolean)
+    : [values.subject ?? values.neighborhood].filter(Boolean);
+  return places.length > 0 ? { places, place: places[0] } : {};
+}
+
+function fromTemplate(
+  template: TaskTemplate,
+  values: Record<string, string>,
+  axes: Axes,
+  fallbackNeighborhood: string,
+): ProposedTask {
+  return {
+    code: "",
+    title: fillArchetype(template.archetype, values),
+    axes,
+    verification: template.verification,
+    photo_bonus_max: template.photo_bonus_max,
+    neighborhood: values.neighborhood ?? fallbackNeighborhood,
+    kind: template.kind,
+    template: template.id,
+    stranger: template.stranger,
+    ...(template.when ? { when: template.when } : {}),
+    ...templatePlaces(values),
+  };
 }
 
 const BOUNTY_ATTEMPTS = 12;
@@ -336,7 +507,7 @@ const BOUNTY_ATTEMPTS = 12;
 // Catch-up bounty for the trailing player. Peer templates first; the seed
 // moves with the day and the attempt, so it is not the same task every day,
 // and it never repeats anything in avoidTitles (the trailer's completed tasks
-// plus today's board).
+// plus today's board). Main tasks only: a sidequest is not a bounty.
 export function pickBounty(opts: {
   profile: DestinationProfile;
   day: number;
@@ -346,27 +517,22 @@ export function pickBounty(opts: {
   now?: Date;
   onReject?: (reason: RejectionReason, title: string, attempt: number) => void;
 }): ProposedTask | null {
+  const bank = boardTemplates({ solo: false }).filter((t) => !t.groupOnly);
   const ordered = [
-    ...TEMPLATES.filter((t) => t.verification === "peer"),
-    ...TEMPLATES.filter((t) => t.verification !== "peer"),
+    ...bank.filter((t) => t.verification === "peer"),
+    ...bank.filter((t) => t.verification !== "peer"),
   ];
   if (ordered.length === 0) return null;
   for (let attempt = 0; attempt < BOUNTY_ATTEMPTS; attempt++) {
     const template = ordered[(opts.day + attempt) % ordered.length];
     const values = slotValuesFor(template, opts.profile, opts.day * 7 + attempt);
     const bounty: ProposedTask = {
-      code: "",
-      title: fillArchetype(template.archetype, values),
-      axes: {
-        ...midpointAxes(template),
-        boldness: 5,
-        scarcity: 4,
-      },
-      verification: template.verification,
-      photo_bonus_max: template.photo_bonus_max,
-      neighborhood: values.neighborhood ?? opts.profile.destination,
-      kind: template.kind,
-      ...templatePlace(values),
+      ...fromTemplate(
+        template,
+        values,
+        { ...midpointAxes(template), boldness: 5, scarcity: 4 },
+        opts.profile.destination,
+      ),
       participantId: opts.trailer.id,
       teamId: null,
     };
@@ -382,31 +548,31 @@ export function pickBounty(opts: {
   return null;
 }
 
+// Template tasks for when the model falls short: every template in the bank
+// once (weather permitting), stranger tasks and bolder ones first, "go look
+// at X" last. The day planner picks from these to top a board up.
 export function fillTemplatesDeterministically(opts: {
   profile: DestinationProfile;
   weather: DayWeather;
   count: number;
   seed?: number;
+  templates?: TaskTemplate[];
 }): ProposedTask[] {
-  const pool = opts.weather.indoorPreferred
-    ? TEMPLATES.filter((t) => t.indoor)
-    : TEMPLATES;
-  const source = pool.length > 0 ? pool : TEMPLATES;
-  const out: ProposedTask[] = [];
+  const bank = opts.templates ?? boardTemplates({ solo: false });
+  const pool = opts.weather.indoorPreferred ? bank.filter((t) => t.indoor) : bank;
+  const source = pool.length > 0 ? pool : bank;
   const start = opts.seed ?? 0;
-  for (let i = 0; i < opts.count; i++) {
-    const template = source[(start + i) % source.length];
+  const rotated = source.map((_, i) => source[(start + i) % source.length]);
+  const rank = (t: TaskTemplate) => (t.lookOnly ? 2 : t.stranger ? 0 : 1);
+  const ordered = rotated
+    .map((t, i) => ({ t, i }))
+    .sort((a, b) => rank(a.t) - rank(b.t) || a.i - b.i)
+    .map(({ t }) => t);
+  const out: ProposedTask[] = [];
+  for (let i = 0; i < Math.min(opts.count, ordered.length); i++) {
+    const template = ordered[i];
     const values = slotValuesFor(template, opts.profile, start + i);
-    out.push({
-      code: "",
-      title: fillArchetype(template.archetype, values),
-      axes: midpointAxes(template),
-      verification: template.verification,
-      photo_bonus_max: template.photo_bonus_max,
-      neighborhood: values.neighborhood ?? opts.profile.destination,
-      kind: template.kind,
-      ...templatePlace(values),
-    });
+    out.push(fromTemplate(template, values, midpointAxes(template), opts.profile.destination));
   }
   return out;
 }

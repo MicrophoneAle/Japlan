@@ -49,7 +49,7 @@ const baseTask: ProposedTask = {
 describe("generated scoring", () => {
   it("lands all-5s axes in Challenging, not above the band ceiling", () => {
     const scored = pointsForBoard(allFives, { day: 1, tripDays: 5 });
-    expect(scored.points).toBe(30);
+    expect(scored.points).toBe(34);
     expect(scored.tier).toBe("Challenging");
   });
 
@@ -78,7 +78,8 @@ describe("generated scoring", () => {
     expect(tasks).toHaveLength(1);
     expect(tasks[0]).not.toHaveProperty("points");
     const scored = pointsForBoard(tasks[0].axes, { day: 1, tripDays: null });
-    expect(scored.points).toBe(12);
+    // 1.6*3 + 0.8*2 + 0.9*1 + 1.5*1 + 1.4*1 + 0.6*2 = 11.4
+    expect(scored.points).toBe(11);
     expect(scored.points).not.toBe(999);
   });
 });
@@ -335,7 +336,6 @@ describe("boldness and variety", () => {
     expect(boldTasksWanted("chill", 3)).toBe(1);
     const prompt = buildGenerationPrompt(input("chill"));
     expect(prompt).toContain("At least 1 of the 3 tasks must honestly rate boldness 3 or more.");
-    expect(prompt).toContain('"Go somewhere and look at something" is boldness 1');
     expect(prompt).not.toMatch(/favour low boldness/i);
   });
 
@@ -394,5 +394,80 @@ describe("boldness and variety", () => {
 
   it("gives template fallbacks a kind so the same rules apply", () => {
     for (const t of TEMPLATES) expect(TASK_KINDS).toContain(t.kind);
+  });
+});
+
+describe("generation prompt: quality and time", () => {
+  const base = {
+    profile: {
+      assembled_at: "2026-09-19T00:00:00Z",
+      destination: "Tokyo",
+      neighborhoods: [],
+      transit_lines: [],
+      dishes: [],
+      landmarks: [],
+      price_bands: [],
+      center: null,
+    },
+    weather: { summary: "clear", indoorPreferred: false, temperatureC: 22, precipitationChance: 0 },
+    preferenceText: "food",
+    completedTitles: [],
+    yesterdayRatings: "",
+    scoreGap: "",
+    day: 1,
+  };
+
+  it("says what a weak task is and what every board needs", () => {
+    const prompt = buildGenerationPrompt(base);
+    expect(prompt).toContain(
+      "A task that can be completed without speaking to anyone, without going somewhere unusual, and without doing anything slightly embarrassing is a weak task.",
+    );
+    expect(prompt).toContain('"Go look at X" (find a bench, locate a statue, view a waterfall) is the weakest possible archetype.');
+    expect(prompt).toContain("At least one task on the board must involve a stranger");
+    expect(prompt).toContain("No two tasks on the board share a location, and no two use the same template.");
+    // The bank offered is main tasks only.
+    expect(prompt).not.toContain("eat_letter_range");
+    expect(prompt).not.toContain("buy_unidentifiable");
+  });
+
+  it("tells the model the time it has, so duration shapes the board", () => {
+    const prompt = buildGenerationPrompt({
+      ...base,
+      count: 4,
+      plan: { windowText: "19:00 to 21:00", usableMinutes: 110, targetMinutes: 72, maxTaskMinutes: 120, lateStart: true },
+    });
+    expect(prompt).toContain("It is already late in the day: the board covers 19:00 to 21:00");
+    expect(prompt).toContain("No task may take longer than 120 minutes");
+    expect(prompt).toContain("Return exactly 4 tasks");
+  });
+
+  it("asks for a curveball only on a curveball board", () => {
+    expect(buildGenerationPrompt(base)).not.toContain('template "curveball"');
+    expect(buildGenerationPrompt({ ...base, curveball: true })).toContain(
+      'Exactly one task uses template "curveball"',
+    );
+  });
+
+  it("reads the template, places and stranger flag", () => {
+    const [task] = parseGeneratedTasks(
+      JSON.stringify([
+        {
+          template: "a_to_b_without",
+          title: "get from senso-ji to ueno park on foot",
+          axes: allFives,
+          verification: "peer",
+          photo_bonus_max: 0,
+          neighborhood: "Asakusa",
+          places: ["Senso-ji", "Ueno Park", "extra"],
+          involves_stranger: false,
+        },
+      ]),
+    );
+    expect(task).toMatchObject({
+      template: "a_to_b_without",
+      places: ["Senso-ji", "Ueno Park"],
+      place: "Senso-ji",
+      stranger: false,
+    });
   });
 });

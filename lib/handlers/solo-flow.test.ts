@@ -150,7 +150,7 @@ describe("asking for the day's plan", () => {
 
     // The trip (oct 17-20) has not started: "the plans" means its first day.
     await say("Please give me the first day plans");
-    expect(last()).toMatch(/^Day 1, subject to change\n/);
+    expect(last()).toMatch(/^Day 1, subject to change( · [^\n]+)?\n/);
     expect(last()).not.toMatch(/starts|scheduled|timezone/);
     expect(h.sent.some((m) => /something broke/.test(m.text))).toBe(false);
   });

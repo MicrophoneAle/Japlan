@@ -452,20 +452,41 @@ describe("board and confirmation copy", () => {
     const text = formatPersonalBoard({
       day: 1,
       tasks: [
-        { code: "A1", title: "first", base_points: 7 },
-        { code: "A2", title: "second", base_points: 13 },
-        { code: "A3", title: "third", base_points: 26 },
+        { code: "A1", title: "first", base_points: 15 },
+        { code: "A2", title: "second", base_points: 16 },
+        { code: "A3", title: "third", base_points: 25 },
         { code: "A4", title: "fourth", base_points: 34 },
       ],
     });
-    // Tier from the points beside it, one line per task.
+    // Tier from the points beside it, one line per task. Older tasks have no
+    // time of day, and show without one.
     expect(text.split("\n").slice(2)).toEqual([
-      "A1 · first · light (7)",
-      "A2 · second · medium (13)",
-      "A3 · third · challenging (26)",
+      "A1 · first · light (15)",
+      "A2 · second · medium (16)",
+      "A3 · third · challenging (25)",
       "A4 · fourth · challenging (34)",
     ]);
     expect(text).not.toContain("Michael");
+  });
+
+  it("shows the day's shape: route in the header, time of day on each line", () => {
+    const text = formatPersonalBoard({
+      day: 3,
+      tasks: [
+        { code: "A3", title: "order something you can't read", base_points: 11, slot: "evening", neighborhood: "Ueno" },
+        { code: "A1", title: "ask a stranger for their best rec", base_points: 18, slot: "morning", neighborhood: "Asakusa" },
+        { code: "A2", title: "get to ueno without a train", base_points: 26, slot: "afternoon", neighborhood: null },
+      ],
+    });
+    expect(text).toBe(
+      [
+        "Day 3 · Asakusa → Ueno",
+        "",
+        "morning    A1 · ask a stranger for their best rec · medium (18)",
+        "afternoon  A2 · get to ueno without a train · challenging (26)",
+        "evening    A3 · order something you can't read · light (11)",
+      ].join("\n"),
+    );
   });
 
   it("formats the one-line confirmation", () => {

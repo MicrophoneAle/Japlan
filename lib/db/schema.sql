@@ -125,7 +125,11 @@ create table tasks (
   day integer not null,
   expires_at timestamptz,
   neighborhood text,
+  -- generated | freeform | curveball
   source text not null default 'generated',
+  -- Day planning: rough time of day and the code's duration estimate.
+  slot text,
+  duration_minutes integer,
   created_at timestamptz not null default now(),
   -- Shared board tasks may have both assignee columns null (first write wins).
   -- Split-team tasks set team_id; personal tasks set participant_id. Never both.

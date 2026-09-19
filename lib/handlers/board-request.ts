@@ -50,10 +50,19 @@ function boardStep(step: string, fields: Record<string, unknown> = {}): void {
   console.info("[japlan.board] step", { step, ...fields });
 }
 
-function boardText(day: number, tasks: Pick<TaskRow, "code" | "title" | "base_points">[]): string {
+function boardText(
+  day: number,
+  tasks: Pick<TaskRow, "code" | "title" | "base_points" | "slot" | "neighborhood">[],
+): string {
   return formatPersonalBoard({
     day,
-    tasks: tasks.map((t) => ({ code: t.code, title: t.title, base_points: t.base_points })),
+    tasks: tasks.map((t) => ({
+      code: t.code,
+      title: t.title,
+      base_points: t.base_points,
+      slot: t.slot ?? null,
+      neighborhood: t.neighborhood,
+    })),
   });
 }
 

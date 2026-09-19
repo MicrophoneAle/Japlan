@@ -1,15 +1,21 @@
 import type { Axes } from "./scoring";
 import type { SeedVerification } from "./hand-written-tasks";
+import type { DurationBand } from "./duration";
 import type { TaskKind } from "./validate";
 
 export type SlotKind =
   | "letter_range"
   | "time"
+  | "early_time"
   | "transport_mode"
   | "subject"
   | "neighborhood"
   | "dish"
-  | "phrase";
+  | "phrase"
+  | "place_a"
+  | "place_b"
+  | "transit_line"
+  | "amount";
 
 export type TemplateSlot = {
   key: string;
@@ -34,121 +40,435 @@ export type TaskTemplate = {
   indoor: boolean;
   // Used only by the deterministic fallback, never sent as a model point value.
   typical_cost: "low" | "medium" | "high";
+  // How long it takes. "sidequest" (under ~20 min) never goes on the daily
+  // board. The time axis range stays inside this band.
+  duration: DurationBand;
+  // Where the time goes, for estimateTaskMinutes: a venue category ("place"
+  // means the category of the place it names), a leg between its first two
+  // places, and fixed minutes it always costs.
+  venue?: string;
+  leg?: "walk" | "city";
+  fixedMinutes?: number;
+  // Needs speaking to someone you do not know. Every board has one.
+  stranger: boolean;
+  // Needs more than one person; never offered on a solo trip.
+  groupOnly?: boolean;
+  // Only makes sense at one end of the day.
+  when?: "morning" | "evening";
+  // "Go look at X": the weakest archetype. Used by the fallback last.
+  lookOnly?: boolean;
 };
 
 function range(min: number, max: number): AxisRange {
   return { min, max };
 }
 
+function axes(
+  boldness: AxisRange,
+  physical: AxisRange,
+  time: AxisRange,
+  scarcity: AxisRange,
+  cultural: AxisRange,
+  aesthetics: AxisRange,
+): Record<keyof Axes, AxisRange> {
+  return { boldness, physical, time, scarcity, cultural, aesthetics };
+}
+
+// Axis ranges are set per template so the bank spreads across the scoring
+// space: social tasks score on boldness, rare finds on scarcity, local ones on
+// cultural. Wording is a first draft.
 export const TEMPLATES: TaskTemplate[] = [
+  // FOOD
   {
     id: "eat_letter_range",
+    archetype: "eat something starting with a letter in {letter_range}",
     kind: "food",
-    archetype: "eat something starting with {letter_range}",
     slots: [{ key: "letter_range", kind: "letter_range" }],
     verification: "honor",
     photo_bonus_max: 0,
-    axes: {
-      boldness: range(1, 2),
-      physical: range(1, 2),
-      time: range(1, 2),
-      scarcity: range(1, 2),
-      cultural: range(1, 3),
-      aesthetics: range(1, 2),
-    },
+    axes: axes(range(1, 2), range(1, 1), range(1, 1), range(1, 2), range(1, 3), range(1, 2)),
     indoor: true,
     typical_cost: "low",
-  },
-  {
-    id: "photo_subject_before_time",
-    kind: "explore",
-    archetype: "photograph {subject} before {time}",
-    slots: [
-      { key: "subject", kind: "subject" },
-      { key: "time", kind: "time" },
-    ],
-    verification: "photo",
-    photo_bonus_max: 3,
-    axes: {
-      boldness: range(2, 3),
-      physical: range(2, 3),
-      time: range(1, 3),
-      scarcity: range(1, 3),
-      cultural: range(1, 2),
-      aesthetics: range(2, 4),
-    },
-    indoor: false,
-    typical_cost: "low",
-  },
-  {
-    id: "landmark_without_transport",
-    kind: "challenge",
-    archetype: "get to {subject} without {transport_mode}",
-    slots: [
-      { key: "subject", kind: "subject" },
-      { key: "transport_mode", kind: "transport_mode" },
-    ],
-    verification: "peer",
-    photo_bonus_max: 0,
-    axes: {
-      boldness: range(3, 4),
-      physical: range(3, 5),
-      time: range(2, 4),
-      scarcity: range(2, 3),
-      cultural: range(2, 4),
-      aesthetics: range(2, 3),
-    },
-    indoor: false,
-    typical_cost: "low",
-  },
-  {
-    id: "learn_phrase",
-    kind: "social",
-    archetype: "learn {phrase} from a stranger and use it",
-    slots: [{ key: "phrase", kind: "phrase" }],
-    verification: "peer",
-    photo_bonus_max: 0,
-    axes: {
-      boldness: range(3, 5),
-      physical: range(1, 2),
-      time: range(1, 3),
-      scarcity: range(2, 3),
-      cultural: range(3, 5),
-      aesthetics: range(1, 2),
-    },
-    indoor: true,
-    typical_cost: "low",
+    duration: "sidequest",
+    venue: "snack",
+    stranger: false,
   },
   {
     id: "neighborhood_dish",
-    kind: "food",
     archetype: "eat {dish} in {neighborhood}",
+    kind: "food",
     slots: [
       { key: "dish", kind: "dish" },
       { key: "neighborhood", kind: "neighborhood" },
     ],
     verification: "photo",
     photo_bonus_max: 2,
-    axes: {
-      boldness: range(2, 3),
-      physical: range(2, 3),
-      time: range(2, 3),
-      scarcity: range(2, 3),
-      cultural: range(3, 5),
-      aesthetics: range(2, 3),
-    },
+    axes: axes(range(2, 3), range(2, 3), range(3, 3), range(2, 3), range(3, 5), range(2, 3)),
     indoor: true,
     typical_cost: "medium",
+    duration: "medium",
+    venue: "restaurant",
+    stranger: false,
+  },
+  {
+    id: "order_unreadable",
+    archetype: "order something you cannot read, in {neighborhood}",
+    kind: "food",
+    slots: [{ key: "neighborhood", kind: "neighborhood" }],
+    verification: "photo",
+    photo_bonus_max: 2,
+    axes: axes(range(2, 2), range(1, 1), range(2, 2), range(2, 2), range(3, 3), range(1, 1)),
+    indoor: true,
+    typical_cost: "low",
+    duration: "light",
+    venue: "street food",
+    stranger: false,
+  },
+  {
+    id: "dish_where_from",
+    archetype: "eat {dish} where it is actually from, not a tourist version",
+    kind: "food",
+    slots: [{ key: "dish", kind: "dish" }],
+    verification: "photo",
+    photo_bonus_max: 2,
+    axes: axes(range(1, 2), range(2, 2), range(3, 3), range(3, 4), range(4, 5), range(1, 2)),
+    indoor: true,
+    typical_cost: "medium",
+    duration: "medium",
+    venue: "restaurant",
+    fixedMinutes: 20,
+    stranger: false,
+  },
+  {
+    id: "cheapest_meal",
+    archetype: "find the cheapest full meal in {neighborhood}, photograph the receipt",
+    kind: "food",
+    slots: [{ key: "neighborhood", kind: "neighborhood" }],
+    verification: "photo",
+    photo_bonus_max: 2,
+    axes: axes(range(1, 2), range(2, 3), range(3, 3), range(3, 4), range(3, 3), range(1, 1)),
+    indoor: true,
+    typical_cost: "low",
+    duration: "medium",
+    venue: "diner",
+    fixedMinutes: 30,
+    stranger: false,
+  },
+  {
+    id: "eat_standing",
+    archetype: "eat standing up, like a local",
+    kind: "food",
+    slots: [],
+    verification: "honor",
+    photo_bonus_max: 1,
+    axes: axes(range(1, 2), range(1, 1), range(1, 1), range(1, 2), range(3, 4), range(1, 1)),
+    indoor: true,
+    typical_cost: "low",
+    duration: "sidequest",
+    fixedMinutes: 12,
+    stranger: false,
+  },
+  {
+    id: "staff_pick",
+    archetype: "ask someone working there what they would order, order it",
+    kind: "food",
+    slots: [],
+    verification: "honor",
+    photo_bonus_max: 1,
+    axes: axes(range(3, 3), range(1, 1), range(2, 2), range(2, 2), range(3, 4), range(1, 2)),
+    indoor: true,
+    typical_cost: "low",
+    duration: "light",
+    venue: "street food",
+    stranger: true,
+  },
+
+  // SOCIAL FRICTION: the point of the game
+  {
+    id: "learn_phrase",
+    archetype: "learn {phrase} from a stranger and use it",
+    kind: "social",
+    slots: [{ key: "phrase", kind: "phrase" }],
+    verification: "peer",
+    photo_bonus_max: 0,
+    axes: axes(range(3, 5), range(1, 2), range(2, 2), range(2, 3), range(3, 5), range(1, 2)),
+    indoor: true,
+    typical_cost: "low",
+    duration: "light",
+    stranger: true,
+  },
+  {
+    id: "order_what_neighbour_ordered",
+    archetype: "ask what the person next to you ordered, then order that",
+    kind: "social",
+    slots: [],
+    verification: "honor",
+    photo_bonus_max: 1,
+    axes: axes(range(4, 5), range(1, 1), range(3, 3), range(2, 2), range(3, 4), range(1, 2)),
+    indoor: true,
+    typical_cost: "low",
+    duration: "medium",
+    venue: "noodle",
+    stranger: true,
+  },
+  {
+    id: "stranger_best_rec",
+    archetype: "ask a stranger in {neighborhood} for their single best recommendation, then actually do it",
+    kind: "social",
+    slots: [{ key: "neighborhood", kind: "neighborhood" }],
+    verification: "photo",
+    photo_bonus_max: 2,
+    axes: axes(range(4, 5), range(2, 2), range(3, 3), range(3, 4), range(4, 4), range(2, 2)),
+    indoor: false,
+    typical_cost: "low",
+    duration: "medium",
+    fixedMinutes: 45,
+    stranger: true,
+  },
+  {
+    id: "phrase_wrong",
+    archetype: "learn {phrase} from someone, then use it wrong in public",
+    kind: "social",
+    slots: [{ key: "phrase", kind: "phrase" }],
+    verification: "honor",
+    photo_bonus_max: 0,
+    axes: axes(range(4, 5), range(1, 1), range(2, 2), range(2, 2), range(3, 4), range(1, 1)),
+    indoor: false,
+    typical_cost: "low",
+    duration: "light",
+    stranger: true,
+  },
+  {
+    id: "compliment_outfit",
+    archetype: "compliment a stranger's outfit in the local language",
+    kind: "social",
+    slots: [],
+    verification: "honor",
+    photo_bonus_max: 0,
+    axes: axes(range(5, 5), range(1, 1), range(2, 2), range(1, 2), range(3, 3), range(2, 3)),
+    indoor: false,
+    typical_cost: "low",
+    duration: "light",
+    stranger: true,
+  },
+
+  // NAVIGATION
+  {
+    id: "landmark_without_transport",
+    archetype: "get to {subject} without {transport_mode}",
+    kind: "challenge",
+    slots: [
+      { key: "subject", kind: "subject" },
+      { key: "transport_mode", kind: "transport_mode" },
+    ],
+    verification: "peer",
+    photo_bonus_max: 0,
+    axes: axes(range(3, 4), range(3, 5), range(3, 3), range(2, 3), range(2, 4), range(2, 3)),
+    indoor: false,
+    typical_cost: "low",
+    duration: "medium",
+    venue: "place",
+    fixedMinutes: 45,
+    stranger: false,
+  },
+  {
+    id: "directions_no_phone",
+    archetype: "get directions to {subject} without using your phone",
+    kind: "challenge",
+    slots: [{ key: "subject", kind: "subject" }],
+    verification: "peer",
+    photo_bonus_max: 0,
+    axes: axes(range(4, 4), range(2, 3), range(3, 3), range(2, 2), range(3, 3), range(1, 2)),
+    indoor: false,
+    typical_cost: "low",
+    duration: "medium",
+    venue: "place",
+    fixedMinutes: 30,
+    stranger: true,
+  },
+  {
+    id: "a_to_b_without",
+    archetype: "get from {place_a} to {place_b} without {transport_mode}",
+    kind: "challenge",
+    slots: [
+      { key: "place_a", kind: "place_a" },
+      { key: "place_b", kind: "place_b" },
+      { key: "transport_mode", kind: "transport_mode" },
+    ],
+    verification: "peer",
+    photo_bonus_max: 0,
+    axes: axes(range(2, 3), range(4, 5), range(3, 3), range(3, 4), range(3, 4), range(2, 3)),
+    indoor: false,
+    typical_cost: "low",
+    duration: "medium",
+    leg: "walk",
+    stranger: false,
+  },
+  {
+    id: "wrong_train",
+    archetype: "take the wrong train deliberately, one stop, get off, look around",
+    kind: "explore",
+    slots: [],
+    verification: "photo",
+    photo_bonus_max: 2,
+    axes: axes(range(3, 3), range(2, 2), range(3, 3), range(3, 4), range(3, 4), range(2, 3)),
+    indoor: false,
+    typical_cost: "low",
+    duration: "medium",
+    fixedMinutes: 45,
+    stranger: false,
+  },
+  {
+    id: "line_to_end",
+    archetype: "follow {transit_line} to the end of the line",
+    kind: "explore",
+    slots: [{ key: "transit_line", kind: "transit_line" }],
+    verification: "photo",
+    photo_bonus_max: 2,
+    axes: axes(range(2, 3), range(1, 2), range(4, 5), range(4, 5), range(3, 4), range(2, 3)),
+    indoor: false,
+    typical_cost: "low",
+    duration: "challenging",
+    fixedMinutes: 150,
+    stranger: false,
+  },
+  {
+    id: "highest_point",
+    archetype: "find the highest publicly accessible point in {neighborhood}",
+    kind: "challenge",
+    slots: [{ key: "neighborhood", kind: "neighborhood" }],
+    verification: "photo",
+    photo_bonus_max: 3,
+    axes: axes(range(2, 3), range(3, 4), range(3, 3), range(3, 4), range(2, 3), range(3, 4)),
+    indoor: false,
+    typical_cost: "low",
+    duration: "medium",
+    fixedMinutes: 50,
+    stranger: false,
+  },
+
+  // SIGHTS: the weakest archetype ("go look at X"). Kept for the fallback.
+  {
+    id: "photo_subject_before_time",
+    archetype: "photograph {subject} before {time}",
+    kind: "explore",
+    slots: [
+      { key: "subject", kind: "subject" },
+      { key: "time", kind: "time" },
+    ],
+    verification: "photo",
+    photo_bonus_max: 3,
+    axes: axes(range(1, 2), range(2, 3), range(2, 2), range(1, 3), range(1, 2), range(2, 4)),
+    indoor: false,
+    typical_cost: "low",
+    duration: "light",
+    venue: "place",
+    stranger: false,
+    lookOnly: true,
+  },
+
+  // ACQUISITION
+  {
+    id: "buy_keep",
+    archetype: "buy something under {amount} you will actually keep",
+    kind: "creative",
+    slots: [{ key: "amount", kind: "amount" }],
+    verification: "photo",
+    photo_bonus_max: 2,
+    axes: axes(range(2, 2), range(1, 1), range(2, 2), range(1, 2), range(2, 3), range(2, 3)),
+    indoor: true,
+    typical_cost: "low",
+    duration: "light",
+    venue: "shop",
+    stranger: false,
+  },
+  {
+    id: "buy_unidentifiable",
+    archetype: "buy something you cannot identify",
+    kind: "creative",
+    slots: [],
+    verification: "photo",
+    photo_bonus_max: 2,
+    axes: axes(range(2, 2), range(1, 1), range(1, 1), range(2, 3), range(3, 3), range(1, 2)),
+    indoor: true,
+    typical_cost: "low",
+    duration: "sidequest",
+    fixedMinutes: 10,
+    stranger: false,
+  },
+
+  // TIME
+  {
+    id: "awake_before",
+    archetype: "be awake and outside before {early_time}",
+    kind: "challenge",
+    slots: [{ key: "early_time", kind: "early_time" }],
+    verification: "photo",
+    photo_bonus_max: 2,
+    axes: axes(range(1, 1), range(2, 2), range(2, 2), range(2, 2), range(2, 3), range(3, 4)),
+    indoor: false,
+    typical_cost: "low",
+    duration: "light",
+    fixedMinutes: 30,
+    stranger: false,
+    when: "morning",
+  },
+  {
+    id: "stay_one_hour",
+    archetype: "stay in one place for an hour doing nothing",
+    kind: "culture",
+    slots: [],
+    verification: "honor",
+    photo_bonus_max: 1,
+    axes: axes(range(2, 2), range(1, 1), range(3, 3), range(1, 2), range(2, 3), range(2, 2)),
+    indoor: false,
+    typical_cost: "low",
+    duration: "medium",
+    fixedMinutes: 60,
+    stranger: false,
+  },
+
+  // GROUP: never on a solo trip
+  {
+    id: "split_strangest",
+    archetype: "split up for an hour, meet back with the strangest thing you found",
+    kind: "creative",
+    slots: [],
+    verification: "photo",
+    photo_bonus_max: 3,
+    axes: axes(range(3, 3), range(2, 2), range(3, 3), range(3, 4), range(3, 3), range(2, 3)),
+    indoor: false,
+    typical_cost: "low",
+    duration: "medium",
+    fixedMinutes: 70,
+    stranger: false,
+    groupOnly: true,
   },
 
   // ---------------------------------------------------------------------------
-  // Remaining templates go here. Hand-write them. Do not generate filler.
-  // Aim for 20–30 archetypes covering a week: letter ranges, times, transport
-  // modes, subjects, neighborhoods, dishes, phrases. Keep kind, verification,
-  // photo_bonus_max, indoor, typical_cost, and axis ranges on every row.
-  // verification "photo" means a photo can add bonus points; code claims still resolve.
+  // More templates go here. Hand-write them. Do not generate filler. Keep
+  // kind, duration (with the time axis range inside it), stranger, venue /
+  // leg / fixedMinutes, verification, photo_bonus_max, indoor, typical_cost
+  // and axis ranges on every row. verification "photo" means a photo can add
+  // bonus points; code claims still resolve.
   // ---------------------------------------------------------------------------
 ];
+
+export function templateById(id: string | null | undefined): TaskTemplate | null {
+  return TEMPLATES.find((t) => t.id === id) ?? null;
+}
+
+// Templates that can go on a daily board: main tasks only (sidequests fill
+// the gaps between them), and nothing needing a group on a solo trip.
+export function boardTemplates(opts: { solo: boolean }): TaskTemplate[] {
+  return TEMPLATES.filter(
+    (t) => t.duration !== "sidequest" && !(opts.solo && t.groupOnly),
+  );
+}
+
+export function sidequestTemplates(): TaskTemplate[] {
+  return TEMPLATES.filter((t) => t.duration === "sidequest");
+}
 
 export function fillArchetype(
   archetype: string,
@@ -160,10 +480,10 @@ export function fillArchetype(
 }
 
 export function midpointAxes(template: TaskTemplate): Axes {
-  const axes = {} as Axes;
+  const out = {} as Axes;
   for (const key of Object.keys(template.axes) as (keyof Axes)[]) {
     const { min, max } = template.axes[key];
-    axes[key] = Math.round((min + max) / 2);
+    out[key] = Math.round((min + max) / 2);
   }
-  return axes;
+  return out;
 }

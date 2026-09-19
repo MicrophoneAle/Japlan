@@ -3,8 +3,8 @@ import { FakeSupabase } from "@/lib/test/fake-supabase";
 
 // On-demand boards and the board_time cron, end to end: dispatchLinqEvent in,
 // runDailyBoards for the ticks. Faked edges only: Supabase (in memory), Linq,
-// Foursquare, and Gemini (returns nothing, so generation falls back to the
-// deterministic templates through the same validation and scoring).
+// Foursquare, and Gemini (a fake that proposes template-based tasks, which go
+// through the real validation, duration estimate, day plan and scoring).
 
 const MIKE = "+15550000001";
 const SAM = "+15550000002";
@@ -42,23 +42,47 @@ vi.mock("@/lib/places/foursquare", async (importOriginal) => ({
 vi.mock("@/lib/llm/gemini", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/llm/gemini")>();
   let proposal = 0;
-  // Stands in for the model: task generation gets three fresh proposals
+  // Stands in for the model: task generation gets four fresh proposals
   // (axes only, never points), which then go through the real parse,
   // validation, scoring and code assignment.
   class FakeModel {
-    async complete(opts: { schema?: { type?: string } }) {
+    async complete(opts: { schema?: { type?: string }; messages?: { content: string }[] }) {
       if (opts.schema?.type !== "array") return "";
-      const tasks = [1, 2, 3].map(() => {
+      const curveballBoard = /Exactly one task uses template "curveball"/.test(opts.messages?.[0]?.content ?? "");
+      // Built from board templates, each at its own place, with fresh titles.
+      const picks = [
+        { template: "stranger_best_rec", time: 3, boldness: 4, places: ["Asakusa"] },
+        { template: "wrong_train", time: 3, boldness: 3, places: [] },
+        { template: "order_unreadable", time: 2, boldness: 2, places: ["Ueno"] },
+        { template: "buy_keep", time: 2, boldness: 2, places: ["Yanaka"] },
+      ];
+      const tasks = picks.map((pick) => {
         proposal += 1;
         return {
-          code: "",
-          title: `find street mural number ${proposal}`,
-          axes: { boldness: 2, physical: 1, time: 1, scarcity: 2, cultural: 2, aesthetics: 3 },
+          template: pick.template,
+          title: `${pick.template.replace(/_/g, " ")} number ${proposal}`,
+          axes: { boldness: pick.boldness, physical: 1, time: pick.time, scarcity: 2, cultural: 2, aesthetics: 3 },
+          verification: "photo",
+          photo_bonus_max: 2,
+          neighborhood: pick.places[0] ?? "",
+          places: pick.places,
+          involves_stranger: pick.template === "stranger_best_rec",
+        };
+      });
+      if (curveballBoard) {
+        proposal += 1;
+        tasks.unshift({
+          template: "curveball",
+          title: `bow back to a bowing vending machine number ${proposal}`,
+          axes: { boldness: 4, physical: 1, time: 2, scarcity: 4, cultural: 5, aesthetics: 2 },
           verification: "photo",
           photo_bonus_max: 2,
           neighborhood: "Shibuya",
-        };
-      });
+          places: ["Shibuya"],
+          involves_stranger: false,
+          kind: "culture",
+        } as (typeof tasks)[number]);
+      }
       return JSON.stringify(tasks);
     }
     async completeTurn() {
@@ -169,7 +193,7 @@ describe("asking for a board makes one", () => {
   it("makes a future day provisional", async () => {
     seedTrip({});
     await say(MIKE, DM[MIKE], "japlan tomorrow");
-    expect(last(DM[MIKE])).toMatch(/^Day 2, subject to change\n/);
+    expect(last(DM[MIKE])).toMatch(/^Day 2, subject to change( · [^\n]+)?\n/);
     expect(last(DM[MIKE])).not.toMatch(/provisional|weather/);
     expect(board(2)).toMatchObject({ status: "ready", provisional: true });
   });
@@ -178,7 +202,7 @@ describe("asking for a board makes one", () => {
     seedTrip({});
     for (const ask of ["japlan plans", "japlan tomorrow", "japlan day 3", "japlan the last day"]) {
       await say(MIKE, DM[MIKE], ask);
-      expect(last(DM[MIKE]), ask).toMatch(/^Day \d(, subject to change)?\n/);
+      expect(last(DM[MIKE]), ask).toMatch(/^Day \d(, subject to change)?( · [^\n]+)?\n/);
     }
     expect([1, 2, 3, 5].map((d) => Boolean(board(d)))).toEqual([true, true, true, true]);
     expect(board(3)).toMatchObject({ provisional: true });
@@ -188,15 +212,15 @@ describe("asking for a board makes one", () => {
   it("reads a calendar date and names like first and last day", async () => {
     seedTrip({});
     await say(MIKE, DM[MIKE], "japlan sep 21");
-    expect(last(DM[MIKE])).toMatch(/^Day 3, subject to change\n/);
+    expect(last(DM[MIKE])).toMatch(/^Day 3, subject to change( · [^\n]+)?\n/);
     await say(MIKE, DM[MIKE], "japlan first day");
-    expect(last(DM[MIKE])).toMatch(/^Day 1\n/);
+    expect(last(DM[MIKE])).toMatch(/^Day 1( · [^\n]+)?\n/);
   });
 
   it("shows day 1 when asked before the trip starts", async () => {
     seedTrip({ start: "2026-09-25", end: "2026-09-28" });
     await say(MIKE, DM[MIKE], "japlan plans");
-    expect(last(DM[MIKE])).toMatch(/^Day 1, subject to change\n/);
+    expect(last(DM[MIKE])).toMatch(/^Day 1, subject to change( · [^\n]+)?\n/);
     expect(board(1)).toMatchObject({ provisional: true });
   });
 
@@ -235,7 +259,36 @@ describe("asking for a board makes one", () => {
     );
     // Other days are never limited by it.
     await say(MIKE, DM[MIKE], "japlan tomorrow");
-    expect(last(DM[MIKE])).toMatch(/^Day 2, subject to change\n/);
+    expect(last(DM[MIKE])).toMatch(/^Day 2, subject to change( · [^\n]+)?\n/);
+  });
+});
+
+describe("day planning", () => {
+  it("stores each task's time of day and duration, in route order", async () => {
+    seedTrip({});
+    at("2026-09-19T07:00:00"); // before board_time: the whole day ahead
+    await say(MIKE, DM[MIKE], "japlan plans");
+    const rows = (tasksOn(1) as { code: string; slot: string; duration_minutes: number }[]).sort(
+      (a, b) => Number(a.code.slice(1)) - Number(b.code.slice(1)),
+    );
+    expect(rows.length).toBeGreaterThanOrEqual(3);
+    expect(rows.every((t) => ["morning", "afternoon", "evening"].includes(t.slot))).toBe(true);
+    expect(rows.every((t) => t.duration_minutes >= 20)).toBe(true); // no sidequests on the board
+    const order = { morning: 0, afternoon: 1, evening: 2 } as Record<string, number>;
+    const slots = rows.map((t) => order[t.slot]);
+    expect(slots).toEqual([...slots].sort((a, b) => a - b));
+    expect(last(DM[MIKE])).toMatch(/\nmorning {4}A1 · /);
+  });
+
+  it("stores a curveball as source curveball when one lands", async () => {
+    const { isCurveballBoard } = await import("@/lib/game/generate");
+    const day = [1, 2, 3, 4, 5].find((d) => isCurveballBoard(`trip-1:${d}:p-mike`));
+    expect(day).toBeDefined();
+    seedTrip({});
+    await say(MIKE, DM[MIKE], `japlan day ${day}`);
+    const curveballs = tasksOn(day!).filter((t) => t.source === "curveball");
+    expect(curveballs).toHaveLength(1);
+    expect(curveballs[0].title).toMatch(/bowing vending machine/);
   });
 });
 
@@ -280,7 +333,7 @@ describe("in a group", () => {
     await say(ANA, GROUP, "japlan plans");
     expect(last(GROUP)).toBe(finishYourSurveyLine());
     await say(MIKE, GROUP, "japlan plans");
-    expect(last(DM[MIKE])).toMatch(/^Day 1\n/);
+    expect(last(DM[MIKE])).toMatch(/^Day 1( · [^\n]+)?\n/);
     expect(tasksOn(1).some((t) => t.participant_id === ana!.id)).toBe(false);
     expect(tasksOn(1).some((t) => t.participant_id === "p-mike")).toBe(true);
   });
