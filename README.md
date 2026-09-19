@@ -18,16 +18,14 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 
 ## Itinerary research lab
 
-`/itinerary` is a development-only draft-itinerary workflow. It uses the
-Toronto fixture in `lib/itinerary/config.ts`; its dates are inclusive calendar
-dates and can be edited in that one file. It is guarded by
-`DEVELOPMENT_ITINERARY_TRIP_ID`, so it cannot be used for an arbitrary trip.
+`/itinerary` is a development-only, no-database draft-itinerary workflow. It
+uses the Toronto fixture in `lib/itinerary/config.ts`; its dates are inclusive
+calendar dates and can be edited in that one file. Results and the Research
+Inspector remain available for the current browser session only.
 
 Set these values in `.env.local` before running a real generation:
 
 ```env
-DEVELOPMENT_ITINERARY_TRIP_ID=<an existing trips.id>
-NEXT_PUBLIC_DEVELOPMENT_ITINERARY_TRIP_ID=<the same trips.id>
 ITINERARY_RESEARCH_MODE=real
 BROWSERBASE_API_KEY=
 BROWSERBASE_PROJECT_ID=
@@ -35,16 +33,13 @@ GEMINI_API_KEY=
 GEMINI_FAST_MODEL=
 GEMINI_SMART_MODEL=
 STAGEHAND_MODEL=google/gemini-2.5-flash
-SUPABASE_URL=
-SUPABASE_SERVICE_ROLE_KEY=
 ```
 
-Apply `lib/db/migrations/20260919_itinerary_research.sql` to Supabase first.
-Then open `/itinerary` and choose **Generate Itinerary**. Real mode uses a
+Open `/itinerary` and choose **Generate Itinerary**. Real mode uses a
 bounded Browserbase + Stagehand session for source-backed candidates, then
 Gemini selects only those candidates for an unvalidated draft. The developer
-Research Inspector shows persisted URLs, actions, candidates, selections, and
-Browserbase session metadata.
+Research Inspector shows URLs, actions, candidates, selections, and Browserbase
+session metadata for that generation.
 
 For deterministic UI development only, set `ITINERARY_RESEARCH_MODE=mock`.
 This explicitly switches both research and draft assembly to deterministic test

@@ -1,12 +1,13 @@
-import { researchMode, resolveDevelopmentTrip } from "./config";
+import { developmentTripConfig, researchMode } from "./config";
 import { generateDraftItinerary, generateMockDraftItinerary } from "./generate";
 import { researchActivities } from "./research";
-import { saveDraftGeneration, type SavedGeneration } from "./repository";
+import type { DraftItinerary, ResearchSnapshot } from "./schemas";
 
-const activeTrips = new Set<string>();
-export async function generateItineraryForDevelopmentTrip(tripId: string): Promise<SavedGeneration> {
-  if (activeTrips.has(tripId)) throw new Error("itinerary generation is already running for this trip");
-  activeTrips.add(tripId);
-  try { const config = resolveDevelopmentTrip(tripId); const mode = researchMode(); const research = await researchActivities(config); const itinerary = mode === "mock" ? generateMockDraftItinerary(config, research.candidates) : await generateDraftItinerary(config, research.candidates); return saveDraftGeneration(tripId, config, research, itinerary); }
-  finally { activeTrips.delete(tripId); }
+let generating = false;
+export type DevelopmentGeneration = { itinerary: DraftItinerary; research: ResearchSnapshot };
+export async function generateDevelopmentItinerary(): Promise<DevelopmentGeneration> {
+  if (generating) throw new Error("itinerary generation is already running");
+  generating = true;
+  try { const mode = researchMode(); const research = await researchActivities(developmentTripConfig); const itinerary = mode === "mock" ? generateMockDraftItinerary(developmentTripConfig, research.candidates) : await generateDraftItinerary(developmentTripConfig, research.candidates); return { itinerary, research }; }
+  finally { generating = false; }
 }

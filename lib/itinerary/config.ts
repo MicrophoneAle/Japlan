@@ -35,13 +35,6 @@ export function inclusiveTripDates(config: Pick<TripConfig, "startDate" | "endDa
   return dates;
 }
 
-export function resolveDevelopmentTrip(tripId: string): TripConfig {
-  const permittedTripId = process.env.DEVELOPMENT_ITINERARY_TRIP_ID;
-  if (!permittedTripId) throw new Error("missing DEVELOPMENT_ITINERARY_TRIP_ID");
-  if (tripId !== permittedTripId) throw new Error("development itinerary is not enabled for this trip");
-  return developmentTripConfig;
-}
-
 export function researchMode(): "real" | "mock" {
   const mode = process.env.ITINERARY_RESEARCH_MODE ?? "real";
   if (mode !== "real" && mode !== "mock") throw new Error("ITINERARY_RESEARCH_MODE must be real or mock");
