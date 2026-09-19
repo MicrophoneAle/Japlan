@@ -6,10 +6,12 @@ import {
   datesRetryLine,
   datesSetLine,
   destinationSetLine,
+  difficultySetLine,
   formatShortDate,
   setupFinishedLine,
   setupNowAboutYouLine,
   setupPrompt,
+  STAKE_SET_LINE,
   surveyReaskLine,
 } from "@/lib/game/copy";
 import { partialDestinationProfile } from "@/lib/game/destination";
@@ -272,12 +274,12 @@ async function setupChange(
       const difficulty = matchDifficulty(text);
       if (!difficulty) return { retry: surveyReaskLine([...DIFFICULTIES]) };
       patch.difficulty = difficulty;
-      said = `got it: ${difficulty}.`;
+      said = difficultySetLine(difficulty);
       break;
     }
     case "stake": {
       patch.stake_text = text.slice(0, 200);
-      said = "got it.";
+      said = STAKE_SET_LINE;
       break;
     }
   }

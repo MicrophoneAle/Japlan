@@ -39,6 +39,9 @@ const FILLER_PREFIX = /^(hey|hi|ok|okay|please|um+|uh|so)[, ]+/i;
 const HELP_BODY_RE = [
   /^help(?:\s+me)?(?:\s+please)?\??$/i,
   /^commands?\??$/i,
+  /^cmds?\??$/i,
+  /^menu\??$/i,
+  /^options?\??$/i,
   /^what do you do\??$/i,
   /^how does (this|it) work\??$/i,
   /^how do (i|you|we)\b/i,

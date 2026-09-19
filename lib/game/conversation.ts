@@ -13,6 +13,7 @@ export const CONVERSATION_TOOLS = [
   "get_open_tasks",
   "propose_freeform_claim",
   "request_photo_bonus",
+  "react_to_message",
   "no_action",
 ] as const;
 

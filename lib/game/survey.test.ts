@@ -153,7 +153,7 @@ describe("survey v2: eight quick ones, anything accepted", () => {
 
 describe("survey ending", () => {
   it("says what happens next", () => {
-    expect(surveyDoneLine(0)).toBe(`${SURVEY_DONE_DM} your first board lands in the morning.`);
+    expect(surveyDoneLine(0)).toBe(`${SURVEY_DONE_DM} your first board drops in the morning.`);
     expect(surveyDoneLine(1)).toContain("waiting on 1 more person");
     expect(surveyDoneLine(3)).toContain("waiting on 3 more people");
     expect(surveyDoneLine(2)).not.toContain("\n");

@@ -1,8 +1,9 @@
 import { getServiceClient } from "@/lib/db/client";
 import { defaultWakeKeyword, evaluateAddress, findTaskCode, wakeKeywordRe } from "@/lib/game/addressing";
-import { detectBoardTimeCommand, detectTripCommand } from "@/lib/game/commands";
+import { detectBoardTimeCommand, detectTeamNameCommand, detectTripCommand } from "@/lib/game/commands";
 import { DISPATCH_ERROR_LINE } from "@/lib/game/copy";
 import { handleBoardTimeCommand, handleTripCommand } from "@/lib/handlers/trip-lifecycle";
+import { handleTeamNameCommand } from "@/lib/handlers/teams";
 import { routeSoloDm, soloModeEnabled } from "@/lib/game/solo";
 import { bootstrapGroupIfNeeded } from "@/lib/handlers/bootstrap";
 import {
@@ -283,6 +284,14 @@ async function onMessageReceivedInner(
   if (boardTime) {
     await dispatchAwait("board_time", { chatId }, () =>
       handleBoardTimeCommand({ chatId, isDm, phone, time: boardTime.time }),
+    );
+    return;
+  }
+
+  const teamName = detectTeamNameCommand(text);
+  if (teamName) {
+    await dispatchAwait("team_name", { chatId }, () =>
+      handleTeamNameCommand({ chatId, phone, name: teamName.name }),
     );
     return;
   }

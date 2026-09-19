@@ -1,7 +1,10 @@
 import { recordMessage } from "@/lib/chat/transcript";
 import { getLinqClient } from "./client";
 
-export type OutboundOp = "sendText" | "sendTyping" | "markRead" | "sendDM";
+export type OutboundOp = "sendText" | "sendTyping" | "markRead" | "sendDM" | "react";
+
+// The 6 standard iMessage tapbacks (Shared.ReactionType minus "custom"/"sticker").
+export type Tapback = "love" | "like" | "dislike" | "laugh" | "emphasize" | "question";
 
 export type OutboundLog = {
   at: string;
@@ -89,4 +92,21 @@ export async function sendDM(phone: string, text: string): Promise<SentText> {
   });
   await recordMessage({ chatId: sent.chatId, role: "bot", text });
   return sent;
+}
+
+// Tapback a message with a standard iMessage reaction (love/like/dislike/
+// laugh/emphasize/question) or any custom emoji. Fire-and-forget by design:
+// callers wrap this so a reaction never blocks or fails a text reply.
+export async function react(
+  messageId: string,
+  reaction: Tapback | { emoji: string },
+): Promise<void> {
+  await outbound({ op: "react", messageId }, async () => {
+    await getLinqClient().messages.addReaction(
+      messageId,
+      typeof reaction === "string"
+        ? { operation: "add", type: reaction }
+        : { operation: "add", type: "custom", custom_emoji: reaction.emoji },
+    );
+  });
 }

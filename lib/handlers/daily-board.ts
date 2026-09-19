@@ -77,6 +77,8 @@ import {
   localTimeHHMM,
   zonedTimeToUtc,
 } from "@/lib/game/time";
+import { buildStandingsRows } from "@/lib/game/standings";
+import { teamsWithMembers } from "@/lib/handlers/teams";
 
 import { TRIP_COLS } from "@/lib/db/columns";
 import { boardDueNow, tripDayForDate } from "@/lib/game/board-schedule";
@@ -268,7 +270,7 @@ export async function dayAnchorsForBoard(trip: TripRow, day: number): Promise<Bo
 // Who a board is planned for. No split: everyone together, one plan, cloned
 // to each person (one shared schedule, individual claims). A split: each
 // group a time-bounded team with its own window (lib/game/split.ts).
-type Assignee = {
+export type Assignee = {
   kind: "group" | "team";
   id: string;
   teamId: string | null;
@@ -310,7 +312,7 @@ export async function dayTeams(tripId: string, day: number): Promise<DayTeam[]> 
   return out;
 }
 
-async function loadAssignees(tripId: string, people: ParticipantRow[], day: number): Promise<Assignee[]> {
+export async function loadAssignees(tripId: string, people: ParticipantRow[], day: number): Promise<Assignee[]> {
   const teams = await dayTeams(tripId, day);
   return dayGroups(people.map((p) => p.id), teams).map((g) => ({
     kind: g.teamId ? ("team" as const) : ("group" as const),
@@ -1389,13 +1391,11 @@ async function deliverMorningBoards(opts: {
   // A solo trip's chat IS the player's DM, which just got their board: a
   // one-person standings post would be a second message saying nothing.
   if (opts.trip.is_solo || opts.standings === false) return;
+  const teams = await teamsWithMembers(opts.trip.id);
   const standings = formatMorningStandings({
     day: opts.day,
     weatherLine: opts.weatherLine,
-    standings: (opts.allPeople ?? opts.people).map((p) => ({
-      display_name: p.display_name,
-      score: p.score,
-    })),
+    standings: buildStandingsRows(opts.allPeople ?? opts.people, teams),
   });
   await sendText(opts.trip.linq_chat_id, standings);
 }

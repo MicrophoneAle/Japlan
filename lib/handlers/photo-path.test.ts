@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
   db: null as unknown as FakeSupabase,
   sent: [] as { chatId: string; text: string }[],
   vision: vi.fn(),
+  react: vi.fn(async () => {}),
 }));
 
 vi.mock("@/lib/db/client", () => ({ getServiceClient: () => h.db }));
@@ -24,6 +25,7 @@ vi.mock("@/lib/linq/send", () => ({
   }),
   markRead: vi.fn(async () => {}),
   sendTyping: vi.fn(async () => {}),
+  react: h.react,
 }));
 vi.mock("@/lib/llm/gemini", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/llm/gemini")>();
@@ -85,6 +87,7 @@ beforeEach(async () => {
   process.env.LINQ_FROM_NUMBER = "+15559999999";
   h.sent.length = 0;
   h.vision.mockReset();
+  h.react.mockClear();
   h.db = new FakeSupabase();
   h.db.seed("trips", [
     {
@@ -153,7 +156,7 @@ describe("photo with a code as the caption", () => {
 
     expect(a1Claim()?.awarded_points).toBe(8);
     expect(a1Claim()?.photo_claimed_at).toBeNull();
-    expect(h.sent.map((m) => m.text)).toEqual(["✅ A1 · Mike +8 · 8\nphoto for bonus points?"]);
+    expect(h.sent.map((m) => m.text)).toEqual(["✅ A1 · Mike +8 · 8\nphoto for bonus points? 👀"]);
   });
 
   it("still awards the code when the photo cannot be fetched", async () => {
@@ -163,6 +166,26 @@ describe("photo with a code as the caption", () => {
     expect(a1Claim()?.awarded_points).toBe(8);
     expect(h.vision).not.toHaveBeenCalled();
     expect(h.sent[0]?.text).toContain("✅ A1 · Mike +8");
+  });
+
+  it("reacts to the claiming message alongside the text confirmation", async () => {
+    h.vision.mockResolvedValue(verdict(true, 2));
+    const evt = message([photoPart, text("A1")]);
+    await dispatchLinqEvent(evt);
+
+    expect(h.react).toHaveBeenCalledOnce();
+    expect(h.react).toHaveBeenCalledWith(evt.data.id, { emoji: "🔥" });
+  });
+
+  it("does not react when the claim only hits the daily cap", async () => {
+    h.db.seed("claims", [
+      { task_id: "task-a2", participant_id: "p-mike", status: "awarded", awarded_points: 120 },
+    ]);
+    h.vision.mockResolvedValue(verdict(true, 2));
+    await dispatchLinqEvent(message([photoPart, text("A1")]));
+
+    expect(h.sent[0]?.text).toContain("that's your cap for today");
+    expect(h.react).not.toHaveBeenCalled();
   });
 });
 
@@ -207,7 +230,7 @@ describe("photo sent alone after claiming", () => {
     await dispatchLinqEvent(message([photoPart]));
     expect(a1Claim()?.awarded_points).toBe(8);
     expect(h.sent.at(-1)?.text).toBe(
-      "doesn't look like A1, so no photo bonus. a clearer shot still counts.",
+      "that doesn't really look like A1 ngl, so no photo bonus. a clearer shot still counts.",
     );
   });
   it("says the check failed, not 'doesn't look like', when the model answer is unreadable", async () => {
@@ -215,7 +238,7 @@ describe("photo sent alone after claiming", () => {
     await dispatchLinqEvent(message([text("A1")]));
     vi.setSystemTime(new Date(NOON_JST.getTime() + 10 * 60 * 1000));
     await dispatchLinqEvent(message([photoPart]));
-    expect(h.sent.at(-1)?.text).toBe("couldn't check that photo for A1. send it again in a minute.");
+    expect(h.sent.at(-1)?.text).toBe("couldn't check that photo for A1, my bad. send it again in a minute.");
   });
 
   it("sends the model an upright, downscaled jpeg", async () => {

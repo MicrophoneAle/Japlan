@@ -30,6 +30,7 @@ import {
 } from "@/lib/game/setup";
 import { setupCompleteLine, setupPrompt } from "@/lib/game/copy";
 import { describeBoardTime, nextBoardAt } from "@/lib/game/board-schedule";
+import { formTeamsForTrip, teamsAnnouncement } from "@/lib/handlers/teams";
 
 import { TRIP_COLS } from "@/lib/db/columns";
 
@@ -359,7 +360,16 @@ export async function maybeActivateTrip(
   // board really lands, from the same schedule the cron follows.
   const now = new Date();
   const next = nextBoardAt(trip, now, { todayBoardExists: false });
-  const line = setupCompleteLine(next ? describeBoardTime(next.at, now, trip.timezone) : null);
+  let line = setupCompleteLine(next ? describeBoardTime(next.at, now, trip.timezone) : null);
+
+  // Teams are decided once, here, from the survey (team_preference,
+  // social_with): a no-op for a solo trip or a group where nobody opted in.
+  if (!trip.is_solo) {
+    const teams = await formTeamsForTrip(trip, people);
+    const announcement = teamsAnnouncement(teams);
+    if (announcement) line = `${line}\n\n${announcement}`;
+  }
+
   if (opts.announce !== false) await sendText(trip.linq_chat_id, line);
   const { error } = await getServiceClient()
     .from("trips")

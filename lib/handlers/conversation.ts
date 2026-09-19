@@ -20,7 +20,9 @@ import {
   CONVERSATION_PRIVACY_LINE,
   CONVERSATION_SYSTEM_PROMPT,
   conversationRedirect,
+  standingsLine,
 } from "@/lib/game/copy";
+import { isStandingsRequest } from "@/lib/game/commands";
 import type { FreeformExtraction } from "@/lib/game/freeform";
 import {
   isOpenTask,
@@ -29,6 +31,7 @@ import {
   tasksClaimableBy,
 } from "@/lib/game/claims";
 import type { Axes } from "@/lib/game/scoring";
+import { buildStandingsRows } from "@/lib/game/standings";
 import type { SurveyAnswers } from "@/lib/game/survey";
 import { currentTripDay } from "@/lib/handlers/daily-board";
 import {
@@ -42,9 +45,10 @@ import {
   submitFreeformClaim,
   type ClaimFallthrough,
 } from "@/lib/handlers/claims";
+import { teamsWithMembers } from "@/lib/handlers/teams";
 import type { LLMProvider, ToolContent, ToolTurn } from "@/lib/llm";
 import { GeminiProvider } from "@/lib/llm/gemini";
-import { sendDM, sendText } from "@/lib/linq/send";
+import { react, sendDM, sendText } from "@/lib/linq/send";
 import { recentMessages, TRANSCRIPT_LIMIT } from "@/lib/chat/transcript";
 import { checkReply } from "@/lib/game/reply-check";
 import type { DestinationProfile } from "@/lib/game/destination";
@@ -229,6 +233,22 @@ export const CONVERSATION_TOOL_DEFS = [
     parameters: { type: "object", properties: {}, additionalProperties: false },
   },
   {
+    name: "react_to_message",
+    description:
+      "Tapback the message they just sent instead of (or in addition to) texting back. Use this for something funny, unhinged, or hype-worthy where a reaction hits harder than words. Not for every message, and not instead of answering a real question.",
+    parameters: {
+      type: "object",
+      properties: {
+        emoji: {
+          type: "string",
+          description: "A single emoji to react with, e.g. 💀 😭 🔥 😂 🫡 👑.",
+        },
+      },
+      required: ["emoji"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "no_action",
     description: "Talk without changing game state.",
     parameters: { type: "object", properties: {}, additionalProperties: false },
@@ -317,6 +337,17 @@ function boardInfo(miss: ClaimFallthrough, now: number): Record<string, unknown>
   };
 }
 
+// "japlan lb": the same numbers get_standings would fetch, sent directly,
+// same as answerBoardRequest short-circuits a plans/tasks request.
+async function sendStandingsReply(miss: ClaimFallthrough): Promise<void> {
+  const send = miss.send ?? sendText;
+  const teams = await teamsWithMembers(miss.trip.id);
+  const rows = buildStandingsRows(miss.people, teams).sort(
+    (a, b) => b.score - a.score || a.display_name.localeCompare(b.display_name),
+  );
+  await send(miss.chatId, standingsLine(rows));
+}
+
 export async function handleConversation(
   miss: ClaimFallthrough,
   deps: { provider?: LLMProvider } = {},
@@ -336,6 +367,13 @@ export async function handleConversation(
   // does not exist yet. No model; asking before a board exists is normal.
   if (isBoardRequest(miss.text)) {
     await answerBoardRequest(miss, now);
+    return;
+  }
+  // "lb", "leader", "leaderboard", "standings", "scores": read straight from
+  // the database and reply, same numbers get_standings would give the model,
+  // without spending a model call on a request this unambiguous.
+  if (isStandingsRequest(miss.text)) {
+    await sendStandingsReply(miss);
     return;
   }
   // No hourly reply cap: it refused people who had addressed the bot, which
@@ -557,9 +595,10 @@ async function executeConversationTool(
   miss: ClaimFallthrough,
 ): Promise<{ result: Record<string, unknown>; sent: boolean }> {
   if (name === "get_standings") {
-    const rows = [...miss.people]
-      .sort((a, b) => b.score - a.score || a.display_name.localeCompare(b.display_name))
-      .map((person) => ({ name: person.display_name, score: person.score }));
+    const teams = await teamsWithMembers(miss.trip.id);
+    const rows = buildStandingsRows(miss.people, teams)
+      .map((row) => ({ name: row.display_name, score: row.score }))
+      .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
     return { result: { standings: rows }, sent: false };
   }
   if (name === "get_open_tasks") {
@@ -760,6 +799,23 @@ async function executeConversationTool(
     }
     await (miss.send ?? sendText)(miss.chatId, reply);
     return { result: { ok: true }, sent: true };
+  }
+  if (name === "react_to_message") {
+    const emoji = typeof args.emoji === "string" ? args.emoji.trim() : "";
+    const messageId = typeof miss.data.id === "string" ? miss.data.id : null;
+    if (!emoji || !messageId) {
+      return { result: { ok: false, reason: "no_message" }, sent: false };
+    }
+    try {
+      await react(messageId, { emoji });
+    } catch (err) {
+      console.error("[japlan.conversation] reaction failed", { messageId, err });
+      return { result: { ok: false, reason: "failed" }, sent: false };
+    }
+    // A reaction alone can be the whole response: it does not force a text
+    // reply, but doesn't block one either if the model still has something
+    // to say this turn.
+    return { result: { ok: true, emoji }, sent: false };
   }
   return { result: { ok: false, reason: "unknown_tool" }, sent: false };
 }

@@ -199,8 +199,14 @@ export function isBoardRequest(text: string): boolean {
   );
   if (dayOnly.test(t)) return true;
   if (/\bwhat am i (?:doing|up to)\b/.test(t)) return true;
-  if (!/\b(plans?|board|tasks?|agenda|itinerary|schedule|to-?dos?)\b/.test(t)) return false;
-  if (/^(?:the |my |today'?s |tomorrow'?s )?(plans?|board|tasks?|agenda|schedule)[?.!]*$/.test(t)) {
+  if (!/\b(plans?|board|tasks?|sidequests?|quests?|agenda|itinerary|schedule|to-?dos?)\b/.test(t)) {
+    return false;
+  }
+  if (
+    /^(?:the |my |today'?s |tomorrow'?s )?(plans?|board|tasks?|sidequests?|quests?|agenda|schedule)[?.!]*$/.test(
+      t,
+    )
+  ) {
     return true;
   }
   return /\?|\b(give|show|send|what|whats|what's|where|when|any|my|today|tomorrow|first|next|day \d+|list)\b/.test(t);

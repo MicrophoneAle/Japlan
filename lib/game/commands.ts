@@ -27,6 +27,59 @@ export function detectBoardTimeCommand(
   return { time: parseBoardTime(m[1]) };
 }
 
+const TEAM_NAME_TRIGGERS = [
+  // "we're team sigmas" only: a bare "we're ..." is ordinary talk ("we're
+  // splitting up", "we're back together") and belongs to the conversation.
+  /^(?:we'?re|we are)\s+(team\s+.*)$/i,
+  /^call us\s+(.*)$/i,
+  /^name us\s+(.*)$/i,
+  /^our team(?:'s| is)\s+(.*)$/i,
+  /^team name(?:'s| is)\s+(.*)$/i,
+];
+
+// "japlan we're team sigmas" / "japlan call us the chuds" / "japlan our
+// team is sigmas". null: not this command. { name: null }: the command, but
+// nothing readable followed it.
+export function detectTeamNameCommand(
+  text: string,
+  keyword: string = defaultWakeKeyword(),
+): { name: string | null } | null {
+  if (!keyword || !wakeKeywordRe(keyword).test(text)) return null;
+  const body = stripWakeKeyword(text, keyword)
+    .replace(/^[,:\-\s]+/, "")
+    .replace(/[.!]+$/, "")
+    .trim();
+  for (const re of TEAM_NAME_TRIGGERS) {
+    const m = body.match(re);
+    if (m) {
+      const name = m[1].trim();
+      return { name: name.length > 0 ? name : null };
+    }
+  }
+  return null;
+}
+
+// "lb", "leader", "leaderboard", "standings", "scores", "rankings", with or
+// without the wake keyword (a bare DM already counts as addressed) and a
+// small set of filler prefixes ("what's the", "show me"). Deliberately a
+// bare-command match, not a substring search: "leader" or "score" appearing
+// inside an ordinary sentence should not hijack it.
+const STANDINGS_WORDS = "(?:lb|leaders?|leaderboards?|standings?|scores?|rankings?)";
+const STANDINGS_RE = new RegExp(
+  `^(?:(?:what'?s|whats|show me|send|give me|check|see)\\s+)*(?:the\\s+)?${STANDINGS_WORDS}[?.!]*$`,
+  "i",
+);
+
+export function isStandingsRequest(
+  text: string,
+  keyword: string = defaultWakeKeyword(),
+): boolean {
+  const body = stripWakeKeyword(text, keyword)
+    .replace(/^[,:\-\s]+/, "")
+    .trim();
+  return STANDINGS_RE.test(body);
+}
+
 // Lifecycle commands always need the keyword, in groups and DMs alike, so
 // "end trip" in ordinary chat or a survey answer can never end a trip.
 export function detectTripCommand(

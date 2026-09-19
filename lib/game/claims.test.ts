@@ -518,7 +518,7 @@ describe("board and confirmation copy", () => {
         capped: true,
       }),
     ).toBe(
-      "✅ C2 · Michael · 160 · that's your cap for today, but claims still count for the recap.",
+      "✅ C2 · Michael · 160 · that's your cap for today bestie, but it still counts for the recap 📈",
     );
     expect(
       claimConfirmedLine({
@@ -529,13 +529,13 @@ describe("board and confirmation copy", () => {
         total: 12,
         invitePhoto: true,
       }),
-    ).toBe("✅ A1 · Michael +12 · 12\nphoto for bonus points?");
+    ).toBe("✅ A1 · Michael +12 · 12\nphoto for bonus points? 👀");
     expect(
       photoBonusLine({ code: "A1", bonus: 3, total: 15 }),
     ).toBe("📸 A1 · +3 bonus · 15");
     expect(
       photoBonusLine({ code: "A1", bonus: 0, total: 120, capped: true }),
-    ).toBe("📸 A1 · 120 · that's your cap for today, but claims still count for the recap.");
+    ).toBe("📸 A1 · 120 · that's your cap for today bestie, but it still counts for the recap 📈");
   });
 
   it("offers a next step only when the claim clears the board", () => {
@@ -558,18 +558,18 @@ describe("board and confirmation copy", () => {
         invitePhoto: true,
         boardCleared: true,
       }),
-    ).toBe("✅ A3 · Michael +12 · 42 · that clears your board, new tasks coming by dm.");
+    ).toBe("✅ A3 · Michael +12 · 42 · that's your whole board cleared 🔥 new tasks coming by dm.");
   });
 
   it("names open codes in refusals, never generic encouragement", () => {
-    expect(nextStepClause(["A2"])).toBe("A2 is still open.");
+    expect(nextStepClause(["A2"])).toBe("A2 is still open btw.");
     expect(nextStepClause(["A2", "A3"])).toBe("still open: A2, A3.");
-    expect(nextStepClause([])).toBe("your next board comes in the morning.");
+    expect(nextStepClause([])).toBe("next board lands in the morning, hang tight.");
     expect(notYourTaskLine("A5", nextStepClause(["A1", "A3"]))).toBe(
-      "A5 isn't on your board. still open: A1, A3.",
+      "A5 isn't on your board bestie. still open: A1, A3.",
     );
     expect(unknownCodeLine("A9", nextStepClause(["A1"]))).toBe(
-      "there's no A9. A1 is still open.",
+      "there's no A9 lol, made that up? A1 is still open btw.",
     );
     for (const line of [
       notYourTaskLine("A5", nextStepClause(["A1"])),
@@ -604,7 +604,7 @@ describe("late photo bonus window", () => {
         total: 12,
         invitePhoto: true,
       }),
-    ).toContain("photo for bonus points?");
+    ).toContain("photo for bonus points? 👀");
     expect(clampPhotoBonus(5, 3)).toBe(3);
   });
 

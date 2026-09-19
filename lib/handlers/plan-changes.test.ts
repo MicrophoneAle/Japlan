@@ -302,7 +302,7 @@ describe("settings and task counts are requests, handled by tools", () => {
 
     const before = tasks().filter((t) => t.participant_id === id("mike")).length;
     await sayWithCall("mike", "japlan yes", "redo_today", {});
-    expect(lastIn(GROUP)).toBe("your board's in your dm.");
+    expect(lastIn(GROUP)).toBe("board's in your dms 📩");
     expect(lastIn(dm("mike"))).toMatch(/^redone\.\nDay 1/);
     expect(tasks().filter((t) => t.participant_id === id("mike")).length).toBeGreaterThanOrEqual(before);
   });
@@ -318,10 +318,10 @@ describe("settings and task counts are requests, handled by tools", () => {
   it("lets the organizer change the trip, and says plainly who can when someone else tries", async () => {
     seed();
     await sayWithCall("mike", "japlan make it unhinged", "update_trip_setting", { setting: "difficulty", value: "unhinged" });
-    expect(lastIn(GROUP)).toBe("got it: unhinged.");
+    expect(lastIn(GROUP)).toBe("unhinged, noted.");
     expect(h.db.table("trips")[0].difficulty).toBe("unhinged");
     await sayWithCall("sam", "japlan make it chill", "update_trip_setting", { setting: "difficulty", value: "chill" });
-    expect(lastIn(GROUP)).toBe("only Mike can change the setup.");
+    expect(lastIn(GROUP)).toBe("only Mike can change the setup, that's the rule lol.");
   });
 
   it("'japlan settings' shows your own values in your dm; 'japlan resurvey' starts again", async () => {
