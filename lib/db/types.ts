@@ -57,6 +57,7 @@ export type ClaimRow = {
   participant_id: string;
   evidence_url: string | null;
   image_hash: string | null;
+  storage_path?: string | null;
   status: string;
   awarded_points: number | null;
   resolved_by: string | null;

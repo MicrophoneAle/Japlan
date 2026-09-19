@@ -47,6 +47,15 @@ Task titles provide photo captions. Photos are not arbitrarily duplicated to
 fill layouts and another participant's photo is never presented as someone
 else's.
 
+## Individual recaps
+
+Each personal slide uses the participant's display name, not the raw phone
+number list stored as the bootstrap trip name. Gemini may write one short
+individual recap line from that participant's awarded tasks, score, rank, and
+their own survey/preferences. Survey answers and profile text are private
+prompt context only: neither raw answers nor profile text appear on the public
+Wrapped page.
+
 ## Durable claim photos
 
 A `claim-photos` private Supabase Storage bucket stores photo bytes under

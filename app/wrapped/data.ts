@@ -7,7 +7,7 @@ export type Person = {
   quests: number;
   favorite: string;
   moment: string;
-  photo: Photo;
+  photo: Photo | null;
 };
 
 export type WrappedSlide =
@@ -19,6 +19,15 @@ export type WrappedSlide =
   | { type: "person"; person: Person; layout: 0 | 1 | 2 }
   | { type: "photos" }
   | { type: "finale" };
+
+export type WrappedData = {
+  trip: { name: string; destination: string; dates: string; days: number };
+  stats: { value: string; label: string }[];
+  places: string[];
+  quests: { title: string; points: number; winner: string; photo: Photo | null }[];
+  people: Person[];
+  photos: Photo[];
+};
 
 export const photos: Photo[] = [
   { src: "/assets/images.jpg", alt: "Friends enjoying a Japlan trip memory" },
@@ -34,7 +43,7 @@ const people: Person[] = [
   { name: "Theo", score: 198, rank: 5, quests: 6, favorite: "Coffee stops", moment: "The espresso relay", photo: photos[1] },
 ];
 
-export const demo = {
+export const demo: WrappedData & { slides: WrappedSlide[] } = {
   trip: {
     name: "The long weekend that got competitive",
     destination: "Montréal",
@@ -54,6 +63,7 @@ export const demo = {
     { title: "A View Worth Missing Dinner For", points: 31, winner: "Zara", photo: photos[1] },
   ],
   people,
+  photos,
   slides: [
     { type: "intro" },
     { type: "stats" },
