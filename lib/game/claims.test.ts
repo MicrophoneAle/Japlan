@@ -4,15 +4,19 @@ import {
   applyPhotoBonusRules,
   awardFanout,
   canResolveNow,
+  clampPhotoBonus,
   decideClaim,
+  DEFAULT_PHOTO_BONUS_WINDOW_MS,
   extractTaskCode,
   hashAlreadyUsed,
   isOpenTask,
   ladder,
+  pickLatePhotoTarget,
+  verificationRequiresPeer,
 } from "./claims";
 import { HAND_WRITTEN_DAY1_TASKS } from "./hand-written-tasks";
-import { computePoints, tierForPoints } from "./scoring";
-import { claimConfirmedLine } from "./copy";
+import { computePoints, applyDailyPointsCap, tierForPoints } from "./scoring";
+import { claimConfirmedLine, photoBonusLine } from "./copy";
 
 describe("hand-written board scoring", () => {
   it("lands every seed task in a real tier via scoring.ts", () => {
@@ -160,12 +164,21 @@ describe("hash rejection and team fanout", () => {
   });
 });
 
-describe("photo verification gates", () => {
-  it("does not resolve a photo task without a photo", () => {
-    expect(canResolveNow("photo", false)).toBe(false);
+describe("photo bonus is never a gate", () => {
+  it("resolves honor, photo, and peer code claims without a photo", () => {
+    expect(canResolveNow("photo", false)).toBe(true);
     expect(canResolveNow("photo", true)).toBe(true);
     expect(canResolveNow("honor", false)).toBe(true);
     expect(canResolveNow("peer", false)).toBe(true);
+  });
+
+  it("keeps peer as the only tapback gate", () => {
+    expect(verificationRequiresPeer("peer")).toBe(true);
+    expect(verificationRequiresPeer("photo")).toBe(false);
+    expect(verificationRequiresPeer("honor")).toBe(false);
+    expect(isOpenTask("t1", [{ task_id: "t1", status: "pending_peer" }])).toBe(
+      false,
+    );
   });
 
   it("caps the bonus at 1 when EXIF is missing", () => {
@@ -272,5 +285,150 @@ describe("board and confirmation copy", () => {
         capped: true,
       }),
     ).toBe("✅ C2 · Michael · daily cap reached · 160");
+    expect(
+      claimConfirmedLine({
+        code: "A1",
+        name: "Michael",
+        base: 12,
+        photoBonus: 0,
+        total: 12,
+        invitePhoto: true,
+      }),
+    ).toBe("✅ A1 · Michael +12 · 12\nphoto for bonus points?");
+    expect(
+      photoBonusLine({ code: "A1", bonus: 3, total: 15 }),
+    ).toBe("📸 A1 · +3 bonus · 15");
+    expect(
+      photoBonusLine({ code: "A1", bonus: 0, total: 120, capped: true }),
+    ).toBe("📸 A1 · daily cap reached · 120");
+  });
+});
+
+describe("late photo bonus window", () => {
+  const now = Date.parse("2026-09-19T12:00:00Z");
+  const tasks = [{ id: "task-a1", code: "A1", photo_bonus_max: 5 }];
+  const awarded = {
+    id: "claim-1",
+    task_id: "task-a1",
+    participant_id: "p1",
+    status: "awarded",
+    photo_claimed_at: null as string | null,
+    created_at: "2026-09-19T11:00:00Z",
+  };
+
+  it("awards base points and invites a photo on a bonus task", () => {
+    expect(
+      claimConfirmedLine({
+        code: "A1",
+        name: "Michael",
+        base: 12,
+        photoBonus: 0,
+        total: 12,
+        invitePhoto: true,
+      }),
+    ).toContain("photo for bonus points?");
+    expect(clampPhotoBonus(5, 3)).toBe(3);
+  });
+
+  it("binds a photo within the window to the claimed task once", () => {
+    expect(
+      pickLatePhotoTarget({
+        hasPhoto: true,
+        code: "A1",
+        claimantId: "p1",
+        claims: [awarded],
+        tasks,
+        now,
+        windowMs: DEFAULT_PHOTO_BONUS_WINDOW_MS,
+      }),
+    ).toEqual({ kind: "bonus", taskId: "task-a1", claimId: "claim-1" });
+
+    expect(
+      pickLatePhotoTarget({
+        hasPhoto: true,
+        code: null,
+        claimantId: "p1",
+        claims: [awarded],
+        tasks,
+        now,
+        windowMs: DEFAULT_PHOTO_BONUS_WINDOW_MS,
+      }),
+    ).toEqual({ kind: "bonus", taskId: "task-a1", claimId: "claim-1" });
+  });
+
+  it("adds nothing on a second photo for the same task", () => {
+    expect(
+      pickLatePhotoTarget({
+        hasPhoto: true,
+        code: "A1",
+        claimantId: "p1",
+        claims: [
+          {
+            ...awarded,
+            photo_claimed_at: "2026-09-19T11:10:00Z",
+          },
+        ],
+        tasks,
+        now,
+        windowMs: DEFAULT_PHOTO_BONUS_WINDOW_MS,
+      }),
+    ).toEqual({ kind: "already_bonused" });
+  });
+
+  it("falls through after the window", () => {
+    expect(
+      pickLatePhotoTarget({
+        hasPhoto: true,
+        code: null,
+        claimantId: "p1",
+        claims: [
+          {
+            ...awarded,
+            created_at: "2026-09-19T09:00:00Z",
+          },
+        ],
+        tasks,
+        now,
+        windowMs: DEFAULT_PHOTO_BONUS_WINDOW_MS,
+      }),
+    ).toEqual({ kind: "none" });
+  });
+
+  it("does not bind a bonus to a task with photo_bonus_max 0", () => {
+    expect(
+      pickLatePhotoTarget({
+        hasPhoto: true,
+        code: "A1",
+        claimantId: "p1",
+        claims: [awarded],
+        tasks: [{ id: "task-a1", code: "A1", photo_bonus_max: 0 }],
+        now,
+        windowMs: DEFAULT_PHOTO_BONUS_WINDOW_MS,
+      }),
+    ).toEqual({ kind: "none" });
+  });
+
+  it("does not bind a late photo to a pending peer claim", () => {
+    expect(
+      pickLatePhotoTarget({
+        hasPhoto: true,
+        code: "A1",
+        claimantId: "p1",
+        claims: [{ ...awarded, status: "pending_peer" }],
+        tasks,
+        now,
+        windowMs: DEFAULT_PHOTO_BONUS_WINDOW_MS,
+      }),
+    ).toEqual({ kind: "none" });
+    expect(verificationRequiresPeer("peer")).toBe(true);
+  });
+
+  it("zeroes a bonus when the daily cap is already reached", () => {
+    expect(
+      applyDailyPointsCap({ pointsToday: 120, incoming: 3, cap: 120 }),
+    ).toEqual({ awarded_points: 0, capped: true });
+    expect(
+      applyDailyPointsCap({ pointsToday: 40, incoming: 3, cap: 120 }),
+    ).toEqual({ awarded_points: 3, capped: false });
   });
 });

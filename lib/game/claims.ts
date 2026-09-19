@@ -75,6 +75,15 @@ export function decideClaim(input: {
 }
 
 export const CLAIM_MATCH_CONFIDENCE_MIN = 0.75;
+export const DEFAULT_PHOTO_BONUS_WINDOW_MS = 2 * 60 * 60 * 1000;
+
+export function photoBonusWindowMs(
+  value = process.env.JAPLAN_PHOTO_BONUS_WINDOW_MS,
+): number {
+  const parsed = Number(value);
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  return DEFAULT_PHOTO_BONUS_WINDOW_MS;
+}
 
 export function hashAlreadyUsed(
   existing: Iterable<string>,
@@ -102,10 +111,107 @@ export function awardFanout(opts: {
 
 export function canResolveNow(
   verification: string,
-  withPhoto: boolean,
+  _withPhoto?: boolean,
 ): boolean {
-  if (verification === "photo" && !withPhoto) return false;
+  void verification;
   return true;
+}
+
+export function verificationRequiresPeer(verification: string): boolean {
+  return verification === "peer";
+}
+
+export function clampPhotoBonus(bonus: number, max: number): number {
+  if (max <= 0) return 0;
+  return Math.max(0, Math.min(bonus, max));
+}
+
+export type LatePhotoClaim = {
+  id: string;
+  task_id: string;
+  participant_id: string;
+  status: string;
+  photo_claimed_at?: string | null;
+  created_at?: string | null;
+};
+
+export type LatePhotoBind =
+  | { kind: "bonus"; taskId: string; claimId: string }
+  | { kind: "already_bonused" }
+  | { kind: "none" };
+
+export function claimAcceptsLatePhoto(opts: {
+  claim: LatePhotoClaim;
+  now: number;
+  windowMs: number;
+}): boolean {
+  if (opts.claim.status !== "awarded") return false;
+  if (opts.claim.photo_claimed_at) return false;
+  if (!opts.claim.created_at) return false;
+  const created = Date.parse(opts.claim.created_at);
+  if (Number.isNaN(created)) return false;
+  return opts.now - created <= opts.windowMs;
+}
+
+function taskAllowsPhotoBonus(
+  task: { id: string; code: string; photo_bonus_max?: number } | undefined,
+): boolean {
+  return (task?.photo_bonus_max ?? 0) > 0;
+}
+
+export function pickLatePhotoTarget(opts: {
+  hasPhoto: boolean;
+  code: string | null;
+  claimantId: string;
+  claims: LatePhotoClaim[];
+  tasks: { id: string; code: string; photo_bonus_max?: number }[];
+  now: number;
+  windowMs: number;
+}): LatePhotoBind {
+  if (!opts.hasPhoto) return { kind: "none" };
+
+  if (opts.code) {
+    const task = opts.tasks.find((row) => row.code === opts.code);
+    if (!task) return { kind: "none" };
+    const claim = opts.claims.find(
+      (row) =>
+        row.task_id === task.id &&
+        row.participant_id === opts.claimantId &&
+        (row.status === "awarded" || row.status === "pending_peer"),
+    );
+    if (!claim) return { kind: "none" };
+    if (claim.status === "pending_peer") return { kind: "none" };
+    if (claim.photo_claimed_at) return { kind: "already_bonused" };
+    if (
+      taskAllowsPhotoBonus(task) &&
+      claimAcceptsLatePhoto({ claim, now: opts.now, windowMs: opts.windowMs })
+    ) {
+      return { kind: "bonus", taskId: task.id, claimId: claim.id };
+    }
+    return { kind: "none" };
+  }
+
+  const bonusTaskIds = new Set(
+    opts.tasks.filter((task) => taskAllowsPhotoBonus(task)).map((task) => task.id),
+  );
+  const recent = opts.claims
+    .filter(
+      (claim) =>
+        claim.participant_id === opts.claimantId &&
+        bonusTaskIds.has(claim.task_id) &&
+        claimAcceptsLatePhoto({
+          claim,
+          now: opts.now,
+          windowMs: opts.windowMs,
+        }),
+    )
+    .sort(
+      (a, b) =>
+        Date.parse(b.created_at ?? "") - Date.parse(a.created_at ?? ""),
+    );
+  const top = recent[0];
+  if (!top) return { kind: "none" };
+  return { kind: "bonus", taskId: top.task_id, claimId: top.id };
 }
 
 export function isOpenTask(
@@ -125,6 +231,7 @@ export function applyPhotoBonusRules(opts: {
   takenAt: Date | null;
   tripStart: string | null;
   tripEnd: string | null;
+  photoBonusMax?: number;
 }): { bonus: number; reject: boolean } {
   if (opts.takenAt && (opts.tripStart || opts.tripEnd)) {
     const taken = opts.takenAt.getTime();
@@ -142,8 +249,9 @@ export function applyPhotoBonusRules(opts: {
     }
   }
   // TODO: trips often have null dates; window check is skipped until those are set.
-  const bonus = opts.hasExif
+  const raw = opts.hasExif
     ? opts.fidelity
     : Math.min(opts.fidelity, 1);
-  return { bonus, reject: false };
+  const max = opts.photoBonusMax ?? raw;
+  return { bonus: clampPhotoBonus(raw, max), reject: false };
 }

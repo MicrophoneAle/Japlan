@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assignDayCodes, nextCodeNumber, nextFreeformCode, parseGeneratedTasks } from "./generate";
+import { assignDayCodes, buildGenerationPrompt, nextCodeNumber, nextFreeformCode, parseGeneratedTasks } from "./generate";
 import { pointsForBoard } from "./scoring";
 import {
   validateGeneratedTask,
@@ -113,5 +113,35 @@ describe("day codes", () => {
     const refill = assignDayCodes([baseTask, baseTask, baseTask], 1, 4);
     expect(refill.map((t) => t.code)).toEqual(["A4", "A5", "A6"]);
     expect(nextFreeformCode(["A1", "X1", "X2"])).toBe("X3");
+  });
+});
+
+describe("generation prompt", () => {
+  it("tells the model photo is a bonus, not a claim gate", () => {
+    const prompt = buildGenerationPrompt({
+      profile: {
+        assembled_at: "2026-09-19T00:00:00Z",
+        destination: "Tokyo",
+        neighborhoods: [],
+        transit_lines: [],
+        dishes: [],
+        landmarks: [],
+        price_bands: [],
+        center: null,
+      },
+      weather: {
+        summary: "clear",
+        indoorPreferred: false,
+        temperatureC: 22,
+        precipitationChance: 0,
+      },
+      preferenceText: "food",
+      completedTitles: [],
+      yesterdayRatings: "",
+      scoreGap: "",
+      day: 1,
+    });
+    expect(prompt).toContain("Verification is not a photo gate");
+    expect(prompt).toContain("Only peer requires someone else's tapback");
   });
 });

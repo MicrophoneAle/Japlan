@@ -1,6 +1,7 @@
 import type { Axes } from "./scoring";
 
 export type SeedVerification = "photo" | "honor" | "peer";
+// "photo" is a bonus hint (see photo_bonus_max), not a claim requirement. "peer" still needs a tapback.
 
 export type HandWrittenTask = {
   code: string;

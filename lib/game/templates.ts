@@ -26,6 +26,7 @@ export type TaskTemplate = {
   archetype: string;
   slots: TemplateSlot[];
   verification: SeedVerification;
+  // photo_bonus_max is the bonus ceiling. verification "photo" is not a claim gate.
   photo_bonus_max: number;
   axes: Record<keyof Axes, AxisRange>;
   indoor: boolean;
@@ -138,6 +139,7 @@ export const TEMPLATES: TaskTemplate[] = [
   // Aim for 20–30 archetypes covering a week: letter ranges, times, transport
   // modes, subjects, neighborhoods, dishes, phrases. Keep verification,
   // photo_bonus_max, indoor, typical_cost, and axis ranges on every row.
+  // verification "photo" means a photo can add bonus points; code claims still resolve.
   // ---------------------------------------------------------------------------
 ];
 

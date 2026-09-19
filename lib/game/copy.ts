@@ -36,6 +36,7 @@ export function claimConfirmedLine(opts: {
   photoBonus: number;
   total: number;
   capped?: boolean;
+  invitePhoto?: boolean;
 }): string {
   if (opts.capped) {
     return `✅ ${opts.code} · ${opts.name} · daily cap reached · ${opts.total}`;
@@ -43,7 +44,23 @@ export function claimConfirmedLine(opts: {
   if (opts.photoBonus > 0) {
     return `✅ ${opts.code} · ${opts.name} +${opts.base} +${opts.photoBonus} photo · ${opts.total}`;
   }
-  return `✅ ${opts.code} · ${opts.name} +${opts.base} · ${opts.total}`;
+  const first = `✅ ${opts.code} · ${opts.name} +${opts.base} · ${opts.total}`;
+  if (opts.invitePhoto) {
+    return `${first}\nphoto for bonus points?`;
+  }
+  return first;
+}
+
+export function photoBonusLine(opts: {
+  code: string;
+  bonus: number;
+  total: number;
+  capped?: boolean;
+}): string {
+  if (opts.capped) {
+    return `📸 ${opts.code} · daily cap reached · ${opts.total}`;
+  }
+  return `📸 ${opts.code} · +${opts.bonus} bonus · ${opts.total}`;
 }
 
 export function alreadyClaimedLine(code: string): string {

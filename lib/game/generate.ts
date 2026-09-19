@@ -174,6 +174,7 @@ export function buildGenerationPrompt(input: GenerationInput): string {
     `Score gap: ${input.scoreGap}`,
     `Template bank:\n${templates}`,
     `Return exactly ${count} tasks as JSON matching the schema. Fill slots from the destination profile. Axes are integers 1-5. Never include a point value.`,
+    "Verification is not a photo gate. honor and photo are both claimable by code immediately; photo_bonus_max is the optional bonus ceiling for a matching photo. Only peer requires someone else's tapback.",
   ].join("\n");
 }
 
@@ -183,7 +184,7 @@ export async function generateTasksForAssignee(
 ): Promise<ProposedTask[]> {
   const raw = await provider.complete({
     system:
-      "You generate daily scavenger-hunt tasks. Propose axes only, never points. Classification of difficulty is the six axes. JSON only.",
+      "You generate daily scavenger-hunt tasks. Propose axes only, never points. Classification of difficulty is the six axes. JSON only. A photo is a bonus, never a requirement; only peer verification needs another person.",
     messages: [{ role: "user", content: buildGenerationPrompt(input) }],
     schema: GENERATED_TASK_SCHEMA,
     tier: "smart",

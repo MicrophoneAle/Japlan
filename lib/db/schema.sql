@@ -124,6 +124,7 @@ create table claims (
   resolved_by text,
   resolution_json jsonb,
   capped boolean not null default false,
+  photo_claimed_at timestamptz,
   created_at timestamptz not null default now()
 );
 
