@@ -40,6 +40,7 @@ export function buildLiveWrapped(opts: {
   tasks: TaskRow[];
   claims: ClaimRow[];
   itinerary: ItineraryPlace[];
+  savedPlaces: ItineraryPlace[];
 }): LiveWrappedData {
   const taskById = new Map(opts.tasks.map((task) => [task.id, task]));
   const personById = new Map(opts.people.map((person) => [person.id, person]));
@@ -91,7 +92,9 @@ export function buildLiveWrapped(opts: {
   }
   const quests = questRows.map((row) => ({ title: row.task.title, points: row.claim.awarded_points ?? 0, winner: row.person.display_name, photo: photoFor(row) }));
   const gallery = photos.slice(0, 18).map(photoFor);
-  const placeNames = [...new Set(opts.itinerary.map((row) => row.name).filter((name): name is string => Boolean(name)))].slice(0, 6);
+  const placesForRecap = opts.itinerary.length ? opts.itinerary : opts.savedPlaces;
+  const placeLabel = opts.itinerary.length ? "places on the itinerary" : "places saved";
+  const placeNames = [...new Set(placesForRecap.map((row) => row.name).filter((name): name is string => Boolean(name)))].slice(0, 6);
   const days = tripDays(opts.trip);
 
   const names = ranked.map((person) => person.display_name).filter(Boolean);
@@ -100,7 +103,7 @@ export function buildLiveWrapped(opts: {
     trip: { name: groupName ? `${groupName} got competitive` : (opts.trip.name || "the trip that got competitive"), destination: opts.trip.destination || "somewhere iconic", dates: dateRange(opts.trip), days },
     stats: [
       { value: String(opts.people.length), label: "friends unleashed" },
-      { value: String(opts.itinerary.length), label: "places on the itinerary" },
+      { value: String(placesForRecap.length), label: placeLabel },
       { value: String(claimedTaskIds.size), label: "quests completed" },
       { value: String(photos.length), label: "camera-roll receipts" },
     ],

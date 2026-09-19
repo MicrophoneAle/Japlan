@@ -28,14 +28,13 @@ export async function loadWrapped(tripId: string): Promise<LiveWrappedData | nul
     const place = (row as { places: { name: string } | { name: string }[] | null }).places;
     return { place_id: (row as { place_id: string }).place_id, name: Array.isArray(place) ? place[0]?.name ?? null : place?.name ?? null };
   });
-  // Older or lightweight trips may have researched/saved places without ever
-  // creating itinerary rows. They still deserve real place stats in Wrapped.
-  const recapPlaces = itinerary.length
-    ? itinerary
-    : (placesResult.data ?? []).map((place) => ({ place_id: (place as { id: string }).id, name: (place as { name: string }).name }));
+  const savedPlaces = (placesResult.data ?? []).map((place) => ({
+    place_id: (place as { id: string }).id,
+    name: (place as { name: string }).name,
+  }));
   const people = (peopleResult.data ?? []) as ParticipantRow[];
   const claimRows = (claims.data ?? []) as ClaimRow[];
-  const wrapped = buildLiveWrapped({ trip, people, tasks, claims: claimRows, itinerary: recapPlaces });
+  const wrapped = buildLiveWrapped({ trip, people, tasks, claims: claimRows, itinerary, savedPlaces });
   const provider = new GeminiProvider();
   await Promise.all(wrapped.people.map(async (person) => {
     const source = people.find((row) => row.id === person.id);

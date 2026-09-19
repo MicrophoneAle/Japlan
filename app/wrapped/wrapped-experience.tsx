@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { demo, type Person, type WrappedSlide } from "./data";
 import styles from "./wrapped.module.css";
@@ -25,7 +24,7 @@ function CountUp({ value }: { value: number }) {
 
 function Photo({ photo, className, priority = false }: { photo: { src: string; alt: string } | null; className?: string; priority?: boolean }) {
   if (!photo) return null;
-  return <Image className={className} src={photo.src} alt={photo.alt} fill sizes="(max-width: 700px) 100vw, 55vw" priority={priority} />;
+  return <img className={className} src={photo.src} alt={photo.alt} loading={priority ? "eager" : "lazy"} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />;
 }
 
 function PersonSlide({ person, layout }: { person: Person; layout: 0 | 1 | 2 }) {
@@ -55,7 +54,10 @@ function Slide({ slide, data, onReplay, onShare }: { slide: WrappedSlide; data: 
     <div className={styles.brand}>JAPLAN <span>WRAPPED</span></div><div className={styles.introCopy}>{data === demo && <p className={styles.demoFlag}>DEMO STORY · FICTIONAL FIXTURE</p>}<h1>YOU ACTUALLY<br />MADE IT OUT<br /><i>OF THE GROUP CHAT.</i></h1><p className={styles.destination}>{data.trip.name}<br />{data.trip.destination} <span>·</span> {data.trip.dates}</p></div><div className={styles.scrollCue}>START THE STORY <span>↓</span></div>
   </section>;
   if (slide.type === "stats") return <section className={`${styles.slide} ${styles.stats}`}><div className={styles.dotGrid} /><div className={styles.statHalo}>{data.stats[2]?.value ?? "0"}</div><p className={styles.kicker}>THE RECEIPTS</p><h2>THIS WASN’T<br />A <i>CASUAL</i><br />WEEKEND.</h2><div className={styles.statList}>{data.stats.map((stat, i) => <div className={styles.stat} key={stat.label}><span>0{i + 1}</span><strong>{stat.value}</strong><em>{stat.label}</em></div>)}</div></section>;
-  if (slide.type === "places") return <section className={`${styles.slide} ${styles.places}`}><div className={styles.placeTape}>WE WENT OUT · WE STAYED OUT · WE FOUND THINGS · </div><div className={styles.placesMarks}><span>✦</span><span>→</span><span>✦</span><i /></div><p className={styles.kicker}>EXPLORATION MODE</p><h2>THE CITY<br />DIDN’T KNOW<br />WHAT <i>HIT IT.</i></h2><div className={styles.placeNames}>{data.places.map((place, i) => <span key={place} style={{ "--i": i } as React.CSSProperties}>{place}</span>)}</div><div className={styles.mapBlob}><b>{data.stats[1]?.value ?? "0"}</b><span>PLACES<br />PLANNED</span></div></section>;
+  if (slide.type === "places") {
+    const placeLabel = data.stats[1]?.label ?? "places saved";
+    return <section className={`${styles.slide} ${styles.places}`}><div className={styles.placeTape}>WE WENT OUT · WE STAYED OUT · WE FOUND THINGS · </div><div className={styles.placesMarks}><span>✦</span><span>→</span><span>✦</span><i /></div><p className={styles.kicker}>EXPLORATION MODE</p><h2>THE CITY<br />DIDN’T KNOW<br />WHAT <i>HIT IT.</i></h2><div className={styles.placeNames}>{data.places.map((place, i) => <span key={place} style={{ "--i": i } as React.CSSProperties}>{place}</span>)}</div><div className={styles.mapBlob}><b>{data.stats[1]?.value ?? "0"}</b><span>{placeLabel.toUpperCase()}</span></div></section>;
+  }
   if (slide.type === "quests") return <section className={`${styles.slide} ${styles.quests}`}><p className={styles.kicker}>{data.stats[2]?.value ?? "0"} QUESTS COMPLETED</p><h2>YOU SAID<br /><i>YES</i> TO THAT?</h2><div className={styles.questWall}>{data.quests.map((quest, i) => <article key={quest.title} className={styles.quest} style={{ "--q": i } as React.CSSProperties}><div><Photo photo={quest.photo} /></div><span>+{quest.points} XP</span><b>{quest.title}</b><em>claimed by {quest.winner}</em></article>)}</div></section>;
   if (slide.type === "leaderboard") return <section className={`${styles.slide} ${styles.leaderboard}`}><div className={styles.confetti}>✦ · ✦ · ✦ · ✦</div><div className={styles.rankStamp}>TOP<br />{data.people.length}</div><p className={styles.kicker}>FINAL STANDINGS</p><h2>LET’S TALK<br />ABOUT <i>THE SCORE.</i></h2><div className={styles.ranks}>{data.people.slice().reverse().map(person => <div key={person.name} className={styles.rank}><span>#{person.rank}</span><b>{person.name}</b><strong><CountUp value={person.score} /></strong></div>)}</div></section>;
   if (slide.type === "person") return <PersonSlide person={slide.person} layout={slide.layout} />;
@@ -69,10 +71,10 @@ export function WrappedExperience({ data }: { data?: typeof demo }) {
   const slide = story.slides[index];
   const go = useCallback((next: number) => { if (next < 0 || next >= story.slides.length || next === index) return; setDirection(next > index ? 1 : -1); setIndex(next); }, [index, story.slides.length]);
   useEffect(() => { const handler = (event: KeyboardEvent) => { if (event.key === "ArrowRight" || event.key === " ") go(index + 1); if (event.key === "ArrowLeft") go(index - 1); }; window.addEventListener("keydown", handler); return () => window.removeEventListener("keydown", handler); }, [go, index]);
-  const share = async () => { const data = { title: "Japlan Wrapped · Demo", text: "A fictional Japlan Wrapped demo.", url: window.location.href }; try { if (navigator.share) await navigator.share(data); else await navigator.clipboard.writeText(data.url); } catch { /* sharing is optional */ } };
+  const share = async () => { const data = { title: "Japlan Wrapped", text: `${story.trip.name} · Japlan Wrapped`, url: window.location.href }; try { if (navigator.share) await navigator.share(data); else await navigator.clipboard.writeText(data.url); } catch { /* sharing is optional */ } };
   return <main className={styles.experience} onTouchStart={e => { touch.current = e.changedTouches[0].clientX; }} onTouchEnd={e => { if (touch.current === null) return; const distance = e.changedTouches[0].clientX - touch.current; if (Math.abs(distance) > 45) go(index + (distance < 0 ? 1 : -1)); touch.current = null; }}>
-    <div className={styles.progress} aria-label={`Slide ${index + 1} of ${demo.slides.length}`}>{demo.slides.map((_, i) => <button key={i} onClick={() => go(i)} className={i <= index ? styles.complete : ""} aria-label={`Go to slide ${i + 1}`} />)}</div>
+    <div className={styles.progress} aria-label={`Slide ${index + 1} of ${story.slides.length}`}>{story.slides.map((_, i) => <button key={i} onClick={() => go(i)} className={i <= index ? styles.complete : ""} aria-label={`Go to slide ${i + 1}`} />)}</div>
     <div key={index} className={`${styles.stage} ${direction > 0 ? styles.forward : styles.backward} ${ENTER}`}><Slide slide={slide} data={story} onReplay={() => { setDirection(-1); setIndex(0); }} onShare={share} /></div>
-    <div className={styles.controls}><button type="button" onClick={() => go(index - 1)} disabled={index === 0} aria-label="Previous slide">←</button><button type="button" onClick={() => go(index + 1)} disabled={index === demo.slides.length - 1} aria-label="Next slide">→</button></div>
+    <div className={styles.controls}><button type="button" onClick={() => go(index - 1)} disabled={index === 0} aria-label="Previous slide">←</button><button type="button" onClick={() => go(index + 1)} disabled={index === story.slides.length - 1} aria-label="Next slide">→</button></div>
   </main>;
 }
