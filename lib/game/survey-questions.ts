@@ -493,4 +493,4 @@ export const QUESTIONS = { ...LEGACY_QUESTIONS, ...SURVEY_V2 } as Record<Questio
 // The survey everyone is asked now.
 export const QUESTION_ORDER: QuestionId[] = SURVEY_V2_ORDER;
 
-export const FIRST_QUESTION_ID: QuestionId = "ab_food_outdoors";
+export const FIRST_QUESTION_ID: QuestionId = SURVEY_V2_ORDER[0];

@@ -58,13 +58,13 @@ describe("survey v2: eight quick ones, anything accepted", () => {
     return { step, asked };
   };
 
-  it("opens with the intro and the first either-or, and asks at most eight things", () => {
+  it("opens with the intro and asks for a preferred name before the personality questions", () => {
     const first = startSurvey();
     expect(first.prompt).toMatch(/^quick personality test, because asking "what do you like" is useless\./);
-    expect(first.prompt).toMatch(/kayaking somewhere stupidly pretty\?$/);
-    const { step, asked } = walk(["food", "wander", "museum", "cram", "$80", "none", "eat something i can't identify", "yes"]);
+    expect(first.prompt).toMatch(/what should i call you\?$/);
+    const { step, asked } = walk(["sam", "food", "wander", "museum", "cram", "$80", "none", "eat something i can't identify", "yes"]);
     expect(step.completed).toBe(true);
-    expect(asked.filter((id) => id !== "done")).toHaveLength(8);
+    expect(asked.filter((id) => id !== "done")).toHaveLength(9);
     expect(step.prompt).toBe("done. you're less mysterious than you think.");
   });
 
@@ -134,7 +134,7 @@ describe("survey v2: eight quick ones, anything accepted", () => {
   });
 
   it("skips the splitting question solo", () => {
-    const { asked } = walk(["a", "a", "a", "a", "$30", "none", "ramen"], true);
+    const { asked } = walk(["sam", "a", "a", "a", "a", "$30", "none", "ramen"], true);
     expect(asked).not.toContain("splitting");
     expect(asked.at(-1)).toBe("done");
   });

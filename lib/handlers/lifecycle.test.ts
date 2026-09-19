@@ -152,7 +152,7 @@ describe("organizer setup", () => {
     expect(lastTo(MIKE_DM)).toBe(
       "trip setup, 4 quick ones. ok where we headed? a city is plenty. (skip and i'll ask again later)",
     );
-    expect(lastTo(SAM_DM)).toMatch(/^quick personality test.*stupidly pretty\?$/); // Sam gets the personal survey
+    expect(lastTo(SAM_DM)).toMatch(/^quick personality test.*what should i call you\?$/); // Sam gets the personal survey
 
     await send(MIKE, MIKE_DM, "tokyo");
     expect(openTrip()!.destination).toBe("tokyo, japan");
@@ -172,9 +172,9 @@ describe("organizer setup", () => {
     expect(openTrip()!.stake_text).toBe("karaoke solo in shinjuku");
     expect(openTrip()!.setup_state).toBe("done");
     expect(lastTo(MIKE_DM)).toBe(
-      `say less, noted. setup's done, we're so back. quick personality test, because asking "what do you like" is useless. pick whatever you'd rather be doing, don't overthink it. say skip whenever. insane local food spot you've never heard of, or kayaking somewhere stupidly pretty?`,
+      `say less, noted. setup's done, we're so back. quick personality test, because asking "what do you like" is useless. pick whatever you'd rather be doing, don't overthink it. say skip whenever. a few quick ones so the tasks fit you. skip any of them by saying skip. what should i call you?`,
     );
-    expect(person(MIKE)!.survey_state).toBe("ab_food_outdoors");
+    expect(person(MIKE)!.survey_state).toBe("first_name");
   });
 
   it("does not go active until destination and dates are set, then does", async () => {
