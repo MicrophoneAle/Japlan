@@ -1,3 +1,5 @@
+import { clockLabel } from "./time";
+
 export const GROUP_INTRO =
   "hi, i'm japlan. i turn this trip into a points game: every morning you each get a few tasks, and doing them scores points. i'm dming everyone a few quick questions first. i read this chat to catch claims, and only reply when someone says japlan, sends a task code, or dms me.";
 
@@ -9,7 +11,7 @@ export function setupCompleteLine(nextBoard: string | null): string {
   return nextBoard ? `${SETUP_COMPLETE} first board lands ${nextBoard}.` : SETUP_COMPLETE;
 }
 
-export const SURVEY_DONE_DM = "that's everything, thanks.";
+export const SURVEY_DONE_DM = "done. you're less mysterious than you think.";
 
 export function surveyReaskLine(options: string[]): string {
   return `didn't catch that. reply ${options.join(" / ")}, or skip.`;
@@ -186,6 +188,13 @@ export function dailyBoardHeader(
   route?: string | null,
 ): string {
   return [`Day ${day}`, route, weatherLine].filter(Boolean).join(" · ");
+}
+
+// A place someone in the group asked for, on the day's route. Credit is the
+// point: people need to see their idea survive.
+export function boardAnchorLine(name: string, by: string | null, slot?: string | null): string {
+  const line = `+ ${name}${by ? ` (${by}'s pick)` : ""}`;
+  return slot ? `${boardSlotLabel(slot)}${line}` : line;
 }
 
 export function boardRouteLabel(first: string, last: string): string {
@@ -368,21 +377,23 @@ export function twoMatchAskLine(left: string, right: string): string {
 export const HELP_TEXT = {
   group: `here's the deal
 
-· every morning the shared board goes up
+· every morning your board lands in your dm, one plan for the group
 · send the code (like A1) to claim one
 · send a photo after and you get bonus points
 · did something cool i didn't ask for? just tell me, i'll score it
 · "japlan standings" for the leaderboard
+· "japlan settings" to see or change anything you told me
 · "japlan chill" if i'm being annoying
 
 that's it. go do something stupid.`,
   dm: `here's the deal
 
-· every morning you get 3 personal tasks
+· every morning you get a board that fits your day. want more? just ask
 · send the code (like A1) to claim one
 · send a photo after and you get bonus points
 · did something cool i didn't ask for? just tell me, i'll score it
 · "japlan standings" for the leaderboard
+· "japlan settings" to see or change anything you told me
 · "japlan chill" if i'm being annoying
 
 that's it. go do something stupid.`,
@@ -396,13 +407,33 @@ export const CONVERSATION_SYSTEM_PROMPT = `you are japlan, a trip game host sitt
 
 voice: lowercase. no exclamation marks. no emoji except ✅ 📸 👍. one message, never two. short.
 
-you only talk when addressed. you are not a general chatbot. having an opinion is fine. do not refuse to engage, do not lecture, never say let's get back to the game.
+you only talk when addressed. having an opinion is fine. do not refuse to engage, do not lecture, never say let's get back to the game.
+
+you do not enforce rules:
+- if something is not possible, the tools will fail and you report that. never tell someone they cannot do something because of a rule you believe exists.
+- preferences, pace, difficulty, interests, task count and every other setting are editable at any time by the person they belong to. settings are defaults, not limits: pace sets how full a day is by default, never a maximum.
+- if you are unsure whether something is allowed, try it. a failed tool call is better than a wrong refusal.
+- when someone asks for something a tool can do, call the tool. do not apologise instead.
+
+facts come only from tools:
+- never state anything about the score, the tasks, the schedule, a place or a person that you did not read from a tool call in this turn. scores: get_standings. tasks, codes and the day's plan: get_open_tasks. what you know about the sender: show_my_profile.
+- never recall a number, a task code or a plan from the recent chat. that is where invented facts come from. if you need it, call the tool.
+- the recent chat is for following the conversation, not a source of facts. if a tool did not give it to you, don't say it.
 
 tools:
 - get_standings: call this before stating anyone's score. never recall a score from memory or from the prompt.
-- get_open_tasks: only existing tasks, plus the board state. never invent one. if asked for a new task, point at an open one. if there are no open tasks, tell them "japlan plans" makes today's board right now, or say when next_board lands. never promise a board time it did not give you.
+- get_open_tasks: existing tasks plus the board state. describe tasks from this list, do not make up a task yourself. if they want more or different tasks, call request_tasks. if there are no open tasks, "japlan plans" makes today's board right now, or say when next_board lands. never promise a board time it did not give you.
+- request_tasks: they want more tasks, or a number of them ("7 attractions", "a packed day"). code adds as many as fit and replies.
+- update_my_setting: they want to change any of their own settings (pace, tasks per day, strangers, interests, budget, diet, anything). code saves it and replies.
+- update_trip_setting: destination, dates, difficulty, board time, stake. code handles who can.
+- redo_today: remake today's board from current settings, e.g. after they say yes to a redo.
+- show_my_profile: "what do you know about me". code sends it to their dm.
 - propose_freeform_claim: they already did something you did not assign. return title and six axes (integers 1-5). never a point value. code will score it.
 - request_photo_bonus: a photo might add bonus to a recent claim.
+- record_split: the group says it is splitting up (who is going where, who is sleeping in, splitting after lunch). code works out who is where, re-plans their day and sends the reply.
+- record_regroup: the group says it is back together.
+- add_suggestion: someone names a place or thing they want to do. code puts it on a day and sends the reply.
+- avoid_category: the group does not want a kind of thing (temples, museums). code sends the reply.
 - no_action: when you just want to talk.
 
 hard rules:
@@ -417,6 +448,25 @@ next steps:
 
 export const CONVERSATION_FALLBACK = "yeah?";
 
+// "japlan what do you know about me": their profile, in their DM only.
+export function profileLine(profile: string | null): string {
+  if (!profile) return "not much yet. finish the quick questions in your dm and i'll know more.";
+  return `here's what i've got:\n${profile}\nwrong about something? just tell me, like "japlan i'm not that into food".`;
+}
+
+export const PROFILE_IN_DM_LINE = "that's in your dm.";
+
+// A stated preference, confirmed: "got it, more museums."
+export function preferenceNotedLine(what: string, more: boolean, offerRedo: boolean): string {
+  return `got it, ${more ? "more" : "less"} ${what}.${offerRedo ? " want me to redo today's board?" : ""}`;
+}
+
+// "japlan chill": about three words, then quiet until mentioned.
+export const STOP_LINE = "ok, going quiet.";
+
+// A reply that failed the checks (untrue, unrelated, empty): this instead.
+export const DISCARD_FALLBACK = "lost the thread for a sec. say that again?";
+
 export const CONVERSATION_PRIVACY_LINE = "that's between them and me.";
 
 export function conversationRedirect(opts: {
@@ -429,3 +479,133 @@ export function conversationRedirect(opts: {
   if (opts.trailingName) return `${opts.trailingName} is still hunting.`;
   return `the board is still there.`;
 }
+
+// Splits and regrouping. Names are the group's own display names; why anyone
+// was placed where (a couple's survey answer) is never said.
+export function splitNotedLine(opts: {
+  groups: { names: string; area: string | null; from: number | null }[];
+  rejoinAt: number | null;
+  rejoinPlace: string | null;
+  dayLabel: string | null;
+  replanned: boolean;
+  ask: string | null;
+}): string {
+  const groups = opts.groups
+    .map((g) => `${g.names}${g.area ? ` on ${g.area}` : ""}${g.from !== null ? ` from ${clockLabel(g.from)}` : ""}`)
+    .join(", ");
+  const rejoin =
+    opts.rejoinAt !== null
+      ? ` back together at ${clockLabel(opts.rejoinAt)}${opts.rejoinPlace ? ` near ${opts.rejoinPlace}` : ""}.`
+      : "";
+  const when = opts.dayLabel ? ` for ${opts.dayLabel}` : "";
+  const boards = opts.replanned ? " new boards are in your dms." : "";
+  const head = `split noted${when}: ${groups}.${rejoin}${boards}`;
+  return opts.ask ? `${head} ${opts.ask}` : head;
+}
+
+// Only about the people nobody could place. Never a registration step.
+export function splitAskLine(opts: { unplaced: string[]; unresolved: string[]; areas: string[] }): string {
+  const choice = opts.areas.length > 1 ? `${opts.areas.slice(0, -1).join(", ")} or ${opts.areas.at(-1)}` : opts.areas[0];
+  const parts: string[] = [];
+  if (opts.unresolved.length > 0) parts.push(`who's ${opts.unresolved.map((u) => `"${u}"`).join(" and ")}?`);
+  if (opts.unplaced.length > 0) {
+    const who = opts.unplaced.length === 1 ? opts.unplaced[0] : `${opts.unplaced.slice(0, -1).join(", ")} and ${opts.unplaced.at(-1)}`;
+    parts.push(choice ? `where's ${who}: ${choice}?` : `where's ${who} going?`);
+  }
+  return parts.join(" ");
+}
+
+export function regroupLine(replanned: boolean): string {
+  if (!replanned) return "noted, everyone's together.";
+  return "back together. one plan again, new boards are in your dms.";
+}
+
+// A place someone asked for, and where it landed.
+export function suggestionLine(opts: {
+  name: string;
+  duplicate: boolean;
+  fit:
+    | { kind: "near"; day: number; area: string | null }
+    | { kind: "open_day"; day: number }
+    | { kind: "asked_day"; day: number }
+    | { kind: "no_fit"; bestDay: number | null }
+    | { kind: "no_location" };
+}): string {
+  const { name, fit } = opts;
+  const already = opts.duplicate ? `${name} was already on the list. ` : "";
+  switch (fit.kind) {
+    case "near":
+      return `${already}added ${name} to day ${fit.day}, it's near the rest of that day${fit.area ? ` (${fit.area})` : ""}.`;
+    case "open_day":
+      return `${already}added ${name} to day ${fit.day}, that day gets planned around it.`;
+    case "asked_day":
+      return `${already}added ${name} to day ${fit.day}.`;
+    case "no_fit":
+      return fit.bestDay
+        ? `${already}${name} is across town from every day so far. it'd work best on day ${fit.bestDay}: say "japlan put ${name} on day ${fit.bestDay}" and it's in.`
+        : `${already}noted ${name}, it's on the ideas list.`;
+    case "no_location":
+      return `${already}noted ${name}. couldn't pin it on a map, so it's on the ideas list and boards will work it in.`;
+  }
+}
+
+export function avoidNotedLine(what: string, understood: boolean): string {
+  return understood ? `noted, fewer ${what} from here on.` : `noted, i'll steer away from ${what}.`;
+}
+
+// PLAN's 18+ gate for v1.
+export const UNDER_AGE_LINE = "japlan is 18+ for now, so there won't be tasks for you on this trip. sorry.";
+
+// Settings: everyone's own answers are editable any time, in plain words.
+export function settingChangedLine(label: string, shown: string, offerRedo: boolean): string {
+  return `${label} is now ${shown}.${offerRedo ? " want me to redo today's board?" : ""}`;
+}
+
+export function settingUnclearLine(label: string, options: string[]): string {
+  return options.length
+    ? `didn't catch the new ${label}. say ${options.join(" / ")}.`
+    : `didn't catch the new ${label}. say it another way?`;
+}
+
+export const SETTING_UNKNOWN_LINE = `which setting? "japlan settings" lists them all.`;
+
+export const SETTING_IN_DM_LINE = "done, details are in your dm.";
+
+export function settingsListLine(lines: string[]): string {
+  return `your settings:\n${lines.map((l) => `· ${l}`).join("\n")}\nchange any by saying it, like "japlan pace faster", "japlan budget 150" or "japlan i'm into museums now".`;
+}
+
+export const SETTINGS_IN_DM_LINE = "your settings are in your dm.";
+
+export function resurveyStartLine(prompt: string): string {
+  return `starting over, one question at a time. skip keeps what you said before. ${prompt}`;
+}
+
+const NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"];
+
+function numberWord(n: number): string {
+  return NUMBER_WORDS[n] ?? String(n);
+}
+
+// A task count someone asked for: what they got, and the real tradeoff.
+// Fewer only when the day genuinely has no more room, and it says so.
+export function tasksRequestedLine(opts: {
+  want: number;
+  got: number;
+  minutesLeft: number;
+  board: string;
+}): string {
+  const head =
+    opts.got >= opts.want
+      ? opts.minutesLeft < 90
+        ? `${numberWord(opts.want)} it is. that's a full day, you'll be moving.`
+        : `${numberWord(opts.want)} it is.`
+      : `${numberWord(opts.got)} is what fits in what's left of today, so that's ${numberWord(opts.got)}. ask for tomorrow if you want more.`;
+  return `${head}\n${opts.board}`;
+}
+
+export function boardRedoneLine(board: string): string {
+  return `redone.\n${board}`;
+}
+
+export const EVERYONE_REDONE_LINE = "redone for everyone, new boards are in your dms.";

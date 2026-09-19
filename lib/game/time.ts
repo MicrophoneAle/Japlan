@@ -131,3 +131,12 @@ export function endOfLocalDayContaining(
 ): Date {
   return endOfLocalDay(localDateString(instant, timezone), timezone);
 }
+
+// Minutes after midnight as people say it: "1:30pm", "11am".
+export function clockLabel(minutes: number): string {
+  const h = Math.floor(minutes / 60) % 24;
+  const m = minutes % 60;
+  const suffix = h >= 12 ? "pm" : "am";
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return m === 0 ? `${h12}${suffix}` : `${h12}:${String(m).padStart(2, "0")}${suffix}`;
+}

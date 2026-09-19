@@ -1,3 +1,4 @@
+import { recordMessage } from "@/lib/chat/transcript";
 import { getLinqClient } from "./client";
 
 export type OutboundOp = "sendText" | "sendTyping" | "markRead" | "sendDM";
@@ -49,12 +50,16 @@ export async function sendText(
   chatId: string,
   text: string,
 ): Promise<SentText> {
-  return outbound({ op: "sendText", chatId, text }, async () => {
+  const sent = await outbound({ op: "sendText", chatId, text }, async () => {
     const res = await getLinqClient().chats.messages.send(chatId, {
       message: textParts(text),
     });
     return { chatId: res.chat_id, messageId: res.message.id };
   });
+  // The transcript is what the next conversational call reads; the bot's own
+  // replies belong in it. Not game logic, just the record.
+  await recordMessage({ chatId: sent.chatId, role: "bot", text });
+  return sent;
 }
 
 export async function sendTyping(chatId: string, on: boolean): Promise<void> {
@@ -74,7 +79,7 @@ export async function markRead(messageId: string): Promise<void> {
 }
 
 export async function sendDM(phone: string, text: string): Promise<SentText> {
-  return outbound({ op: "sendDM", phone, text }, async () => {
+  const sent = await outbound({ op: "sendDM", phone, text }, async () => {
     const res = await getLinqClient().chats.create({
       from: fromNumber(),
       to: [phone],
@@ -82,4 +87,6 @@ export async function sendDM(phone: string, text: string): Promise<SentText> {
     });
     return { chatId: res.chat.id, messageId: res.chat.message.id };
   });
+  await recordMessage({ chatId: sent.chatId, role: "bot", text });
+  return sent;
 }

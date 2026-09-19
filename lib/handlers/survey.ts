@@ -1,14 +1,26 @@
 import { sendText } from "@/lib/linq/send";
-import { applyReply, type SurveyAnswers, type SurveyAwaiting } from "@/lib/game/survey";
+import {
+  applyReply,
+  isSidequestQuestion,
+  type SurveyAnswers,
+  type SurveyAwaiting,
+} from "@/lib/game/survey";
+import { defaultWakeKeyword, findTaskCode, wakeKeywordRe } from "@/lib/game/addressing";
+import { isBoardRequest } from "@/lib/game/board-schedule";
+import { interpretSurveyReply } from "@/lib/llm/gemini";
+import { checkReply } from "@/lib/game/reply-check";
+import { saveSurveyResult } from "./profiles";
 import { QUESTIONS, type QuestionId } from "@/lib/game/survey-questions";
 import { isSetupQuestion, missingRequiredSetup, type SetupFields } from "@/lib/game/setup";
 import {
   SURVEY_DONE_DM,
   dmUnknownPersonLine,
   surveyDoneLine,
+  UNDER_AGE_LINE,
 } from "@/lib/game/copy";
 import type { LLMProvider } from "@/lib/llm";
 import {
+  beginSidequestOnboarding,
   countSurveysPending,
   findOpenSurveyByPhone,
   maybeActivateTrip,
@@ -17,6 +29,8 @@ import {
 import { handleGroupClaim } from "./claims";
 import { handleConversation } from "./conversation";
 import { answerSetup, needsSetupResume, resumeSetup, setupPromptFor } from "./setup";
+import { importSurveySuggestions } from "./plan-changes";
+import { isUnderAge } from "@/lib/game/preferences";
 
 // Every DM is addressed, so every branch here sends exactly one message.
 // Order: the organizer's trip setup, then the personal survey, then claims
@@ -90,19 +104,49 @@ export async function handleSurveyDm(opts: {
 
   if (!opts.text.trim()) {
     // A photo or empty DM mid-survey: ask the current question again.
-    const prompt = QUESTIONS[state as QuestionId]?.prompt;
-    if (prompt) await sendText(opts.chatId, prompt);
+    const q = QUESTIONS[state as QuestionId];
+    if (q) await sendText(opts.chatId, q.reask ?? q.prompt);
     return;
   }
 
-  const step = applyReply(
-    {
-      awaiting: state as SurveyAwaiting,
-      answers: (participant.survey_json ?? {}) as SurveyAnswers,
-    },
-    opts.text,
-    { isSolo: Boolean(trip.is_solo) },
-  );
+  // Mid-onboarding is not a lock: a task code, a board request or anything
+  // addressed with the keyword goes to the game, and the question waits.
+  if (opts.data && isGameMessage(opts.text) && trip.state === "active") {
+    const miss = await handleGroupClaim(opts.data, { tripChatId: trip.linq_chat_id });
+    if (miss) await handleConversation(miss);
+    return;
+  }
+
+  const answersBefore = (participant.survey_json ?? {}) as SurveyAnswers;
+  const machine = { awaiting: state as SurveyAwaiting, answers: answersBefore };
+  const ctx = { isSolo: Boolean(trip.is_solo) };
+  let step = applyReply(machine, opts.text, ctx);
+  let offTopic: string | null = null;
+
+  if (step.unclear) {
+    // The parser could not read it: the model either reads it as an answer
+    // (a sentence, a loose "the food one obviously") or answers it as the
+    // off-topic message it was. Then the question comes back, reworded.
+    const q = QUESTIONS[state as QuestionId];
+    const read = await interpretSurveyReply({
+      provider: opts.provider,
+      question: q.prompt,
+      options: q.sides ? [q.sides.a, q.sides.b, "both", "neither"] : q.choices?.map((c) => c.label),
+      text: opts.text,
+    });
+    surveyStep("interpret", { state, answered: Boolean(read?.answer), offTopic: Boolean(read?.reply) });
+    if (read?.answer) {
+      const retry = applyReply({ awaiting: machine.awaiting, answers: step.state.answers }, read.answer, ctx);
+      if (!retry.unclear) step = retry;
+    } else if (read?.reply) {
+      // Held to the same rule as the conversation: no codes, numbers, people
+      // or places it was not given. A failed check drops the aside and just
+      // re-asks.
+      const check = checkReply(read.reply, { taskCodes: [], people: [], toolText: "", userText: opts.text, contextText: "" });
+      if (check.ok) offTopic = read.reply;
+      else console.warn("[japlan.survey] aside discarded", { participantId: participant.id, reason: check.reason });
+    }
+  }
 
   await persistSurveyProgress({
     participantId: participant.id,
@@ -110,12 +154,42 @@ export async function handleSurveyDm(opts: {
     answers: step.state.answers,
   });
 
+  if (step.unclear) {
+    const lead = offTopic ?? (step.noted ? "noted." : null);
+    await sendText(opts.chatId, lead ? `${lead} ${step.prompt}` : (step.prompt ?? ""));
+    return;
+  }
+
+  // The sidequest onboarding finished: store what it means and say so.
+  if (step.completed && isSidequestQuestion(state)) {
+    // Saved with what the answers imply (red lines -> sociability), so the
+    // progress write must carry those too, not the raw answers.
+    const saved = await saveSurveyResult(trip, participant, step.state.answers);
+    await persistSurveyProgress({ participantId: participant.id, awaiting: "done", answers: saved });
+    await sendText(opts.chatId, step.prompt ?? "noted.");
+    return;
+  }
+
   if (step.completed) {
+    const answers = await saveSurveyResult(trip, participant, step.state.answers);
+    // Their own list of places joins the trip's suggestions, credited to them.
+    try {
+      await importSurveySuggestions(trip, participant, answers);
+    } catch (err) {
+      console.error("[japlan.suggest] survey import failed", err);
+    }
+    if (isUnderAge(answers)) {
+      await sendText(opts.chatId, `${SURVEY_DONE_DM} ${UNDER_AGE_LINE}`);
+      if (!trip.is_solo) await maybeActivateTrip(trip, { quietFor: participant.id });
+      return;
+    }
     if (trip.is_solo) {
-      // Solo: this DM is also the trip chat, so "we're live" joins this reply.
-      const live = await maybeActivateTrip(trip, { announce: false });
+      // Solo: this DM is also the trip chat, so "we're live" and the
+      // sidequest question join this reply.
+      const live = await maybeActivateTrip(trip, { announce: false, quietFor: participant.id });
       if (live) {
-        await sendText(opts.chatId, `${SURVEY_DONE_DM} ${live}`);
+        const sidequests = await beginSidequestOnboarding(participant.id, answers);
+        await sendText(opts.chatId, `${SURVEY_DONE_DM} ${live} ${sidequests}`);
         return;
       }
     }
@@ -127,13 +201,29 @@ export async function handleSurveyDm(opts: {
       reply = `${reply} ${await resumeSetup(trip)}`;
     } else if (isOrganizer && isSetupQuestion(trip.setup_state)) {
       reply = `${reply} ${setupPromptFor(trip, trip.setup_state)}`;
+    } else if (!trip.is_solo) {
+      // The last survey in starts the trip: everyone else gets the sidequest
+      // question by DM, this person gets it in this reply.
+      const live = await maybeActivateTrip(trip, { quietFor: participant.id });
+      if (live) reply = `${SURVEY_DONE_DM} ${await beginSidequestOnboarding(participant.id, answers)}`;
     }
     await sendText(opts.chatId, reply);
-    if (!trip.is_solo) await maybeActivateTrip(trip);
     return;
   }
 
   if (step.prompt) {
-    await sendText(opts.chatId, step.prompt);
+    const lead = offTopic ?? (step.noted ? "noted." : null);
+    await sendText(opts.chatId, lead ? `${lead} ${step.prompt}` : step.prompt);
   }
+}
+
+function surveyStep(step: string, fields: Record<string, unknown>): void {
+  console.log("[japlan.survey] step", { step, ...fields });
+}
+
+// A message that is for the game, not an answer: a task code, a board
+// request, or the wake keyword.
+function isGameMessage(text: string): boolean {
+  const code = findTaskCode(text);
+  return Boolean(code?.strict) || isBoardRequest(text) || wakeKeywordRe(defaultWakeKeyword()).test(text);
 }

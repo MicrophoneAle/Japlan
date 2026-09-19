@@ -179,9 +179,12 @@ describe("help copy", () => {
       expect(text).toContain("japlan standings");
       expect(text).toContain("japlan chill");
       expect(text).not.toMatch(/axes|verification|scoring/i);
+      expect(text).toContain("japlan settings");
+      // No fixed task count: the model quoted "3 personal tasks" back as a cap.
+      expect(text).not.toMatch(/[0-9]+ (?:personal )?tasks/);
     }
-    expect(HELP_TEXT.dm).toContain("personal tasks");
-    expect(HELP_TEXT.group).toContain("shared board");
+    expect(HELP_TEXT.dm).toContain("want more? just ask");
+    expect(HELP_TEXT.group).toContain("your board lands in your dm");
     expect(helpText(true)).toBe(HELP_TEXT.dm);
     expect(helpText(false)).toBe(HELP_TEXT.group);
   });

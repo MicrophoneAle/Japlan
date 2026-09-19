@@ -196,8 +196,8 @@ describe("filling the day", () => {
 
 describe("template bank", () => {
   it("has the five originals plus the new archetypes", () => {
-    expect(TEMPLATES).toHaveLength(24);
-    expect(new Set(TEMPLATES.map((t) => t.id)).size).toBe(24);
+    expect(TEMPLATES).toHaveLength(28);
+    expect(new Set(TEMPLATES.map((t) => t.id)).size).toBe(28);
   });
 
   it("keeps each template's time axis inside its duration band", () => {
@@ -218,7 +218,7 @@ describe("template bank", () => {
   it("spreads across the scoring space", () => {
     const tiers = new Set(boardTemplates({ solo: false }).map((t) => tierForPoints(computePoints(midpointAxes(t)))));
     expect(tiers).toEqual(new Set(["Light", "Medium", "Challenging"]));
-    expect(TEMPLATES.filter((t) => t.stranger).length).toBeGreaterThanOrEqual(5);
+    expect(TEMPLATES.filter((t) => t.needs_stranger).length).toBeGreaterThanOrEqual(5);
   });
 
   it("estimates every filled board template inside its declared band", () => {

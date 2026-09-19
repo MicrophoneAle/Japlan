@@ -31,7 +31,10 @@ export const POINT_FIELD_KEYS = [
 export const PRIVATE_SURVEY_IDS: QuestionId[] = [
   "budget",
   "dietary",
+  "dietary_detail",
   "dietary_strictness",
+  "sociability",
+  "age_bracket",
   "mobility",
   "blackout",
   "social_with",
@@ -42,6 +45,7 @@ export const PRIVATE_SURVEY_IDS: QuestionId[] = [
 const PUBLIC_SURVEY_IDS: QuestionId[] = [
   "first_name",
   "interests",
+  "interest_picks",
   "pace",
   "chaos",
   "nightlife",
@@ -54,6 +58,10 @@ const GAME_TOOLS = new Set<string>([
   "get_open_tasks",
   "propose_freeform_claim",
   "request_photo_bonus",
+  "record_split",
+  "record_regroup",
+  "add_suggestion",
+  "avoid_category",
 ]);
 
 export type ConversationStore = {

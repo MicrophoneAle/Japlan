@@ -533,3 +533,166 @@ export async function extractFreeformActivity(opts: {
     thinkingBudget: 0,
   });
 }
+
+// ---- survey, engagement, reply checks --------------------------------------
+// Each is one small fast-tier classification, bounded by a timeout. A failure
+// returns null and the caller takes its safe default (re-ask, disengage,
+// send). None of these states facts: they read what people said.
+
+const JUDGE_TIMEOUT_MS = 6_000;
+
+export const SURVEY_REPLY_SCHEMA = {
+  type: "object",
+  properties: {
+    answer: { type: "string" },
+    reply: { type: "string" },
+  },
+  required: ["answer", "reply"],
+};
+
+// One survey reply the code could not read. answer: the reply as the
+// question's own words (or its gist), "" when it is not an answer. reply: a
+// one-line in-voice answer to an off-topic message, "" when not needed.
+export async function interpretSurveyReply(opts: {
+  provider?: LLMProvider;
+  question: string;
+  options?: string[];
+  text: string;
+}): Promise<{ answer: string | null; reply: string | null } | null> {
+  const provider = opts.provider ?? new GeminiProvider();
+  try {
+    const raw = await withTimeout(
+      provider.complete({
+        system: [
+          "You read one reply in a quick, playful trip survey done over text.",
+          "If the reply answers the question, even loosely or as a sentence, set answer to the closest option in the options' own words (or, for an open question, the reply's gist) and reply to \"\".",
+          "If it is off topic or a question for you, set answer to \"\" and reply to one short friendly lowercase sentence answering it. Never state facts you were not given (scores, times, places, tasks); say you'll sort that after the survey instead.",
+          "No exclamation marks. JSON only.",
+        ].join(" "),
+        messages: [
+          {
+            role: "user",
+            content: `Question: ${opts.question}\nOptions: ${opts.options?.join(" / ") || "(open question)"}\nReply: ${opts.text}`,
+          },
+        ],
+        schema: SURVEY_REPLY_SCHEMA,
+        tier: "fast",
+        thinkingBudget: 0,
+        temperature: 0,
+      }),
+      JUDGE_TIMEOUT_MS,
+      "gemini.survey.interpret",
+    );
+    const parsed = parseJsonObject(raw);
+    if (!parsed) return null;
+    const answer = typeof parsed.answer === "string" && parsed.answer.trim() ? parsed.answer.trim() : null;
+    const reply = typeof parsed.reply === "string" && parsed.reply.trim() ? parsed.reply.trim() : null;
+    return { answer, reply };
+  } catch {
+    return null;
+  }
+}
+
+export const JUDGEMENT_SCHEMA = {
+  type: "object",
+  properties: {
+    decision: { type: "boolean" },
+    reason: { type: "string" },
+  },
+  required: ["decision", "reason"],
+};
+
+async function judge(opts: {
+  provider?: LLMProvider;
+  system: string;
+  content: string;
+  label: string;
+}): Promise<{ decision: boolean; reason: string } | null> {
+  const provider = opts.provider ?? new GeminiProvider();
+  try {
+    const raw = await withTimeout(
+      provider.complete({
+        system: opts.system,
+        messages: [{ role: "user", content: opts.content }],
+        schema: JUDGEMENT_SCHEMA,
+        tier: "fast",
+        thinkingBudget: 0,
+        temperature: 0,
+      }),
+      JUDGE_TIMEOUT_MS,
+      opts.label,
+    );
+    const parsed = parseJsonObject(raw);
+    if (!parsed || typeof parsed.decision !== "boolean") return null;
+    return { decision: parsed.decision, reason: typeof parsed.reason === "string" ? parsed.reason.slice(0, 200) : "" };
+  } catch {
+    return null;
+  }
+}
+
+// Still in a conversation with the bot, or has the group moved on? Biased
+// toward moving on: one message too early is cheaper than one too late.
+export const STILL_ENGAGED_SYSTEM = [
+  "You are deciding whether a group chat is still talking to japlan, a trip-game bot, or has moved on.",
+  "decision true only if the newest message continues the exchange with the bot: a follow-up to what it just said, an answer to its question, agreement with something it proposed (\"yeah do that\"), or a question for it.",
+  "decision false if the group has moved on: two people talking to each other, a change of subject, logistics that need no bot (\"i'm downstairs\", \"who has the key\"), or plans the bot has no part in.",
+  "When unsure, false. Staying quiet one message too early is much better than one too late.",
+  "reason: a few words. JSON only.",
+].join(" ");
+
+export async function judgeStillEngaged(opts: {
+  provider?: LLMProvider;
+  transcript: string;
+  message: string;
+}): Promise<{ decision: boolean; reason: string } | null> {
+  return judge({
+    provider: opts.provider,
+    system: STILL_ENGAGED_SYSTEM,
+    content: `Recent chat (oldest first):\n${opts.transcript}\n\nNewest message:\n${opts.message}`,
+    label: "gemini.engage.still",
+  });
+}
+
+// A message nobody addressed to the bot: is it about the trip game enough
+// that the bot should join in? Biased toward staying out.
+export const SHOULD_JOIN_SYSTEM = [
+  "You are deciding whether japlan, a trip-game bot in a group chat, should join in on a message nobody addressed to it.",
+  "decision true only if the message is plainly about the game or the trip plan and the bot has something to add: someone saying they did a task, asking about the score or the day's plan, suggesting a place to go, or saying the group is splitting up.",
+  "decision false for everything else, including ordinary trip chatter between friends. When unsure, false.",
+  "reason: a few words. JSON only.",
+].join(" ");
+
+export async function judgeShouldJoin(opts: {
+  provider?: LLMProvider;
+  transcript: string;
+  message: string;
+}): Promise<{ decision: boolean; reason: string } | null> {
+  return judge({
+    provider: opts.provider,
+    system: SHOULD_JOIN_SYSTEM,
+    content: `Recent chat (oldest first):\n${opts.transcript}\n\nNew message:\n${opts.message}`,
+    label: "gemini.engage.join",
+  });
+}
+
+// Does a reply respond to what was actually said? Catches the fluent, in
+// voice, about-nothing reply that passes every other check.
+export const RELEVANCE_SYSTEM = [
+  "You check a chat bot's reply before it is sent.",
+  "decision true if the reply responds to what was said in the last few messages (answers it, acts on it, or reacts to it).",
+  "decision false if it is about something nobody said, or ignores the latest message.",
+  "Do not judge tone or style. reason: a few words. JSON only.",
+].join(" ");
+
+export async function judgeRelevance(opts: {
+  provider?: LLMProvider;
+  transcript: string;
+  reply: string;
+}): Promise<{ decision: boolean; reason: string } | null> {
+  return judge({
+    provider: opts.provider,
+    system: RELEVANCE_SYSTEM,
+    content: `Last messages (oldest first):\n${opts.transcript}\n\nBot's reply:\n${opts.reply}`,
+    label: "gemini.reply.relevance",
+  });
+}

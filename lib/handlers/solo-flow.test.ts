@@ -122,9 +122,8 @@ describe("solo setup and survey", () => {
     await say("Tokyo");
     await say("Oct 17-20");
     await say("chill");
-    expect(last()).toBe(
-      "got it: chill. setup's done. a few quick ones so the tasks fit you. skip any of them by saying skip. what should i call you?",
-    );
+    expect(last()).toMatch(/^got it: chill\. setup's done\. quick personality test, because asking "what do you like" is useless\./);
+    expect(last()).toMatch(/kayaking somewhere stupidly pretty\?$/);
     expect(trip().setup_state).toBe("done");
     expect(trip().stake_text ?? null).toBeNull();
 
@@ -135,9 +134,13 @@ describe("solo setup and survey", () => {
     expect(surveyText).not.toMatch(/PLACEHOLDER|reply skip to skip/i);
     expect(trip().state).toBe("active");
     // One closing message, not "that's everything" then a separate "we're live".
-    expect(last()).toBe(
-      "that's everything, thanks. we're live. every morning your tasks arrive by dm, and a code like A1 claims one. first board lands oct 17 at 8am.",
+    // One closing message: the close, "we're live", and the sidequest question.
+    expect(last()).toMatch(
+      /^done\. you're less mysterious than you think\. we're live\. every morning your tasks arrive by dm, and a code like A1 claims one\. first board lands oct 17 at 8am\. btw i'm turning on sidequests\./,
     );
+    const surveyAsked = h.sent.slice(surveyStart).length;
+    // At most eight questions, then the close.
+    expect(surveyAsked).toBeLessThanOrEqual(9);
     expect(h.sent.filter((m) => /we're live/.test(m.text))).toHaveLength(1);
   });
 });

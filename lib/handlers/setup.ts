@@ -1,6 +1,8 @@
 import { getServiceClient } from "@/lib/db/client";
 import type { ParticipantRow, TripRow } from "@/lib/db/types";
 import {
+  BOARD_TIME_UNREADABLE_LINE,
+  boardTimeSetLine,
   datesRetryLine,
   datesSetLine,
   destinationSetLine,
@@ -26,7 +28,8 @@ import {
   type SetupQuestionId,
 } from "@/lib/game/setup";
 import { lookupCityTimezone } from "@/lib/game/city-timezones";
-import { startSurvey } from "@/lib/game/survey";
+import { formatBoardTime, parseBoardTime } from "@/lib/game/board-schedule";
+import { isSidequestQuestion, startSurvey } from "@/lib/game/survey";
 import { QUESTIONS, type QuestionId } from "@/lib/game/survey-questions";
 import {
   isValidTimeZone,
@@ -161,7 +164,8 @@ export async function resolveDestinationAnswer(
 // the prompt to append, or null when their survey is already done.
 async function surveyPromptAfterSetup(organizer: ParticipantRow): Promise<string | null> {
   const state = organizer.survey_state;
-  if (state === "done") return null;
+  // Done, or only the sidequest question pending (that is not the survey).
+  if (state === "done" || isSidequestQuestion(state)) return null;
   if (state && state !== "not_started") {
     return QUESTIONS[state as QuestionId]?.prompt ?? null;
   }
@@ -198,6 +202,122 @@ export async function resumeSetup(trip: TripRow): Promise<string> {
   return setupPromptFor(trip, id);
 }
 
+// One trip setting from the organizer's words: the patch to save and the
+// line that confirms it, or a re-ask. Shared by the setup flow and later
+// changes ("japlan make it unhinged", "move the trip to oct 18-21").
+async function setupChange(
+  trip: TripRow,
+  id: SetupQuestionId,
+  text: string,
+  deps: SetupDeps,
+): Promise<{ patch: Record<string, unknown>; said: string } | { retry: string }> {
+  const patch: Record<string, unknown> = {};
+  let said = "";
+  switch (id) {
+    case "destination": {
+      const resolved = await resolveDestinationAnswer(text, deps);
+      patch.destination = resolved.destination;
+      if (resolved.timezone) patch.timezone = resolved.timezone;
+      const changed =
+        (trip.destination ?? "").trim().toLowerCase() !==
+        resolved.destination.trim().toLowerCase();
+      if (changed) {
+        // New destination: the old profile's places and the old timezone
+        // belong to the wrong city.
+        patch.destination_profile_json = partialDestinationProfile(
+          resolved.destination,
+          resolved.center,
+        );
+        if (!resolved.timezone) patch.timezone = null;
+        setupStep("destination.profile_refresh", { tripId: trip.id });
+      }
+      said = destinationSetLine(
+        resolved.destination,
+        Boolean(resolved.timezone ?? (changed ? null : trip.timezone)),
+      );
+      break;
+    }
+    case "dates": {
+      const today = localDateString(deps.now ?? new Date(), trip.timezone);
+      // Deterministic parser first ("oct 17-20", "28 oct - 2 nov",
+      // "next weekend"); the model only for anything it cannot read.
+      const parsed = parseLooseDates(text, today);
+      let range: { start: string; end: string } | null = parsed;
+      let path = parsed ? `parser:${parsed.form}` : "none";
+      setupStep("dates.parser", { input: text, today, result: parsed });
+      if (!range) {
+        setupStep("dates.gemini.before", { input: text, today });
+        try {
+          range = await extractTripDates({ provider: deps.provider, text, today });
+          path = range ? "gemini" : "gemini:not_understood";
+          setupStep("dates.gemini.after", { response: range });
+        } catch (err) {
+          path = "gemini:error";
+          setupStep("dates.gemini.failed", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+      setupStep("dates.path", { input: text, path, range });
+      if (!range) return { retry: datesRetryLine("unclear") };
+      const check = checkDateRange(range.start, range.end, today);
+      setupStep("dates.check", { ...range, today, path, ok: check.ok, reason: check.ok ? null : check.reason });
+      if (!check.ok) return { retry: datesRetryLine(check.reason) };
+      patch.start_date = check.start;
+      patch.end_date = check.end;
+      said = datesSetLine(check.start, check.end);
+      break;
+    }
+    case "difficulty": {
+      const difficulty = matchDifficulty(text);
+      if (!difficulty) return { retry: surveyReaskLine([...DIFFICULTIES]) };
+      patch.difficulty = difficulty;
+      said = `got it: ${difficulty}.`;
+      break;
+    }
+    case "stake": {
+      patch.stake_text = text.slice(0, 200);
+      said = "got it.";
+      break;
+    }
+  }
+  return { patch, said };
+}
+
+// The organizer changing a trip setting at any time, outside the setup
+// flow: destination, dates, difficulty, stake, board time. Saves and
+// returns the confirming line.
+export type TripSetting = SetupQuestionId | "board_time";
+
+export function tripSettingFor(name: string): TripSetting | null {
+  const lower = name.toLowerCase();
+  if (/board ?time|morning time|when .* board/.test(lower)) return "board_time";
+  if (/destination|city|where|place/.test(lower)) return "destination";
+  if (/date|when|day|length/.test(lower)) return "dates";
+  if (/difficult|hard|chill|unhinged|normal/.test(lower)) return "difficulty";
+  if (/stake|loser|forfeit|bet/.test(lower)) return "stake";
+  return null;
+}
+
+export async function applyTripSetting(
+  trip: TripRow,
+  setting: TripSetting,
+  value: string,
+  deps: SetupDeps = {},
+): Promise<{ ok: boolean; line: string }> {
+  if (setting === "board_time") {
+    const time = parseBoardTime(value);
+    if (!time) return { ok: false, line: BOARD_TIME_UNREADABLE_LINE };
+    await saveTrip(trip.id, { board_time: time });
+    return { ok: true, line: boardTimeSetLine(formatBoardTime(time)) };
+  }
+  const change = await setupChange(trip, setting, value.trim(), deps);
+  if ("retry" in change) return { ok: false, line: change.retry };
+  await saveTrip(trip.id, change.patch);
+  setupStep("setting.changed", { tripId: trip.id, setting });
+  return { ok: true, line: change.said };
+}
+
 // One setup answer in, one DM out.
 export async function answerSetup(opts: {
   trip: TripRow;
@@ -216,74 +336,10 @@ export async function answerSetup(opts: {
   if (!text) return setupPromptFor(trip, id);
 
   if (!isSetupSkip(text)) {
-    switch (id) {
-      case "destination": {
-        const resolved = await resolveDestinationAnswer(text, deps);
-        patch.destination = resolved.destination;
-        if (resolved.timezone) patch.timezone = resolved.timezone;
-        const changed =
-          (trip.destination ?? "").trim().toLowerCase() !==
-          resolved.destination.trim().toLowerCase();
-        if (changed) {
-          // New destination: the old profile's places and the old timezone
-          // belong to the wrong city.
-          patch.destination_profile_json = partialDestinationProfile(
-            resolved.destination,
-            resolved.center,
-          );
-          if (!resolved.timezone) patch.timezone = null;
-          setupStep("destination.profile_refresh", { tripId: trip.id });
-        }
-        said = destinationSetLine(
-          resolved.destination,
-          Boolean(resolved.timezone ?? (changed ? null : trip.timezone)),
-        );
-        break;
-      }
-      case "dates": {
-        const today = localDateString(deps.now ?? new Date(), trip.timezone);
-        // Deterministic parser first ("oct 17-20", "28 oct - 2 nov",
-        // "next weekend"); the model only for anything it cannot read.
-        const parsed = parseLooseDates(text, today);
-        let range: { start: string; end: string } | null = parsed;
-        let path = parsed ? `parser:${parsed.form}` : "none";
-        setupStep("dates.parser", { input: text, today, result: parsed });
-        if (!range) {
-          setupStep("dates.gemini.before", { input: text, today });
-          try {
-            range = await extractTripDates({ provider: deps.provider, text, today });
-            path = range ? "gemini" : "gemini:not_understood";
-            setupStep("dates.gemini.after", { response: range });
-          } catch (err) {
-            path = "gemini:error";
-            setupStep("dates.gemini.failed", {
-              error: err instanceof Error ? err.message : String(err),
-            });
-          }
-        }
-        setupStep("dates.path", { input: text, path, range });
-        if (!range) return datesRetryLine("unclear");
-        const check = checkDateRange(range.start, range.end, today);
-        setupStep("dates.check", { ...range, today, path, ok: check.ok, reason: check.ok ? null : check.reason });
-        if (!check.ok) return datesRetryLine(check.reason);
-        patch.start_date = check.start;
-        patch.end_date = check.end;
-        said = datesSetLine(check.start, check.end);
-        break;
-      }
-      case "difficulty": {
-        const difficulty = matchDifficulty(text);
-        if (!difficulty) return surveyReaskLine([...DIFFICULTIES]);
-        patch.difficulty = difficulty;
-        said = `got it: ${difficulty}.`;
-        break;
-      }
-      case "stake": {
-        patch.stake_text = text.slice(0, 200);
-        said = "got it.";
-        break;
-      }
-    }
+    const change = await setupChange(trip, id, text, deps);
+    if ("retry" in change) return change.retry;
+    Object.assign(patch, change.patch);
+    said = change.said;
   }
 
   const updated = { ...trip, ...patch } as TripRow;

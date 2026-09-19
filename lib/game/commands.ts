@@ -1,13 +1,17 @@
 import { defaultWakeKeyword, stripWakeKeyword, wakeKeywordRe } from "./addressing";
 import { parseBoardTime } from "./board-schedule";
 
-export type TripCommand = "end_trip" | "end_trip_confirm" | "new_trip" | "setup";
+export type TripCommand = "end_trip" | "end_trip_confirm" | "new_trip" | "setup" | "settings" | "resurvey" | "profile";
 
 const COMMANDS: [TripCommand, RegExp][] = [
   ["end_trip_confirm", /^end (the )?trip,? confirm(ed)?$/],
   ["end_trip", /^end (the |this )?trip$/],
   ["new_trip", /^(new|start a new|start another|another) trip$/],
   ["setup", /^(setup|set up|trip setup|change setup)$/],
+  // Anyone's own answers: see them all, or go through the questions again.
+  ["settings", /^(my )?(settings|preferences|prefs|profile)$/],
+  ["resurvey", /^(resurvey|re-?survey|redo (my )?survey|survey again|retake (the )?survey)$/],
+  ["profile", /^(what do you know about me|what do you know about me so far|my profile|show (me )?my profile|who am i( to you)?)$/],
 ];
 
 // "japlan board time 7am" / "japlan board time 10:30".

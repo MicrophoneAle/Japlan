@@ -20,18 +20,38 @@ import {
   parseClockMinutes,
   planDay,
   selectForDay,
+  slotForMinute,
   targetMinutes,
   usableWindow,
+  type DaySlot,
   type DayWindow,
 } from "@/lib/game/day-plan";
 import {
+  anchorCandidate,
   boardConflict,
-  planAssigneeBoard,
+  boardPreferencesFor,
+  personalizationFor,
+  planFromProposals,
   prepareCandidates,
+  resolvePlace,
+  templatesAllowedFor,
   type Candidate,
   type PlannedTask,
   type PrepareContext,
+  type Suggestion,
 } from "@/lib/game/plan-board";
+import {
+  categoriesOf,
+  groupBlackouts,
+  INTEREST_KEYS,
+  interestPicksFor,
+  isUnderAge,
+  promptPreferences,
+} from "@/lib/game/preferences";
+import { dayGroups, type DayTeam } from "@/lib/game/split";
+import { groupProfile, personProfile } from "@/lib/game/profile";
+import { prefsOf } from "@/lib/game/prefs";
+import { isSidequestQuestion } from "@/lib/game/survey";
 import { boardTemplates } from "@/lib/game/templates";
 import { peerLapsedLine } from "@/lib/game/copy";
 import { answerValue, type SurveyAnswers } from "@/lib/game/survey";
@@ -46,11 +66,17 @@ import {
   type DayWeather,
 } from "@/lib/game/weather";
 import { getServiceClient } from "@/lib/db/client";
-import type { ParticipantRow, TaskRow, TripRow } from "@/lib/db/types";
+import type { ParticipantRow, PlaceRow, TaskRow, TeamRow, TripRow } from "@/lib/db/types";
 import { sendDM, sendText } from "@/lib/linq/send";
 import { applySoloVerification } from "@/lib/game/solo";
 // Plan does not specify the exact expiry instant; tasks end with the trip's local day.
-import { endOfLocalDay, localDateString, localHour, localTimeHHMM } from "@/lib/game/time";
+import {
+  endOfLocalDay,
+  localDateString,
+  localHour,
+  localTimeHHMM,
+  zonedTimeToUtc,
+} from "@/lib/game/time";
 
 import { TRIP_COLS } from "@/lib/db/columns";
 import { boardDueNow, tripDayForDate } from "@/lib/game/board-schedule";
@@ -69,15 +95,33 @@ function logReject(reason: string, title: string, extra: Record<string, unknown>
   console.info("[japlan.generate] rejected", { reason, title, ...extra });
 }
 
+// What the model reads about the people on a board: a written profile, not
+// a field dump. One person: their own profile (their board, their DM). More
+// than one: the group profile only, an aggregate that never names who has
+// which constraint, so nobody's private answers reach anyone else's prompt.
+function groupPreferenceText(people: ParticipantRow[]): string {
+  if (people.length === 0) return "(no survey answers)";
+  if (people.length === 1) {
+    const person = people[0];
+    const answers = (person.survey_json ?? {}) as SurveyAnswers;
+    return (
+      person.profile_md ??
+      (answers.ab_food_outdoors || answers.hard_constraints
+        ? personProfile({ name: "They", answers, prefs: prefsOf(person.prefs_json, answers) })
+        : preferenceText(answers))
+    );
+  }
+  return groupProfile(
+    people.map((p) => {
+      const answers = (p.survey_json ?? {}) as SurveyAnswers;
+      return { answers, prefs: prefsOf(p.prefs_json, answers) };
+    }),
+  );
+}
+
 function preferenceText(answers: SurveyAnswers): string {
-  const bits = [
-    answerValue(answers, "interests"),
-    answerValue(answers, "pace"),
-    answerValue(answers, "chaos"),
-    answerValue(answers, "food_adventure"),
-    answerValue(answers, "nightlife"),
-    answerValue(answers, "drinking"),
-  ].filter(Boolean);
+  // Free text the code cannot act on goes to the model, labelled.
+  const bits = Object.entries(promptPreferences(answers)).map(([k, v]) => `${k}: ${v}`);
   return bits.join("; ") || "(no survey answers)";
 }
 
@@ -121,68 +165,164 @@ async function completedTitles(tripId: string, participantIds: string[]): Promis
   return (tasks ?? []).map((t) => (t as { title: string }).title);
 }
 
-async function yesterdayRatings(tripId: string): Promise<string> {
+// Ratings by this trip's people in the last 36 hours. Used to read every
+// trip's ratings (no trip filter); nothing writes ratings yet (PLAN's rating
+// prompt after an anchor is not built), so this is empty in practice.
+async function yesterdayRatings(people: ParticipantRow[]): Promise<string> {
+  if (people.length === 0) return "";
   const since = new Date(Date.now() - 36 * 60 * 60 * 1000).toISOString();
   const { data, error } = await getServiceClient()
     .from("ratings")
     .select("score, place_id, created_at, participant_id")
+    .in("participant_id", people.map((p) => p.id))
     .gte("created_at", since);
   if (error) throw error;
-  void tripId;
   if (!data || data.length === 0) return "";
   return (data as { score: number }[])
     .map((row) => `rating ${row.score}`)
     .join(", ");
 }
 
+// What the group asked to avoid ("we don't want to do temples"), plus any
+// thumbs-down (score 1-2) on a place, which lowers its category the same way.
+async function tripAvoidWeights(trip: TripRow, people: ParticipantRow[]): Promise<Record<string, number>> {
+  const weights: Record<string, number> = { ...(trip.category_weights ?? {}) };
+  if (people.length === 0) return weights;
+  const { data, error } = await getServiceClient()
+    .from("ratings")
+    .select("score, place_id")
+    .in("participant_id", people.map((p) => p.id))
+    .lte("score", 2);
+  if (error) throw error;
+  const placeIds = [...new Set((data ?? []).map((r) => (r as { place_id: string }).place_id))];
+  if (placeIds.length === 0) return weights;
+  const places = await getServiceClient().from("places").select("id, name, category").in("id", placeIds);
+  if (places.error) throw places.error;
+  for (const place of (places.data ?? []) as Pick<PlaceRow, "id" | "name" | "category">[]) {
+    for (const key of categoriesOf(place.name, place.category)) {
+      weights[key] = Math.min(weights[key] ?? 1, 0.6);
+    }
+  }
+  return weights;
+}
+
+function coordsOfPlace(row: Pick<PlaceRow, "lat" | "lng">): { lat: number; lng: number } | null {
+  return row.lat !== null && row.lng !== null ? { lat: row.lat, lng: row.lng } : null;
+}
+
+// Places people asked for (conversation, and their survey's attractions).
+export async function tripSuggestions(
+  tripId: string,
+  people: ParticipantRow[],
+): Promise<(Suggestion & { placeId: string; category: string | null })[]> {
+  const { data, error } = await getServiceClient()
+    .from("places")
+    .select("id, name, lat, lng, category, suggested_by, source")
+    .eq("trip_id", tripId)
+    .eq("source", "suggestion");
+  if (error) throw error;
+  return ((data ?? []) as PlaceRow[]).map((row) => ({
+    placeId: row.id,
+    name: row.name,
+    coords: coordsOfPlace(row),
+    category: row.category,
+    by: people.find((p) => p.id === row.suggested_by)?.display_name ?? null,
+  }));
+}
+
+export type BoardAnchor = { name: string; by: string | null; slot: DaySlot | null };
+
+type AnchorRow = { id: string; place_id: string; planned_time: string | null; anchor_order: number };
+
+async function dayAnchorRows(tripId: string, day: number): Promise<AnchorRow[]> {
+  const { data, error } = await getServiceClient()
+    .from("itinerary")
+    .select("id, place_id, planned_time, anchor_order")
+    .eq("trip_id", tripId)
+    .eq("day", day)
+    .order("anchor_order");
+  if (error) throw error;
+  return (data ?? []) as AnchorRow[];
+}
+
+// The day's anchors as the board shows them: "+ teamLab (Dev's pick)".
+export async function dayAnchorsForBoard(trip: TripRow, day: number): Promise<BoardAnchor[]> {
+  const rows = await dayAnchorRows(trip.id, day);
+  if (rows.length === 0) return [];
+  const [places, people] = await Promise.all([
+    getServiceClient().from("places").select("id, name, suggested_by").in("id", rows.map((r) => r.place_id)),
+    getServiceClient().from("participants").select("id, display_name").eq("trip_id", trip.id),
+  ]);
+  if (places.error) throw places.error;
+  if (people.error) throw people.error;
+  return rows.map((row) => {
+    const place = ((places.data ?? []) as Pick<PlaceRow, "id" | "name" | "suggested_by">[]).find((p) => p.id === row.place_id);
+    const by = ((people.data ?? []) as Pick<ParticipantRow, "id" | "display_name">[]).find((p) => p.id === place?.suggested_by);
+    const slot = row.planned_time
+      ? slotForMinute(parseClockMinutes(localTimeHHMM(new Date(row.planned_time), trip.timezone)))
+      : null;
+    return { name: place?.name ?? "a stop", by: by?.display_name ?? null, slot };
+  });
+}
+
+// Who a board is planned for. No split: everyone together, one plan, cloned
+// to each person (one shared schedule, individual claims). A split: each
+// group a time-bounded team with its own window (lib/game/split.ts).
 type Assignee = {
-  kind: "person" | "team";
+  kind: "group" | "team";
   id: string;
-  participantId: string | null;
   teamId: string | null;
   people: ParticipantRow[];
   label: string;
+  startAt: number | null;
+  endAt: number | null;
+  startNear: string | null;
+  endNear: string | null;
 };
 
-async function loadAssignees(tripId: string, people: ParticipantRow[]): Promise<Assignee[]> {
+// A day's teams: the groups of a conversational split for that trip day.
+export async function dayTeams(tripId: string, day: number): Promise<DayTeam[]> {
   const { data, error } = await getServiceClient()
     .from("teams")
-    .select("id, name, dissolved_at")
+    .select("id, name, day, starts_at, rejoin_at, rejoin_place, area, dissolved_at")
     .eq("trip_id", tripId)
+    .eq("day", day)
     .is("dissolved_at", null);
   if (error) throw error;
-  const teams = (data ?? []) as { id: string; name: string }[];
-  if (teams.length === 0) {
-    return people.map((person) => ({
-      kind: "person" as const,
-      id: person.id,
-      participantId: person.id,
-      teamId: null,
-      people: [person],
-      label: person.display_name,
-    }));
-  }
-
-  const assignees: Assignee[] = [];
+  const teams = (data ?? []) as TeamRow[];
+  const out: DayTeam[] = [];
   for (const team of teams) {
     const { data: members, error: memErr } = await getServiceClient()
       .from("team_members")
       .select("participant_id")
       .eq("team_id", team.id);
     if (memErr) throw memErr;
-    const ids = new Set(
-      (members ?? []).map((m) => (m as { participant_id: string }).participant_id),
-    );
-    assignees.push({
-      kind: "team",
+    out.push({
       id: team.id,
-      participantId: null,
-      teamId: team.id,
-      people: people.filter((p) => ids.has(p.id)),
-      label: team.name,
+      name: team.name,
+      memberIds: (members ?? []).map((m) => (m as { participant_id: string }).participant_id),
+      startsAt: team.starts_at ? parseClockMinutes(team.starts_at) : null,
+      rejoinAt: team.rejoin_at ? parseClockMinutes(team.rejoin_at) : null,
+      rejoinPlace: team.rejoin_place ?? null,
+      area: team.area ?? null,
     });
   }
-  return assignees;
+  return out;
+}
+
+async function loadAssignees(tripId: string, people: ParticipantRow[], day: number): Promise<Assignee[]> {
+  const teams = await dayTeams(tripId, day);
+  return dayGroups(people.map((p) => p.id), teams).map((g) => ({
+    kind: g.teamId ? ("team" as const) : ("group" as const),
+    id: g.key,
+    teamId: g.teamId,
+    people: people.filter((p) => g.memberIds.includes(p.id)),
+    label: g.label,
+    startAt: g.startAt,
+    endAt: g.endAt,
+    startNear: g.startNear,
+    endNear: g.endNear,
+  }));
 }
 
 export function scoreGapText(people: ParticipantRow[]): string {
@@ -225,14 +365,21 @@ export function dayWindowFor(
   people: ParticipantRow[],
   date: string,
   now: Date,
+  group: { startAt?: number | null; endAt?: number | null } = {},
 ): DayWindow {
   const timezone = trip.timezone || "UTC";
-  const pace = paceFor(
-    people.map((p) => answerValue((p.survey_json ?? {}) as SurveyAnswers, "pace")),
-  );
+  const answers = people.map((p) => (p.survey_json ?? {}) as SurveyAnswers);
+  const pace = paceFor(answers.map((a) => answerValue(a, "pace")));
   const today = localDateString(now, timezone);
   const nowMinutes = date === today ? parseClockMinutes(localTimeHHMM(now, timezone)) : null;
-  return usableWindow({ boardTime: trip.board_time, pace, nowMinutes });
+  return usableWindow({
+    boardTime: trip.board_time,
+    pace,
+    nowMinutes,
+    blackouts: groupBlackouts(answers),
+    startAt: group.startAt,
+    endAt: group.endAt,
+  });
 }
 
 // One assignee's day: ask the model for enough candidates to fill 60-70% of
@@ -249,18 +396,37 @@ async function planForAssignee(opts: {
   ratings: string;
   gap: string;
   boardTitles: string[];
-}): Promise<{ tasks: PlannedTask[]; usedFallback: boolean; window: DayWindow }> {
+  avoid: Record<string, number>;
+  suggestions: Suggestion[];
+  anchors?: Candidate[];
+  // "7 attractions": this many tasks, whatever the pace default.
+  targetCount?: number | null;
+  // Titles already on their board today, so an extension adds new ones.
+  avoidTitles?: string[];
+}): Promise<{ tasks: PlannedTask[]; anchors: PlannedTask[]; usedFallback: boolean; window: DayWindow }> {
   const { trip, assignee } = opts;
-  const window = dayWindowFor(trip, assignee.people, opts.date, opts.now);
-  const completed = await completedTitles(trip.id, assignee.people.map((p) => p.id));
+  const answers = assignee.people.map((p) => (p.survey_json ?? {}) as SurveyAnswers);
+  const window = dayWindowFor(trip, assignee.people, opts.date, opts.now, assignee);
+  const completed = [
+    ...(await completedTitles(trip.id, assignee.people.map((p) => p.id))),
+    ...(opts.avoidTitles ?? []),
+  ];
   const solo = Boolean(trip.is_solo);
-  const templates = boardTemplates({ solo });
+  const bank = boardTemplates({ solo });
+  const templates = templatesAllowedFor(bank, answers);
   const curveball = isCurveballBoard(`${trip.id}:${opts.day}:${assignee.id}`);
+  const prefs = boardPreferencesFor({
+    answers,
+    difficulty: trip.difficulty,
+    avoid: opts.avoid,
+    suggestions: opts.suggestions,
+    targetCount: opts.targetCount,
+  });
   const ctx: PrepareContext = {
     profile: opts.profile,
     solo,
     window,
-    assignees: assignee.people.map((p) => ({ answers: (p.survey_json ?? {}) as SurveyAnswers })),
+    assignees: answers.map((a) => ({ answers: a })),
     completedTitles: completed,
     expiresAt: endOfLocalDay(opts.date, trip.timezone || "UTC"),
     now: opts.now,
@@ -273,17 +439,37 @@ async function planForAssignee(opts: {
     maxTaskMinutes: maxTaskMinutes(window),
     lateStart: window.startMinutes >= 12 * 60,
   };
-  const answers = (assignee.people[0]?.survey_json ?? {}) as SurveyAnswers;
+  const interests = INTEREST_KEYS.map((key) => ({
+    key,
+    share: answers.filter((a) => interestPicksFor(a).includes(key)).length / Math.max(1, answers.length),
+  })).filter((i) => i.share > 0);
+  const avoidList = Object.entries(opts.avoid).filter(([, w]) => w < 1).map(([k]) => k);
+  const promptFields = [
+    ...new Set([
+      ...answers.flatMap((a) => Object.keys(promptPreferences(a))),
+      "sociability",
+      ...(opts.suggestions.length ? ["suggestions"] : []),
+      ...(avoidList.length ? ["avoid"] : []),
+    ]),
+  ];
+  console.info(
+    "[japlan.generate] personalization",
+    JSON.stringify({
+      tripId: trip.id,
+      assignee: assignee.label,
+      ...personalizationFor({ answers, prefs, window, offered: templates.length, total: bank.length, promptFields }),
+    }),
+  );
 
-  let pool: Candidate[] = [];
+  const proposals: ProposedTask[] = [];
   let curveballProposed = false;
   for (let round = 1; round <= 2 && window.usableMinutes > 0; round++) {
-    let proposals: ProposedTask[] = [];
+    let fresh: ProposedTask[] = [];
     try {
-      proposals = await generateTasksForAssignee({
+      fresh = await generateTasksForAssignee({
         profile: opts.profile,
         weather: opts.weather,
-        preferenceText: preferenceText(answers),
+        preferenceText: groupPreferenceText(assignee.people),
         completedTitles: completed,
         yesterdayRatings: opts.ratings,
         scoreGap: opts.gap,
@@ -293,17 +479,18 @@ async function planForAssignee(opts: {
         templates,
         plan,
         curveball,
-        count: candidatesToRequest(window),
+        count: candidatesToRequest(window, prefs.targetCount),
+        sociability: prefs.sociability,
+        interests,
+        suggestions: opts.suggestions.map((sg) => ({ name: sg.name, by: sg.by })),
+        avoid: avoidList,
       });
     } catch (err) {
       console.error("[japlan.generate] llm failed", { round, assignee: assignee.label, err });
     }
-    curveballProposed ||= proposals.some((t) => t.template === "curveball");
-    const fresh = prepareCandidates(proposals, {
-      ...ctx,
-      completedTitles: [...completed, ...pool.map((t) => t.title)],
-    });
-    pool = [...pool, ...fresh];
+    curveballProposed ||= fresh.some((t) => t.template === "curveball");
+    proposals.push(...fresh);
+    const pool = prepareCandidates(proposals, { ...ctx, onReject: undefined });
     if (dayMinutes(selectForDay(pool, window, { conflicts: boardConflict })) >= targetMinutes(window) * 0.5) break;
     console.info("[japlan.generate] regenerating; model fell short of half the day", {
       round,
@@ -312,7 +499,7 @@ async function planForAssignee(opts: {
     });
   }
 
-  // Every board template, filled a few ways (different neighborhoods,
+  // Every allowed template, filled a few ways (different neighborhoods,
   // dishes, places), so a refill can reuse a template with new slots.
   const fills = [0, 1, 2, 3].flatMap((variant) =>
     fillTemplatesDeterministically({
@@ -323,11 +510,15 @@ async function planForAssignee(opts: {
       seed: opts.day * 7 + variant * 5,
     }),
   );
-  const fallbackPool = prepareCandidates(
-    fills,
-    { ...ctx, onReject: (reason, title) => logReject(reason, title, { assignee: assignee.label, fallback: true }) },
-  );
-  const planned = planAssigneeBoard({ modelPool: pool, fallbackPool, window });
+  const near = (name: string | null) => (name ? resolvePlace(name, opts.profile)?.coords ?? null : null);
+  const planned = planFromProposals({
+    proposals,
+    fallback: fills,
+    ctx,
+    prefs,
+    anchors: opts.anchors,
+    ends: { start: near(assignee.startNear), end: near(assignee.endNear) },
+  });
   console.info("[japlan.generate] day plan", {
     tripId: trip.id,
     assignee: assignee.label,
@@ -335,8 +526,9 @@ async function planForAssignee(opts: {
     window: plan.windowText,
     usableMinutes: window.usableMinutes,
     targetMinutes: plan.targetMinutes,
-    plannedMinutes: dayMinutes(planned.tasks),
+    plannedMinutes: dayMinutes([...planned.tasks, ...planned.anchors]),
     tasks: planned.tasks.map((t) => ({ title: t.title, minutes: t.minutes, slot: t.slot, template: t.template })),
+    anchors: planned.anchors.map((a) => a.title),
     usedFallback: planned.usedFallback,
     curveball: !curveball
       ? "none"
@@ -403,19 +595,50 @@ export async function generateValidatedBoard(opts: {
   date?: string;
   // Codes already taken today by tasks that must survive (claimed ones).
   reservedCodes?: ExistingDayCode[];
-}): Promise<{ tasks: ProposedTask[]; usedFallback: boolean; day: number }> {
+}): Promise<{
+  tasks: ProposedTask[];
+  usedFallback: boolean;
+  day: number;
+  anchors: { itineraryId: string; slot: DaySlot }[];
+}> {
   const now = opts.now ?? new Date();
   const date = opts.date ?? localDateString(now, opts.trip.timezone || "UTC");
   const day = tripDayOn(opts.trip, date, now);
   const expiresAt = endOfLocalDay(date, opts.trip.timezone || "UTC");
-  const assignees = await loadAssignees(opts.trip.id, opts.people);
-  const ratings = await yesterdayRatings(opts.trip.id);
+  const assignees = await loadAssignees(opts.trip.id, opts.people, day);
+  const ratings = await yesterdayRatings(opts.people);
   const gap = scoreGapText(opts.people);
   const boardTitles = await tripBoardTitles(opts.trip.id);
+  const avoid = await tripAvoidWeights(opts.trip, opts.people);
+  const suggestions = await tripSuggestions(opts.trip.id, opts.people);
+  // The day's anchors (places people asked for, put on this day) ride on
+  // the together plan, else the first group's.
+  const anchorRows = await dayAnchorRows(opts.trip.id, day);
+  const anchorOwner =
+    assignees.find((a) => a.id === "together:after") ??
+    assignees.find((a) => a.kind === "group") ??
+    assignees[0];
+  const anchorFor = new Map<Candidate, string>();
+  const anchorCandidates: Candidate[] = [];
+  for (const row of anchorRows) {
+    const s = suggestions.find((sg) => sg.placeId === row.place_id);
+    if (!s) continue;
+    const c = anchorCandidate({
+      name: s.name,
+      coords: s.coords,
+      category: s.category,
+      by: s.by,
+      neighborhood: s.coords ? resolvePlace(s.name, opts.profile)?.neighborhood ?? null : null,
+    });
+    anchorFor.set(c, row.id);
+    anchorCandidates.push(c);
+  }
 
   let kept: (PlannedTask & { participantId: string | null; teamId: string | null })[] = [];
+  const anchors: { itineraryId: string; slot: DaySlot }[] = [];
   let usedFallback = false;
   for (const assignee of assignees) {
+    if (assignee.people.length === 0) continue;
     const planned = await planForAssignee({
       trip: opts.trip,
       assignee,
@@ -427,15 +650,25 @@ export async function generateValidatedBoard(opts: {
       ratings,
       gap,
       boardTitles,
+      avoid,
+      suggestions,
+      anchors: assignee === anchorOwner ? anchorCandidates : [],
     });
     usedFallback ||= planned.usedFallback;
-    kept.push(
-      ...planned.tasks.map((task) => ({
-        ...task,
-        participantId: assignee.participantId,
-        teamId: assignee.teamId,
-      })),
-    );
+    for (const a of planned.anchors) {
+      const source = anchorCandidates.find((c) => c.title === a.title);
+      const id = source ? anchorFor.get(source) : undefined;
+      if (id) anchors.push({ itineraryId: id, slot: a.slot });
+    }
+    if (assignee.teamId) {
+      kept.push(...planned.tasks.map((task) => ({ ...task, participantId: null, teamId: assignee.teamId })));
+    } else {
+      // Together: one plan, a copy per person. Same schedule, same codes,
+      // each claimed and scored individually.
+      for (const person of assignee.people) {
+        kept.push(...planned.tasks.map((task) => ({ ...task, participantId: person.id, teamId: null })));
+      }
+    }
   }
 
   const trailer = trailingPlayer(opts.people);
@@ -496,7 +729,7 @@ export async function generateValidatedBoard(opts: {
     teamMembers,
     existing: opts.reservedCodes,
   });
-  return { tasks: coded, usedFallback, day };
+  return { tasks: coded, usedFallback, day, anchors };
 }
 
 const PARTICIPANT_COLS =
@@ -506,9 +739,17 @@ const PARTICIPANT_COLS =
 // Someone mid-survey (a late joiner, say) is left off rather than given tasks
 // that might clash with answers they have not given yet. Null survey_state is
 // a participant from before surveys existed, treated as known.
-export function constraintsKnown(person: Pick<ParticipantRow, "survey_state">): boolean {
+export function constraintsKnown(
+  person: Pick<ParticipantRow, "survey_state"> & { survey_json?: SurveyAnswers | null },
+): boolean {
   const state = person.survey_state;
-  return !state || state === "done";
+  if (!state || state === "done") return true;
+  // Answering the sidequest question, after the survey: constraints known.
+  if (isSidequestQuestion(state)) return true;
+  // Mid-resurvey: the hard constraints were answered the first time and are
+  // kept until replaced, so their boards keep coming.
+  const answers = person.survey_json ?? {};
+  return ["dietary", "mobility", "budget"].every((id) => answers[id as keyof SurveyAnswers] !== undefined);
 }
 
 async function tripPeople(tripId: string): Promise<ParticipantRow[]> {
@@ -575,7 +816,10 @@ export async function buildBoardForDate(
   const weather = await weatherFor(profile, opts.date, timezone);
   const day = tripDayOn(trip, opts.date, now);
   const claimedOnDay = await claimedTasksOnDay(trip.id, day);
-  const eligible = people.filter(constraintsKnown);
+  // Under 18 is out for v1 (PLAN's 18+ gate); unknown constraints wait.
+  const eligible = people.filter(
+    (p) => constraintsKnown(p) && !isUnderAge((p.survey_json ?? {}) as SurveyAnswers),
+  );
   if (eligible.length < people.length) {
     console.info("[japlan.generate] skipped people with unknown constraints", {
       tripId: trip.id,
@@ -584,7 +828,7 @@ export async function buildBoardForDate(
     });
   }
 
-  const { tasks, usedFallback } = await generateValidatedBoard({
+  const { tasks, usedFallback, anchors } = await generateValidatedBoard({
     trip,
     people: eligible,
     profile,
@@ -614,6 +858,15 @@ export async function buildBoardForDate(
     const { error } = await getServiceClient().from("tasks").upsert(rows, {
       onConflict: TASK_CODE_CONFLICT,
     });
+    if (error) throw error;
+  }
+  // Anchors keep the time of day they were planned into.
+  const SLOT_TIME: Record<DaySlot, string> = { morning: "10:00", afternoon: "14:30", evening: "19:00" };
+  for (const a of anchors) {
+    const { error } = await getServiceClient()
+      .from("itinerary")
+      .update({ planned_time: zonedTimeToUtc(opts.date, SLOT_TIME[a.slot], timezone).toISOString() })
+      .eq("id", a.itineraryId);
     if (error) throw error;
   }
   console.info("[japlan.generate] board built", {
@@ -840,9 +1093,15 @@ async function dayHasClaims(tripId: string, day: number): Promise<boolean> {
 }
 
 export async function deleteUnclaimedTasksForDay(tripId: string, day: number): Promise<void> {
-  const claimed = new Set((await claimedTasksOnDay(tripId, day)).map((c) => c.code));
+  // By owner and code: codes repeat per owner, so one person's claimed A1
+  // must not keep everyone else's unclaimed A1.
+  const claimed = new Set(
+    (await claimedTasksOnDay(tripId, day)).map((c) => ownerCodeKey(c.code, c.participantId, c.teamId)),
+  );
   const tasks = await tasksForDay(tripId, day);
-  const drop = tasks.filter((t) => !claimed.has(t.code)).map((t) => t.id);
+  const drop = tasks
+    .filter((t) => !claimed.has(ownerCodeKey(t.code, t.participant_id, t.team_id)))
+    .map((t) => t.id);
   if (drop.length === 0) return;
   const { error } = await getServiceClient().from("tasks").delete().in("id", drop);
   if (error) throw error;
@@ -1053,7 +1312,10 @@ async function deliverMorningBoards(opts: {
   weatherLine: string | null;
   // participant id -> codes whose pending peer claim lapsed overnight
   lapsed?: Map<string, string[]>;
+  // false: a re-plan mid-day (a split), not a morning: no standings post.
+  standings?: boolean;
 }): Promise<void> {
+  const anchors = await dayAnchorsForBoard(opts.trip, opts.day);
   const byPerson = new Map<string, Omit<TaskRow, "id">[]>();
   for (const person of opts.people) {
     byPerson.set(person.id, []);
@@ -1102,6 +1364,7 @@ async function deliverMorningBoards(opts: {
         formatPersonalBoard({
           day: opts.day,
           weatherLine: opts.weatherLine,
+          anchors,
           tasks: tasks.map((row) => ({
             code: row.code,
             title: row.title,
@@ -1125,7 +1388,7 @@ async function deliverMorningBoards(opts: {
 
   // A solo trip's chat IS the player's DM, which just got their board: a
   // one-person standings post would be a second message saying nothing.
-  if (opts.trip.is_solo) return;
+  if (opts.trip.is_solo || opts.standings === false) return;
   const standings = formatMorningStandings({
     day: opts.day,
     weatherLine: opts.weatherLine,
@@ -1148,6 +1411,11 @@ export async function refillPersonalTasksIfNeeded(opts: {
   // Which trip-local date to add tasks to. Default today. Used for someone
   // who joined after that day's board was made.
   date?: string;
+  // Asked for a number of tasks: plan exactly that many new ones (or what
+  // fits), around the tasks they still have open.
+  targetCount?: number | null;
+  keep?: TaskRow[];
+  now?: Date;
 }): Promise<Omit<TaskRow, "id">[]> {
   if (opts.remainingOpenPersonal > 0) return [];
 
@@ -1169,7 +1437,7 @@ export async function refillPersonalTasksIfNeeded(opts: {
     return [];
   }
 
-  const now = new Date();
+  const now = opts.now ?? new Date();
   const timezone = opts.trip.timezone || "UTC";
   const today = opts.date ?? localDateString(now, timezone);
   const day = opts.date ? tripDayOn(opts.trip, opts.date, now) : currentTripDay(opts.trip, now);
@@ -1192,16 +1460,21 @@ export async function refillPersonalTasksIfNeeded(opts: {
     }
   }
 
-  const ratings = await yesterdayRatings(opts.trip.id);
+  const ratings = await yesterdayRatings(people);
   const gap = scoreGapText(people);
   const boardTitles = await tripBoardTitles(opts.trip.id);
+  const avoid = await tripAvoidWeights(opts.trip, people);
+  const suggestions = await tripSuggestions(opts.trip.id, people);
   const assignee: Assignee = {
-    kind: "person",
+    kind: "group",
     id: opts.claimant.id,
-    participantId: opts.claimant.id,
     teamId: null,
     people: [opts.claimant],
     label: opts.claimant.display_name,
+    startAt: null,
+    endAt: null,
+    startNear: null,
+    endNear: null,
   };
   // Same planner as the morning board, over whatever is left of that day.
   const planned = await planForAssignee({
@@ -1215,6 +1488,21 @@ export async function refillPersonalTasksIfNeeded(opts: {
     ratings,
     gap,
     boardTitles,
+    avoid,
+    suggestions,
+    targetCount: opts.targetCount,
+    avoidTitles: (opts.keep ?? []).map((t) => t.title),
+    // Open tasks they keep take their time in the day, as fixed stops.
+    anchors: (opts.keep ?? []).map((t) => ({
+      ...anchorCandidate({
+        name: t.title,
+        coords: t.neighborhood ? resolvePlace(t.neighborhood, profile)?.coords ?? null : null,
+        category: null,
+        by: null,
+        neighborhood: t.neighborhood,
+      }),
+      minutes: t.duration_minutes ?? 60,
+    })),
   });
   const expiresAt = endOfLocalDay(today, timezone);
   const kept = planned.tasks.map((task) => ({
@@ -1347,4 +1635,111 @@ export async function runDailyBoards(opts: {
     }
   }
   return { ran, skipped };
+}
+
+// A split or a regroup re-plans the rest of that day: unclaimed tasks go,
+// claimed ones stand, and each person gets their new board by DM (their
+// group's, plus the together part after everyone rejoins). Only when that
+// day's board exists already; otherwise the split shapes it when it is made.
+export async function replanDay(trip: TripRow, date: string, now: Date): Promise<boolean> {
+  const day = tripDayOn(trip, date, now);
+  const board = await getBoard(trip.id, day);
+  if (!board || board.status !== "ready") return false;
+  await deleteUnclaimedTasksForDay(trip.id, day);
+  const built = await buildBoardForDate(trip, { date, now });
+  await deliverMorningBoards({
+    trip,
+    people: built.people,
+    rows: built.rows,
+    day,
+    weatherLine: built.weatherLine,
+    standings: false,
+  });
+  console.info("[japlan.split] replanned", { tripId: trip.id, day, rows: built.rows.length });
+  return true;
+}
+
+// "I want 7 attractions": that many tasks on their board for the day, or as
+// many as fit in what is left of it. Pace only sets the default; asking for
+// more is a request, not something to refuse. Returns what they have now and
+// the day's usable time left, so the reply can say the real tradeoff.
+export async function extendPersonalBoard(opts: {
+  trip: TripRow;
+  claimant: ParticipantRow;
+  want: number;
+  date: string;
+  now: Date;
+}): Promise<{ added: Omit<TaskRow, "id">[]; board: TaskRow[]; minutesLeft: number; day: number }> {
+  const day = tripDayOn(opts.trip, opts.date, opts.now);
+  const mine = async () => {
+    const [tasks, membership] = await Promise.all([
+      tasksForDay(opts.trip.id, day),
+      getServiceClient().from("team_members").select("team_id").eq("participant_id", opts.claimant.id),
+    ]);
+    if (membership.error) throw membership.error;
+    const teams = (membership.data ?? []).map((m) => (m as { team_id: string }).team_id);
+    return tasks.filter(
+      (t) => t.participant_id === opts.claimant.id || (t.team_id && teams.includes(t.team_id)) || (!t.participant_id && !t.team_id),
+    );
+  };
+  const before = await mine();
+  const claimedIds = new Set(
+    ((await getServiceClient().from("claims").select("task_id").in("task_id", before.length ? before.map((t) => t.id) : ["-"])).data ?? []).map(
+      (c) => (c as { task_id: string }).task_id,
+    ),
+  );
+  const open = before.filter((t) => !claimedIds.has(t.id));
+  const window = dayWindowFor(opts.trip, [opts.claimant], opts.date, opts.now);
+  const busy = open.reduce((sum, t) => sum + (t.duration_minutes ?? 60), 0);
+  const need = opts.want - before.length;
+  const added =
+    need > 0
+      ? await refillPersonalTasksIfNeeded({
+          trip: opts.trip,
+          claimant: opts.claimant,
+          people: [],
+          remainingOpenPersonal: 0,
+          deliver: false,
+          date: opts.date,
+          targetCount: need,
+          keep: open,
+          now: opts.now,
+        })
+      : [];
+  const board = await mine();
+  const addedMinutes = added.reduce((sum, t) => sum + (t.duration_minutes ?? 60), 0);
+  return { added, board, minutesLeft: Math.max(0, window.usableMinutes - busy - addedMinutes), day };
+}
+
+// After someone changes their settings and says yes to a new board: their
+// unclaimed personal tasks for today go, and a new set is planned from their
+// answers as they are now. Claimed tasks stand; nobody else's board changes.
+export async function redoMyDay(opts: {
+  trip: TripRow;
+  claimant: ParticipantRow;
+  now: Date;
+}): Promise<{ rows: Omit<TaskRow, "id">[]; day: number }> {
+  const date = localDateString(opts.now, opts.trip.timezone || "UTC");
+  const day = tripDayOn(opts.trip, date, opts.now);
+  const tasks = (await tasksForDay(opts.trip.id, day)).filter((t) => t.participant_id === opts.claimant.id);
+  const claims = tasks.length
+    ? await getServiceClient().from("claims").select("task_id").in("task_id", tasks.map((t) => t.id))
+    : { data: [], error: null };
+  if (claims.error) throw claims.error;
+  const claimed = new Set((claims.data ?? []).map((c) => (c as { task_id: string }).task_id));
+  const drop = tasks.filter((t) => !claimed.has(t.id)).map((t) => t.id);
+  if (drop.length > 0) {
+    const { error } = await getServiceClient().from("tasks").delete().in("id", drop);
+    if (error) throw error;
+  }
+  const rows = await refillPersonalTasksIfNeeded({
+    trip: opts.trip,
+    claimant: opts.claimant,
+    people: [],
+    remainingOpenPersonal: 0,
+    deliver: false,
+    date,
+    now: opts.now,
+  });
+  return { rows, day };
 }

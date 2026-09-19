@@ -11,7 +11,7 @@ import {
   tripDayForDate,
 } from "./board-schedule";
 import { detectBoardTimeCommand } from "./commands";
-import { QUESTIONS, QUESTION_ORDER } from "./survey-questions";
+import { QUESTIONS, QUESTION_ORDER, SURVEY_INTRO } from "./survey-questions";
 import { GROUP_INTRO, SETUP_COMPLETE, SURVEY_DONE_DM, setupPrompt } from "./copy";
 import { GROUP_ONLY_QUESTIONS, applyReply, startSurvey } from "./survey";
 import { nextSetupQuestion } from "./setup";
@@ -189,17 +189,18 @@ describe("solo trips skip group-only questions", () => {
     return seen;
   }
 
-  it("never asks the social graph or competitiveness solo", () => {
+  it("never asks about splitting up solo", () => {
     const solo = walk(true);
     for (const id of GROUP_ONLY_QUESTIONS) expect(solo).not.toContain(id);
     // Hard constraints and preferences still asked.
-    for (const id of ["dietary", "mobility", "budget", "pace", "chaos"]) expect(solo).toContain(id);
+    for (const id of ["ab_food_outdoors", "ab_pace", "budget_band", "hard_constraints", "must_have"]) expect(solo).toContain(id);
   });
 
-  it("still asks them in a group", () => {
+  it("asks it in a group, and none of the old twenty questions", () => {
     const group = walk(false);
-    for (const id of ["social_with", "social_travelled", "social_couples", "competitiveness"]) {
-      expect(group).toContain(id);
+    expect(group).toContain("splitting");
+    for (const id of ["first_name", "dietary", "mobility", "chaos", "sociability", "social_travelled", "competitiveness"]) {
+      expect(group).not.toContain(id);
     }
   });
 
@@ -221,9 +222,9 @@ describe("survey and setup copy", () => {
     }
   });
 
-  it("mentions skip once, in the first question only", () => {
-    expect(QUESTIONS[QUESTION_ORDER[0]].prompt).toMatch(/skip/);
-    for (const text of prompts.slice(1)) expect(text).not.toMatch(/skip/i);
+  it("mentions skip once, in the intro only", () => {
+    expect(SURVEY_INTRO).toMatch(/say skip whenever/);
+    for (const text of prompts) expect(text).not.toMatch(/skip/i);
   });
 
   it("follows the house style", () => {
@@ -238,12 +239,13 @@ describe("survey and setup copy", () => {
   it("shows choice labels people can type back", () => {
     for (const id of QUESTION_ORDER) {
       const question = QUESTIONS[id];
-      if (question.kind !== "choice") continue;
+      // Follow-ups take any words; only the main choices list options.
+      if (question.kind !== "choice" || id.startsWith("fu_")) continue;
       for (const choice of question.choices ?? []) {
         expect(question.prompt, `${id}: ${choice.label}`).toContain(choice.label);
       }
     }
     // Internal ids never leak into what people read.
-    expect(prompts.join(" ")).not.toMatch(/_/);
+    expect(prompts.join(" ")).not.toMatch(/[a-z]_[a-z]/);
   });
 });

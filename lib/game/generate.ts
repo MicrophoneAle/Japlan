@@ -245,6 +245,15 @@ export type GenerationInput = {
   plan?: GenerationPlan;
   // One board in four also gets one task that fits no template.
   curveball?: boolean;
+  // The group's answers that shape the board. Sociability is enforced in
+  // code too (validate.ts, selection); the prompt only saves wasted
+  // proposals.
+  sociability?: "love_it" | "small_doses" | "rather_not";
+  interests?: { key: string; share: number }[];
+  // Places people asked for, with who asked.
+  suggestions?: { name: string; by: string | null }[];
+  // Categories the group asked to avoid.
+  avoid?: string[];
 };
 
 // Boldness is the highest-weighted axis and the one that makes a story, so
@@ -265,6 +274,22 @@ export const TASK_QUALITY_GUIDANCE = [
   "Safe, legal, nothing permanent, no bookings. Rate axes honestly; make the tasks bolder, do not inflate the numbers.",
 ].join(" ");
 
+// For a board where someone said "rather not" to strangers: the same push
+// for boldness, through places and solo acts instead of people.
+export const NO_STRANGERS_GUIDANCE = [
+  "What makes this game: a story afterwards. Boldness, scarcity and being specific to this place earn the points; length, effort and prettiness barely do.",
+  "Nobody on this board wants to talk to strangers. No task may involve approaching, asking, complimenting or ordering through a stranger, staff or a local (involves_stranger: false on every task).",
+  "Boldness still matters: get it from going somewhere odd, off the tourist map, or doing something unusual alone.",
+  "A task completable without going somewhere unusual or doing something slightly out of your comfort zone is a weak task. \"Go look at X\" is the weakest possible archetype. Avoid both.",
+  "No two tasks on the board share a location, and no two use the same template.",
+  "Safe, legal, nothing permanent, no bookings. Rate axes honestly.",
+].join(" ");
+
+function sociabilityLine(s: GenerationInput["sociability"]): string | null {
+  if (s === "small_doses") return "Talking to strangers is fine in small doses here: exactly one task involves a stranger, no more.";
+  return null;
+}
+
 export const CURVEBALL_GUIDANCE = [
   `Exactly one task uses template "${CURVEBALL}": invent it, fitting no template in the bank.`,
   "Make it specific and strange, something that only makes sense in this city and that a local would find funny. No template could have produced it.",
@@ -272,7 +297,7 @@ export const CURVEBALL_GUIDANCE = [
 ].join(" ");
 
 function templateLine(t: TaskTemplate): string {
-  const tags = [t.kind, t.duration, t.stranger ? "stranger" : null, t.lookOnly ? "weak" : null]
+  const tags = [t.kind, t.duration, t.needs_stranger ? "stranger" : null, t.lookOnly ? "weak" : null]
     .filter(Boolean)
     .join(", ");
   return `- ${t.id} (${tags}): ${t.archetype} [${t.verification}, indoor=${t.indoor}]`;
@@ -316,8 +341,24 @@ export function buildGenerationPrompt(input: GenerationInput): string {
     `Score gap: ${input.scoreGap}`,
     ...timing,
     `Template bank (build each task from one, and say which in template):\n${bank.map(templateLine).join("\n")}`,
-    TASK_QUALITY_GUIDANCE,
+    input.sociability === "rather_not" ? NO_STRANGERS_GUIDANCE : TASK_QUALITY_GUIDANCE,
+    ...(sociabilityLine(input.sociability) ? [sociabilityLine(input.sociability) as string] : []),
     `At least ${bold} of the ${count} tasks must honestly rate boldness 3 or more.`,
+    ...(input.interests?.length
+      ? [
+          `What this group picked as its top interests (lean the board toward these): ${input.interests
+            .map((i) => `${i.key} (${Math.round(i.share * 100)}%)`)
+            .join(", ")}.`,
+        ]
+      : []),
+    ...(input.suggestions?.length
+      ? [
+          `Places people in the group asked for: build tasks at or near these first: ${input.suggestions
+            .map((sg) => (sg.by ? `${sg.name} (${sg.by})` : sg.name))
+            .join("; ")}.`,
+        ]
+      : []),
+    ...(input.avoid?.length ? [`The group asked to avoid: ${input.avoid.join(", ")}.`] : []),
     ...(input.curveball ? [CURVEBALL_GUIDANCE] : []),
     "title: the full instruction as the player reads it, lowercase, one short sentence (\"ask a stranger in koenji for their single best recommendation, then actually do it\"), not a headline.",
     "places: the specific spots the task happens at, named as in the neighborhoods or landmarks above where possible; a route task names its start then its end; a task that can happen anywhere has none.",
@@ -467,6 +508,11 @@ export function slotValuesFor(
       case "amount":
         values[slot.key] = localAmount(profile.destination);
         break;
+      case "museum":
+        values[slot.key] =
+          profile.landmarks.find((l) => /museum|gallery/i.test(l.category ?? ""))?.name ??
+          "the nearest museum";
+        break;
     }
   }
   return values;
@@ -496,7 +542,7 @@ function fromTemplate(
     neighborhood: values.neighborhood ?? fallbackNeighborhood,
     kind: template.kind,
     template: template.id,
-    stranger: template.stranger,
+    stranger: template.needs_stranger,
     ...(template.when ? { when: template.when } : {}),
     ...templatePlaces(values),
   };
@@ -563,7 +609,7 @@ export function fillTemplatesDeterministically(opts: {
   const source = pool.length > 0 ? pool : bank;
   const start = opts.seed ?? 0;
   const rotated = source.map((_, i) => source[(start + i) % source.length]);
-  const rank = (t: TaskTemplate) => (t.lookOnly ? 2 : t.stranger ? 0 : 1);
+  const rank = (t: TaskTemplate) => (t.lookOnly ? 2 : t.needs_stranger ? 0 : 1);
   const ordered = rotated
     .map((t, i) => ({ t, i }))
     .sort((a, b) => rank(a.t) - rank(b.t) || a.i - b.i)

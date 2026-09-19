@@ -38,6 +38,8 @@ create table trips (
   -- Local HH:MM the daily board posts.
   board_time text not null default '08:00'
     constraint trips_board_time_format check (board_time ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'),
+  -- Categories the group asked to avoid ("no temples"): category -> weight.
+  category_weights jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now()
 );
 
@@ -72,7 +74,13 @@ create table teams (
   name text not null,
   color text not null,
   formed_at timestamptz not null,
-  dissolved_at timestamptz
+  dissolved_at timestamptz,
+  -- A conversational split: trip day, own start, area, rejoin time and place.
+  day integer,
+  starts_at text,
+  rejoin_at text,
+  rejoin_place text,
+  area text
 );
 
 create table team_members (
@@ -96,6 +104,8 @@ create table places (
   hours_json jsonb,
   price_band integer,
   score numeric,
+  -- source 'suggestion': the words used ("a jazz bar in golden gai").
+  note text,
   created_at timestamptz not null default now(),
   unique (trip_id, fsq_place_id)
 );

@@ -183,19 +183,21 @@ describe("photo sent alone after claiming", () => {
     expect(h.sent.at(-1)?.text).toBe("📸 A1 · +3 bonus · 11");
   });
 
-  it("stays silent for a bare photo with no open claim", async () => {
+  it("stays silent for a bare photo that matches no open task", async () => {
+    // A bare group photo may be checked against open tasks (a way into the
+    // conversation), but a miss is silence, not a reply.
+    h.vision.mockResolvedValue(verdict(false, 0));
     await dispatchLinqEvent(message([photoPart]));
     expect(h.sent).toEqual([]);
-    expect(h.vision).not.toHaveBeenCalled();
   });
 
   it("stays silent once the bonus window has closed", async () => {
     await dispatchLinqEvent(message([text("A1")]));
     h.sent.length = 0;
     vi.setSystemTime(new Date(NOON_JST.getTime() + 3 * 60 * 60 * 1000));
+    h.vision.mockResolvedValue(verdict(false, 0));
     await dispatchLinqEvent(message([photoPart]));
     expect(h.sent).toEqual([]);
-    expect(h.vision).not.toHaveBeenCalled();
   });
 
   it("answers when the photo does not show the task", async () => {

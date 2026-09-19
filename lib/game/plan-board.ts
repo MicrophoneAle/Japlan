@@ -7,6 +7,7 @@ import {
   type LatLng,
 } from "./duration";
 import {
+  allOneKind,
   dayMinutes,
   FILL_LOW,
   MAX_MAIN_TASKS,
@@ -15,15 +16,32 @@ import {
   selectForDay,
   type DaySlot,
   type DayWindow,
+  type RouteEnds,
 } from "./day-plan";
-import { templateById } from "./templates";
+import { boldTasksWanted } from "./generate";
+import {
+  boldnessFit,
+  boldnessTarget,
+  categoriesOf,
+  groupSociability,
+  interestWeights,
+  strangerLimits,
+  type Sociability,
+} from "./preferences";
+import type { SurveyAnswers } from "./survey";
+import { tasksPerDayOf } from "./settings";
+import { dietClashes, parseDiet, type DietKey } from "./diet";
+import { templateById, type InterestKey, type TaskTemplate } from "./templates";
 import {
   CURVEBALL,
   enforceBoardMix,
+  involvesStranger,
   normalizeTitle,
   validateGeneratedTask,
   type AssigneeConstraints,
   type ProposedTask,
+  type TaskKind,
+  type TemplateFacts,
 } from "./validate";
 
 // From proposals to a planned day, in code: validate, place, time, pick,
@@ -90,6 +108,14 @@ export type Candidate = ProposedTask & {
   minutes: number;
   coords: LatLng | null;
   stranger: boolean;
+  // Survey interests it serves (the template's, or guessed from a
+  // curveball's kind) and the avoidable categories it falls in.
+  interests: InterestKey[];
+  categories: string[];
+  // Someone in the group asked for this place: shown as "+ teamLab, dev's
+  // pick" on the board. Set for anchors and tasks at a suggested place.
+  suggestedBy?: string | null;
+  anchor?: boolean;
   // Resolved profile neighborhood, or null when the task can be anywhere.
   resolvedNeighborhood: string | null;
   // True when the model's time axis was overruled by the estimate.
@@ -148,6 +174,7 @@ export function prepareCandidates(proposals: ProposedTask[], ctx: PrepareContext
       completedTitles: ctx.completedTitles,
       expiresAt: ctx.expiresAt,
       now: ctx.now,
+      template: template ? templateFacts(template) : null,
     });
     if (reason) {
       reject(reason, task.title);
@@ -207,7 +234,9 @@ export function prepareCandidates(proposals: ProposedTask[], ctx: PrepareContext
       ...task,
       axes,
       kind: template?.kind ?? task.kind,
-      stranger: template ? template.stranger : Boolean(task.stranger),
+      stranger: involvesStranger(task, template ? templateFacts(template) : null),
+      interests: template?.interests ?? interestsForKind(task.kind),
+      categories: categoriesOf(task.title, first?.category ?? null),
       ...(when ? { when } : {}),
       source: curveball ? "curveball" : (task.source ?? "generated"),
       place: first?.name ?? task.place,
@@ -220,48 +249,326 @@ export function prepareCandidates(proposals: ProposedTask[], ctx: PrepareContext
   return out;
 }
 
+export function templateFacts(template: TaskTemplate): TemplateFacts {
+  return {
+    needs_stranger: template.needs_stranger,
+    blind_food: template.blind_food,
+    alcohol: template.alcohol,
+    kind: template.kind,
+    typical_cost: template.typical_cost,
+    physicalMin: template.axes.physical.min,
+  };
+}
+
+// A curveball has no template tags; its kind is the best guess.
+function interestsForKind(kind: TaskKind | undefined): InterestKey[] {
+  switch (kind) {
+    case "food":
+      return ["food"];
+    case "culture":
+      return ["museums", "architecture"];
+    case "explore":
+      return ["weird", "nature"];
+    case "creative":
+      return ["shopping", "weird"];
+    case "challenge":
+      return ["nature"];
+    default:
+      return ["weird"];
+  }
+}
+
 // Two tasks that cannot share a board: the same place, the same template, or
-// two curveballs.
-export function boardConflict(a: ProposedTask, b: ProposedTask): boolean {
+// two curveballs. Anchors (places the group asked for) conflict with nothing.
+export function boardConflict(a: Partial<Candidate> & ProposedTask, b: Partial<Candidate> & ProposedTask): boolean {
+  if (a.anchor || b.anchor) return false;
   return enforceBoardMix([a, b], { oneKind: false }).kept.length < 2;
 }
 
+// A place someone in the group asked for ("we should go to teamLab").
+export type Suggestion = {
+  name: string;
+  coords: LatLng | null;
+  // Display name of who asked, for the board's "dev's pick".
+  by: string | null;
+};
+
+// Everything about the people on a board that shapes it, beyond the per-task
+// filters in validate.ts. Built once per board by boardPreferencesFor.
+export type BoardPreferences = {
+  sociability: Sociability;
+  minStranger: number;
+  maxStranger: number;
+  interestWeights: Record<InterestKey, number>;
+  boldnessTarget: number;
+  minBold: number;
+  // category -> multiplier below 1 ("we don't want to do temples").
+  avoid: Record<string, number>;
+  suggestions: Suggestion[];
+  // A requested task count (tasks_per_day, or "7 attractions today").
+  targetCount: number | null;
+  // Diet preferences (not hard rules): food that clashes is less preferred.
+  softDiet: DietKey[];
+};
+
+export function boardPreferencesFor(opts: {
+  answers: SurveyAnswers[];
+  difficulty: string | null | undefined;
+  avoid?: Record<string, number>;
+  suggestions?: Suggestion[];
+  targetCount?: number | null;
+}): BoardPreferences {
+  const sociability = groupSociability(opts.answers);
+  // More is a request anyone on the board can make: the largest one wins.
+  const asked = opts.answers.map(tasksPerDayOf).filter((n): n is number => n !== null);
+  const limits = strangerLimits(sociability);
+  return {
+    sociability,
+    minStranger: limits.min,
+    maxStranger: limits.max,
+    interestWeights: interestWeights(opts.answers),
+    boldnessTarget: boldnessTarget(opts.difficulty, opts.answers),
+    // Same count the prompt asks for, now enforced: chill still gets one.
+    minBold: boldTasksWanted(opts.difficulty, 3),
+    avoid: opts.avoid ?? {},
+    suggestions: opts.suggestions ?? [],
+    targetCount: opts.targetCount ?? (asked.length ? Math.max(...asked) : null),
+    softDiet: [
+      ...new Set(
+        opts.answers
+          .filter((a) => a.dietary_strictness?.value === "preference")
+          .flatMap((a) => parseDiet(a.dietary_detail?.value).keys),
+      ),
+    ],
+  };
+}
+
+export const NEUTRAL_PREFERENCES: BoardPreferences = boardPreferencesFor({
+  answers: [{ sociability: { value: "love_it" } }],
+  difficulty: null,
+});
+
+const SUGGESTION_KM = 0.6;
+
+// The suggestion a task goes to, if any: within 600 m, or naming it.
+export function suggestionFor(task: Pick<Candidate, "title" | "coords">, suggestions: Suggestion[]): Suggestion | null {
+  const title = norm(task.title);
+  return (
+    suggestions.find(
+      (s) =>
+        (s.coords && task.coords && haversineKm(s.coords, task.coords) <= SUGGESTION_KM) ||
+        (norm(s.name).length > 3 && title.includes(norm(s.name))),
+    ) ?? null
+  );
+}
+
+// How much a board wants a task: what the people on it are into, how close
+// it sits to the board's boldness target, whether someone asked for the
+// place, and whether the group asked to avoid its category.
+export function taskPriority(task: Candidate, prefs: BoardPreferences): number {
+  const interest = task.interests.length
+    ? Math.max(...task.interests.map((k) => prefs.interestWeights[k] ?? 1))
+    : 1;
+  const avoid = task.categories.reduce((f, c) => f * (prefs.avoid[c] ?? 1), 1);
+  const suggested = suggestionFor(task, prefs.suggestions) ? 2.5 : 1;
+  const diet = dietClashes(task.title, prefs.softDiet).length > 0 ? 0.4 : 1;
+  return interest * boldnessFit(task.axes.boldness, prefs.boldnessTarget) * suggested * avoid * diet;
+}
+
 // Preference order within a pool: the curveball first (the point of
-// generating one is to see if it lands), then bolder tasks.
-function preferred(pool: Candidate[]): Candidate[] {
+// generating one is to see if it lands), then by taskPriority.
+function preferred(pool: Candidate[], prefs: BoardPreferences): Candidate[] {
   return pool
-    .map((t, i) => ({ t, i }))
+    .map((t, i) => ({ t, i, p: taskPriority(t, prefs) }))
     .sort(
       (a, b) =>
         Number(b.t.template === CURVEBALL) - Number(a.t.template === CURVEBALL) ||
-        b.t.axes.boldness - a.t.axes.boldness ||
+        b.p - a.p ||
         a.i - b.i,
     )
     .map(({ t }) => t);
 }
 
 // The day's main tasks: the model's first, topped up from templates when the
-// model fell short of 60% of the day, gave no stranger task, or its curveball
-// failed validation. Then ordered along a route and labelled by time of day.
+// model fell short of 60% of the day, missed a hard limit (stranger count,
+// bold count), or its curveball failed validation. Places the group asked for
+// ride along as anchors. Then ordered along a route, labelled by time of day.
 export function planAssigneeBoard(opts: {
   modelPool: Candidate[];
   fallbackPool: Candidate[];
   window: DayWindow;
-}): { tasks: PlannedTask[]; usedFallback: boolean } {
-  const modelPool = preferred(opts.modelPool);
-  const conflicts = boardConflict;
-  let chosen = selectForDay(modelPool, opts.window, { conflicts });
-  const short =
-    dayMinutes(chosen) < opts.window.usableMinutes * FILL_LOW && chosen.length < MAX_MAIN_TASKS;
-  const noStranger = !chosen.some((t) => t.stranger);
+  prefs?: BoardPreferences;
+  anchors?: Candidate[];
+  ends?: RouteEnds;
+}): { tasks: PlannedTask[]; anchors: PlannedTask[]; usedFallback: boolean } {
+  const prefs = opts.prefs ?? NEUTRAL_PREFERENCES;
+  const limits = {
+    conflicts: boardConflict,
+    minStranger: prefs.minStranger,
+    maxStranger: prefs.maxStranger,
+    minBold: prefs.minBold,
+    targetCount: prefs.targetCount,
+  };
+  const anchors = opts.anchors ?? [];
+  const modelPool = preferred(opts.modelPool, prefs);
+  let chosen = selectForDay(modelPool, opts.window, { ...limits, fixed: anchors });
+  const tasksIn = (list: Candidate[]) => list.filter((t) => !t.anchor);
+  const short = prefs.targetCount
+    ? tasksIn(chosen).length < prefs.targetCount
+    : dayMinutes(chosen) < opts.window.usableMinutes * FILL_LOW &&
+      tasksIn(chosen).length < MAX_MAIN_TASKS;
+  const strangers = tasksIn(chosen).filter((t) => t.stranger).length;
+  const bold = tasksIn(chosen).filter((t) => t.axes.boldness >= 3).length;
+  const missing =
+    strangers < prefs.minStranger || bold < prefs.minBold || allOneKind(tasksIn(chosen));
   let usedFallback = false;
-  if (short || noStranger) {
+  if (short || missing) {
     const rest = modelPool.filter((t) => !chosen.includes(t));
-    chosen = selectForDay([...rest, ...preferred(opts.fallbackPool)], opts.window, {
-      fixed: chosen,
-      conflicts,
-    });
+    const base = tasksIn(chosen);
+    // Keep the model's picks, but let the hard limits re-run over the
+    // combined pool: a missing stranger or bold task comes from templates.
+    chosen = selectForDay(
+      [...base, ...rest, ...preferred(opts.fallbackPool, prefs)],
+      opts.window,
+      { ...limits, fixed: anchors },
+    );
     usedFallback = chosen.some((t) => opts.fallbackPool.includes(t));
   }
-  return { tasks: planDay(chosen, opts.window), usedFallback };
+  const planned = planDay(chosen, opts.window, opts.ends).map((t) => {
+    const s = t.anchor ? null : suggestionFor(t, prefs.suggestions);
+    return s && !t.suggestedBy ? { ...t, suggestedBy: s.by } : t;
+  });
+  return {
+    tasks: planned.filter((t) => !t.anchor),
+    anchors: planned.filter((t) => t.anchor),
+    usedFallback,
+  };
+}
+
+// Board templates the model is even shown, after the group's hard filters:
+// no stranger templates for "rather not", no alcohol for a non-drinker, no
+// blind food for a restricted diet or a cautious eater, nothing physical for
+// a mobility limit. Validation checks every task again regardless.
+export function templatesAllowedFor(templates: TaskTemplate[], answers: SurveyAnswers[]): TaskTemplate[] {
+  return templates.filter((t) => {
+    const probe: ProposedTask = {
+      code: "",
+      title: t.archetype,
+      axes: { boldness: t.axes.boldness.min, physical: t.axes.physical.min, time: t.axes.time.min, scarcity: 1, cultural: 1, aesthetics: 1 },
+      verification: t.verification,
+      photo_bonus_max: t.photo_bonus_max,
+      neighborhood: "",
+    };
+    const reason = validateGeneratedTask(probe, {
+      assignees: answers.map((a) => ({ answers: a })),
+      completedTitles: [],
+      template: templateFacts(t),
+    });
+    return reason === null;
+  });
+}
+
+// A place the group asked for, as a fixed stop on the day's route.
+export function anchorCandidate(opts: {
+  name: string;
+  coords: LatLng | null;
+  category: string | null;
+  by: string | null;
+  neighborhood: string | null;
+}): Candidate {
+  return {
+    code: "",
+    title: opts.name,
+    axes: { boldness: 1, physical: 1, time: 3, scarcity: 1, cultural: 1, aesthetics: 1 },
+    verification: "honor",
+    photo_bonus_max: 0,
+    neighborhood: opts.neighborhood ?? "",
+    minutes: estimateTaskMinutes({ boldness: 1, venueCategory: opts.category }) ?? 60,
+    coords: opts.coords,
+    stranger: false,
+    interests: [],
+    categories: [],
+    resolvedNeighborhood: opts.neighborhood,
+    timeOverridden: false,
+    suggestedBy: opts.by,
+    anchor: true,
+    place: opts.name,
+  };
+}
+
+export type Personalization = {
+  people: number;
+  // Survey fields that reached the prompt as text.
+  prompt: string[];
+  // Survey answers that acted as hard filters, and how.
+  filters: Record<string, unknown>;
+  // Survey answers that weighted which valid tasks won.
+  weights: Record<string, unknown>;
+  templatesOffered: string;
+};
+
+export function personalizationFor(opts: {
+  answers: SurveyAnswers[];
+  prefs: BoardPreferences;
+  window: DayWindow;
+  offered: number;
+  total: number;
+  promptFields: string[];
+}): Personalization {
+  const { answers, prefs } = opts;
+  const value = (a: SurveyAnswers, id: keyof SurveyAnswers) => {
+    const entry = a[id];
+    return entry && !entry.skipped ? entry.value : undefined;
+  };
+  const diets = answers
+    .filter((a) => value(a, "dietary") === "has_restriction" && value(a, "dietary_strictness") !== "cheat_on_vacation")
+    .map((a) => value(a, "dietary_detail") ?? "unknown restriction (no food tasks)");
+  return {
+    people: answers.length,
+    prompt: opts.promptFields,
+    filters: {
+      sociability: prefs.sociability,
+      strangerTasks: `${prefs.minStranger}-${prefs.maxStranger === Infinity ? "any" : prefs.maxStranger}`,
+      minBold: prefs.minBold,
+      diet: diets,
+      budget: answers.map((a) => value(a, "budget")).filter(Boolean),
+      mobility: answers.some((a) => value(a, "mobility") === "has_limits"),
+      noAlcohol: answers.some((a) => value(a, "drinking") === "no" || value(a, "age_bracket") === "under_18"),
+      cautiousEater: answers.some((a) => /not (?:very )?adventurous|picky|plain|mild/.test(value(a, "food_adventure") ?? "")),
+      blackoutText: answers.map((a) => value(a, "blackout")).filter(Boolean),
+      window: `${opts.window.startMinutes}-${opts.window.endMinutes} (${opts.window.usableMinutes} usable, ${opts.window.pace})`,
+    },
+    weights: {
+      interests: Object.fromEntries(
+        Object.entries(prefs.interestWeights).filter(([, w]) => w !== 1),
+      ),
+      boldnessTarget: prefs.boldnessTarget,
+      avoid: prefs.avoid,
+      suggestions: prefs.suggestions.map((s) => s.name),
+    },
+    templatesOffered: `${opts.offered}/${opts.total}`,
+  };
+}
+
+// The whole code side of a board, from the model's proposals: gate, time,
+// prefer, top up, route. The board pipeline and the survey tests both call
+// this, so what the tests pin is what runs.
+export function planFromProposals(input: {
+  proposals: ProposedTask[];
+  fallback: ProposedTask[];
+  ctx: PrepareContext;
+  prefs: BoardPreferences;
+  anchors?: Candidate[];
+  ends?: RouteEnds;
+}): { tasks: PlannedTask[]; anchors: PlannedTask[]; usedFallback: boolean } {
+  const modelPool = prepareCandidates(input.proposals, input.ctx);
+  const fallbackPool = prepareCandidates(input.fallback, { ...input.ctx, onReject: undefined });
+  return planAssigneeBoard({
+    modelPool,
+    fallbackPool,
+    window: input.ctx.window,
+    prefs: input.prefs,
+    anchors: input.anchors,
+    ends: input.ends,
+  });
 }

@@ -3,6 +3,15 @@ import type { SeedVerification } from "./hand-written-tasks";
 import type { DurationBand } from "./duration";
 import type { TaskKind } from "./validate";
 
+export type InterestKey =
+  | "food"
+  | "nature"
+  | "museums"
+  | "nightlife"
+  | "shopping"
+  | "architecture"
+  | "weird";
+
 export type SlotKind =
   | "letter_range"
   | "time"
@@ -15,7 +24,8 @@ export type SlotKind =
   | "place_a"
   | "place_b"
   | "transit_line"
-  | "amount";
+  | "amount"
+  | "museum";
 
 export type TemplateSlot = {
   key: string;
@@ -49,8 +59,18 @@ export type TaskTemplate = {
   venue?: string;
   leg?: "walk" | "city";
   fixedMinutes?: number;
-  // Needs speaking to someone you do not know. Every board has one.
-  stranger: boolean;
+  // Needs speaking to someone you do not know. Validation filters on this
+  // flag (sociability), never on the title. Boards have one unless someone
+  // assigned said "rather not".
+  needs_stranger: boolean;
+  // Food the player does not get to choose: off limits for anyone with a
+  // dietary restriction.
+  blind_food?: boolean;
+  // Built around alcohol: off limits for anyone who does not drink.
+  alcohol?: boolean;
+  // Which survey interests it serves (interest_picks ids). Used to weight
+  // the board toward what the people on it picked.
+  interests?: InterestKey[];
   // Needs more than one person; never offered on a solo trip.
   groupOnly?: boolean;
   // Only makes sense at one end of the day.
@@ -91,7 +111,8 @@ export const TEMPLATES: TaskTemplate[] = [
     typical_cost: "low",
     duration: "sidequest",
     venue: "snack",
-    stranger: false,
+    needs_stranger: false,
+    interests: ["food"],
   },
   {
     id: "neighborhood_dish",
@@ -108,7 +129,8 @@ export const TEMPLATES: TaskTemplate[] = [
     typical_cost: "medium",
     duration: "medium",
     venue: "restaurant",
-    stranger: false,
+    needs_stranger: false,
+    interests: ["food"],
   },
   {
     id: "order_unreadable",
@@ -122,7 +144,9 @@ export const TEMPLATES: TaskTemplate[] = [
     typical_cost: "low",
     duration: "light",
     venue: "street food",
-    stranger: false,
+    needs_stranger: false,
+    interests: ["food", "weird"],
+    blind_food: true,
   },
   {
     id: "dish_where_from",
@@ -137,7 +161,8 @@ export const TEMPLATES: TaskTemplate[] = [
     duration: "medium",
     venue: "restaurant",
     fixedMinutes: 20,
-    stranger: false,
+    needs_stranger: false,
+    interests: ["food"],
   },
   {
     id: "cheapest_meal",
@@ -152,7 +177,8 @@ export const TEMPLATES: TaskTemplate[] = [
     duration: "medium",
     venue: "diner",
     fixedMinutes: 30,
-    stranger: false,
+    needs_stranger: false,
+    interests: ["food"],
   },
   {
     id: "eat_standing",
@@ -166,7 +192,8 @@ export const TEMPLATES: TaskTemplate[] = [
     typical_cost: "low",
     duration: "sidequest",
     fixedMinutes: 12,
-    stranger: false,
+    needs_stranger: false,
+    interests: ["food"],
   },
   {
     id: "staff_pick",
@@ -180,7 +207,9 @@ export const TEMPLATES: TaskTemplate[] = [
     typical_cost: "low",
     duration: "light",
     venue: "street food",
-    stranger: true,
+    needs_stranger: true,
+    interests: ["food"],
+    blind_food: true,
   },
 
   // SOCIAL FRICTION: the point of the game
@@ -195,7 +224,8 @@ export const TEMPLATES: TaskTemplate[] = [
     indoor: true,
     typical_cost: "low",
     duration: "light",
-    stranger: true,
+    needs_stranger: true,
+    interests: ["weird"],
   },
   {
     id: "order_what_neighbour_ordered",
@@ -209,7 +239,9 @@ export const TEMPLATES: TaskTemplate[] = [
     typical_cost: "low",
     duration: "medium",
     venue: "noodle",
-    stranger: true,
+    needs_stranger: true,
+    interests: ["food", "weird"],
+    blind_food: true,
   },
   {
     id: "stranger_best_rec",
@@ -223,7 +255,8 @@ export const TEMPLATES: TaskTemplate[] = [
     typical_cost: "low",
     duration: "medium",
     fixedMinutes: 45,
-    stranger: true,
+    needs_stranger: true,
+    interests: ["weird"],
   },
   {
     id: "phrase_wrong",
@@ -236,7 +269,8 @@ export const TEMPLATES: TaskTemplate[] = [
     indoor: false,
     typical_cost: "low",
     duration: "light",
-    stranger: true,
+    needs_stranger: true,
+    interests: ["weird"],
   },
   {
     id: "compliment_outfit",
@@ -249,7 +283,8 @@ export const TEMPLATES: TaskTemplate[] = [
     indoor: false,
     typical_cost: "low",
     duration: "light",
-    stranger: true,
+    needs_stranger: true,
+    interests: ["shopping"],
   },
 
   // NAVIGATION
@@ -269,7 +304,8 @@ export const TEMPLATES: TaskTemplate[] = [
     duration: "medium",
     venue: "place",
     fixedMinutes: 45,
-    stranger: false,
+    needs_stranger: false,
+    interests: ["architecture"],
   },
   {
     id: "directions_no_phone",
@@ -284,7 +320,8 @@ export const TEMPLATES: TaskTemplate[] = [
     duration: "medium",
     venue: "place",
     fixedMinutes: 30,
-    stranger: true,
+    needs_stranger: true,
+    interests: ["architecture"],
   },
   {
     id: "a_to_b_without",
@@ -302,7 +339,8 @@ export const TEMPLATES: TaskTemplate[] = [
     typical_cost: "low",
     duration: "medium",
     leg: "walk",
-    stranger: false,
+    needs_stranger: false,
+    interests: ["nature", "architecture"],
   },
   {
     id: "wrong_train",
@@ -316,7 +354,8 @@ export const TEMPLATES: TaskTemplate[] = [
     typical_cost: "low",
     duration: "medium",
     fixedMinutes: 45,
-    stranger: false,
+    needs_stranger: false,
+    interests: ["weird"],
   },
   {
     id: "line_to_end",
@@ -330,7 +369,8 @@ export const TEMPLATES: TaskTemplate[] = [
     typical_cost: "low",
     duration: "challenging",
     fixedMinutes: 150,
-    stranger: false,
+    needs_stranger: false,
+    interests: ["weird", "nature"],
   },
   {
     id: "highest_point",
@@ -344,7 +384,8 @@ export const TEMPLATES: TaskTemplate[] = [
     typical_cost: "low",
     duration: "medium",
     fixedMinutes: 50,
-    stranger: false,
+    needs_stranger: false,
+    interests: ["architecture", "nature"],
   },
 
   // SIGHTS: the weakest archetype ("go look at X"). Kept for the fallback.
@@ -363,7 +404,8 @@ export const TEMPLATES: TaskTemplate[] = [
     typical_cost: "low",
     duration: "light",
     venue: "place",
-    stranger: false,
+    needs_stranger: false,
+    interests: ["architecture"],
     lookOnly: true,
   },
 
@@ -380,7 +422,8 @@ export const TEMPLATES: TaskTemplate[] = [
     typical_cost: "low",
     duration: "light",
     venue: "shop",
-    stranger: false,
+    needs_stranger: false,
+    interests: ["shopping"],
   },
   {
     id: "buy_unidentifiable",
@@ -394,7 +437,8 @@ export const TEMPLATES: TaskTemplate[] = [
     typical_cost: "low",
     duration: "sidequest",
     fixedMinutes: 10,
-    stranger: false,
+    needs_stranger: false,
+    interests: ["shopping", "weird"],
   },
 
   // TIME
@@ -410,7 +454,8 @@ export const TEMPLATES: TaskTemplate[] = [
     typical_cost: "low",
     duration: "light",
     fixedMinutes: 30,
-    stranger: false,
+    needs_stranger: false,
+    interests: ["nature"],
     when: "morning",
   },
   {
@@ -425,7 +470,8 @@ export const TEMPLATES: TaskTemplate[] = [
     typical_cost: "low",
     duration: "medium",
     fixedMinutes: 60,
-    stranger: false,
+    needs_stranger: false,
+    interests: ["nature"],
   },
 
   // GROUP: never on a solo trip
@@ -441,13 +487,81 @@ export const TEMPLATES: TaskTemplate[] = [
     typical_cost: "low",
     duration: "medium",
     fixedMinutes: 70,
-    stranger: false,
+    needs_stranger: false,
+    interests: ["weird", "shopping"],
     groupOnly: true,
+  },
+
+
+  // MUSEUMS AND NIGHTLIFE: so those interests have somewhere to land.
+  {
+    id: "museum_staff_pick",
+    archetype: "ask someone working at {museum} which piece they would save in a fire, then go find it",
+    kind: "culture",
+    slots: [{ key: "museum", kind: "museum" }],
+    verification: "photo",
+    photo_bonus_max: 2,
+    axes: axes(range(4, 4), range(1, 2), range(4, 4), range(3, 4), range(4, 5), range(2, 3)),
+    indoor: true,
+    typical_cost: "medium",
+    duration: "challenging",
+    venue: "museum",
+    needs_stranger: true,
+    interests: ["museums"],
+  },
+  {
+    id: "oldest_thing",
+    archetype: "find the oldest thing you can touch in {neighborhood}, and find out how old it is",
+    kind: "culture",
+    slots: [{ key: "neighborhood", kind: "neighborhood" }],
+    verification: "photo",
+    photo_bonus_max: 2,
+    axes: axes(range(2, 3), range(2, 2), range(3, 3), range(3, 4), range(4, 5), range(2, 3)),
+    indoor: false,
+    typical_cost: "low",
+    duration: "medium",
+    fixedMinutes: 60,
+    needs_stranger: false,
+    interests: ["museums", "architecture"],
+  },
+  {
+    id: "bartender_pick",
+    archetype: "get a bartender in {neighborhood} to make you whatever they are proudest of",
+    kind: "social",
+    slots: [{ key: "neighborhood", kind: "neighborhood" }],
+    verification: "honor",
+    photo_bonus_max: 1,
+    axes: axes(range(3, 4), range(1, 1), range(3, 3), range(2, 3), range(3, 4), range(2, 3)),
+    indoor: true,
+    typical_cost: "medium",
+    duration: "medium",
+    venue: "bar",
+    needs_stranger: true,
+    alcohol: true,
+    interests: ["nightlife"],
+    when: "evening",
+  },
+  {
+    id: "loudest_place",
+    archetype: "find the loudest place in {neighborhood} after 9pm and stay for one whole song",
+    kind: "explore",
+    slots: [{ key: "neighborhood", kind: "neighborhood" }],
+    verification: "photo",
+    photo_bonus_max: 2,
+    axes: axes(range(2, 3), range(1, 2), range(2, 2), range(2, 3), range(3, 3), range(2, 3)),
+    indoor: true,
+    typical_cost: "low",
+    duration: "light",
+    fixedMinutes: 20,
+    needs_stranger: false,
+    interests: ["nightlife", "weird"],
+    when: "evening",
   },
 
   // ---------------------------------------------------------------------------
   // More templates go here. Hand-write them. Do not generate filler. Keep
-  // kind, duration (with the time axis range inside it), stranger, venue /
+  // kind, duration (with the time axis range inside it), needs_stranger,
+  // blind_food, alcohol, interests, venue /
   // leg / fixedMinutes, verification, photo_bonus_max, indoor, typical_cost
   // and axis ranges on every row. verification "photo" means a photo can add
   // bonus points; code claims still resolve.

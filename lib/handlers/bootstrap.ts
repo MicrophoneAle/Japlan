@@ -6,6 +6,8 @@ import {
   answerValue,
   buildIntroGroupPost,
   displayNameFromFirstName,
+  isSidequestQuestion,
+  startSidequestOnboarding,
   startSurvey,
   type SurveyAnswers,
   type SurveyAwaiting,
@@ -317,7 +319,7 @@ async function joinLateParticipant(
 
 export async function countSurveysPending(tripId: string): Promise<number> {
   const people = await listParticipants(tripId);
-  return people.filter((p) => p.survey_state !== "done").length;
+  return people.filter((p) => p.survey_state !== "done" && !isSidequestQuestion(p.survey_state)).length;
 }
 
 // Active needs every personal survey done AND the organizer setup's required
@@ -327,9 +329,19 @@ export async function countSurveysPending(tripId: string): Promise<number> {
 // posts it to the trip chat. A solo trip's chat is the player's DM, where the
 // caller is already replying: pass announce:false and fold the line into that
 // one reply rather than sending two messages.
+// Sidequests' own mini-onboarding, at trip start: the next thing this
+// person's DM asks. Returns the question, for a reply that is already going.
+export async function beginSidequestOnboarding(participantId: string, answers: SurveyAnswers): Promise<string> {
+  const step = startSidequestOnboarding(answers);
+  await persistSurveyProgress({ participantId, awaiting: step.state.awaiting, answers: step.state.answers });
+  return step.prompt ?? "";
+}
+
 export async function maybeActivateTrip(
   stale: TripRow,
-  opts: { announce?: boolean } = {},
+  // quietFor: the person whose reply triggered this. They get the sidequest
+  // question in that reply instead of a second DM.
+  opts: { announce?: boolean; quietFor?: string } = {},
 ): Promise<string | null> {
   const trip = (await getTripById(stale.id)) ?? stale;
   if (trip.state === "active" || trip.state === "complete") return null;
@@ -355,6 +367,18 @@ export async function maybeActivateTrip(
     .eq("id", trip.id)
     .neq("state", "active");
   if (error) throw error;
+  // Trip start: everyone else is asked how unhinged sidequests may get.
+  for (const person of people) {
+    if (person.id === opts.quietFor) continue;
+    const answers = (person.survey_json ?? {}) as SurveyAnswers;
+    if (answerValue(answers, "age_bracket") === "under_18") continue;
+    try {
+      const prompt = await beginSidequestOnboarding(person.id, answers);
+      await sendDM(person.phone, prompt);
+    } catch (err) {
+      console.error("[japlan.bootstrap] sidequest onboarding DM failed", { participantId: person.id, err });
+    }
+  }
   return line;
 }
 

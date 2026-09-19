@@ -1,4 +1,5 @@
 import {
+  boardAnchorLine,
   boardRouteLabel,
   dailyBoardHeader,
   dailyBoardTaskLine,
@@ -78,16 +79,31 @@ export function formatDailyBoard(opts: {
   return lines.join("\n");
 }
 
+export type BoardAnchorItem = { name: string; by: string | null; slot: string | null };
+
 export function formatPersonalBoard(opts: {
   day: number;
   tasks: BoardTask[];
   weatherLine?: string | null;
+  // Places the group asked for, on this day's route.
+  anchors?: BoardAnchorItem[];
 }): string {
   const tasks = boardOrder(opts.tasks);
+  // Anchors sit in their time of day, after that slot's tasks.
+  const lines = [
+    ...tasks.map((t) => ({ slot: SLOT_ORDER[t.slot ?? ""] ?? 1, text: taskLine(t) })),
+    ...(opts.anchors ?? []).map((a) => ({
+      slot: (SLOT_ORDER[a.slot ?? ""] ?? 1) + 0.5,
+      text: boardAnchorLine(a.name, a.by, a.slot),
+    })),
+  ]
+    .map((l, i) => ({ ...l, i }))
+    .sort((a, b) => a.slot - b.slot || a.i - b.i)
+    .map((l) => l.text);
   return [
     dailyBoardHeader(opts.day, opts.weatherLine, routeOf(tasks)),
     "",
-    ...tasks.map(taskLine),
+    ...lines,
   ].join("\n");
 }
 

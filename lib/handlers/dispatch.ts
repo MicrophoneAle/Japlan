@@ -1,5 +1,5 @@
 import { getServiceClient } from "@/lib/db/client";
-import { evaluateAddress, findTaskCode } from "@/lib/game/addressing";
+import { defaultWakeKeyword, evaluateAddress, findTaskCode, wakeKeywordRe } from "@/lib/game/addressing";
 import { detectBoardTimeCommand, detectTripCommand } from "@/lib/game/commands";
 import { DISPATCH_ERROR_LINE } from "@/lib/game/copy";
 import { handleBoardTimeCommand, handleTripCommand } from "@/lib/handlers/trip-lifecycle";
@@ -33,6 +33,10 @@ import {
   type LinqEnvelope,
 } from "@/lib/linq/payload";
 import { markRead, sendText } from "@/lib/linq/send";
+import { recordMessage } from "@/lib/chat/transcript";
+import { engagementFor, type EngagementDecision } from "@/lib/handlers/engagement";
+import { getTripByChatId } from "@/lib/handlers/bootstrap";
+import { STOP_LINE } from "@/lib/game/copy";
 
 // Set once a message is known to be addressed, so a later failure can still
 // answer it. Addressed means answered, even when something breaks.
@@ -101,10 +105,12 @@ async function markProcessed(eventId: string | undefined, tripId?: string) {
 
 async function runClaimThenConversation(
   data: Record<string, unknown>,
-  deps: ClaimHandlerDeps = {},
+  deps: ClaimHandlerDeps & { photoOnly?: boolean } = {},
 ): Promise<void> {
   const miss = await handleGroupClaim(data, deps);
   if (!miss) return;
+  // Joined only to check a photo against open tasks: no match is silence.
+  if (deps.photoOnly) return;
   await handleConversation(miss);
 }
 
@@ -174,6 +180,35 @@ async function onMessageReceivedInner(
   const sender = senderFromData(data);
   const phone = sender?.handle ?? null;
   const senderName = sender?.display_name ?? null;
+  // The transcript every conversational call reads, this message included.
+  await recordMessage({
+    chatId,
+    role: "user",
+    senderHandle: phone,
+    senderName,
+    text: text || (media.length > 0 ? "[sent a photo]" : ""),
+  });
+
+  // Groups: is the bot part of this conversation? (DMs always are.)
+  let engagement: EngagementDecision | null = null;
+  if (isGroup && !isDm) {
+    const trip = await getTripByChatId(chatId);
+    if (trip) {
+      engagement = await dispatchAwait("engagement", { chatId }, () =>
+        engagementFor({
+          trip,
+          chatId,
+          text,
+          addressed: wakeKeywordRe(defaultWakeKeyword()).test(text),
+          hasPhoto: media.length > 0,
+        }),
+      );
+      if (engagement.stop) {
+        await sendText(chatId, STOP_LINE);
+        return;
+      }
+    }
+  }
   const recentCode = chatId && phone ? recentCodeFor(chatId, phone) : null;
   // Loose codes are remembered by the claim handler only once they resolve.
   const codeMatch = findTaskCode(text);
@@ -184,6 +219,7 @@ async function onMessageReceivedInner(
     text,
     isDm,
     openTaskContext: media.length > 0 && Boolean(recentCode),
+    engaged: engagement?.engaged ?? false,
   });
 
   // A bare group photo is addressed when the sender has a claim still open
@@ -266,7 +302,11 @@ async function onMessageReceivedInner(
       hasPhone: Boolean(phone),
     });
     await dispatchAwait("group_claim", { chatId }, () =>
-      runClaimThenConversation(data as Record<string, unknown>, { photoBonusOpen }),
+      runClaimThenConversation(data as Record<string, unknown>, {
+        photoBonusOpen,
+        engaged: engagement?.engaged ?? false,
+        photoOnly: engagement?.photoOnly ?? false,
+      }),
     );
     return;
   }

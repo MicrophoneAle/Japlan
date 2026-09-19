@@ -1,8 +1,6 @@
-import { getServiceClient } from "@/lib/db/client";
 import type { ClaimRow, TaskRow } from "@/lib/db/types";
 import { evaluateAddress } from "@/lib/game/addressing";
 import {
-  CONVERSATION_HISTORY_LIMIT,
   CONVERSATION_MAX_TOOL_ITERS,
   foreignSurveySecrets,
   getOffTopicCount,
@@ -46,14 +44,25 @@ import {
 } from "@/lib/handlers/claims";
 import type { LLMProvider, ToolContent, ToolTurn } from "@/lib/llm";
 import { GeminiProvider } from "@/lib/llm/gemini";
+import { sendDM, sendText } from "@/lib/linq/send";
+import { recentMessages, TRANSCRIPT_LIMIT } from "@/lib/chat/transcript";
+import { checkReply } from "@/lib/game/reply-check";
+import type { DestinationProfile } from "@/lib/game/destination";
+import { judgeRelevance } from "@/lib/llm/gemini";
 import {
-  chatIdFromData,
-  isFromMe,
-  textFromParts,
-} from "@/lib/linq/payload";
-import { sendText } from "@/lib/linq/send";
+  addSuggestion,
+  avoidCategory,
+  recordRegroup,
+  recordSplit,
+  redoToday,
+  requestTasks,
+  updateMySetting,
+  updateTripSetting,
+} from "@/lib/handlers/plan-changes";
+import { BOARD_IN_DM_LINE, DISCARD_FALLBACK, PROFILE_IN_DM_LINE, profileLine } from "@/lib/game/copy";
+import { profileFor } from "@/lib/handlers/profiles";
 
-const CONVERSATION_TOOL_DEFS = [
+export const CONVERSATION_TOOL_DEFS = [
   {
     name: "get_standings",
     description:
@@ -110,11 +119,125 @@ const CONVERSATION_TOOL_DEFS = [
     },
   },
   {
+    name: "record_split",
+    description:
+      "Someone says the group is splitting up, now or on a coming day: 'me and jess are doing shimokita, boys are going to akihabara', 'i'm sleeping in, you guys go ahead', 'we're splitting after lunch', 'some of us want an early start'. Extract who, where and when, words as said. who: 'me' for the sender, names as said, 'everyone else' for the rest, descriptions like 'the boys' as said. Code places people and asks about anyone it cannot place.",
+    parameters: {
+      type: "object",
+      properties: {
+        groups: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              who: { type: "array", items: { type: "string" } },
+              where: { type: "string" },
+              starts: { type: "string" },
+            },
+            required: ["who"],
+          },
+        },
+        from: { type: "string", description: "when the split starts for everyone, as said" },
+        rejoin_time: { type: "string" },
+        rejoin_place: { type: "string" },
+        day: { type: "string", description: "only if not today: 'tomorrow', 'day 3', 'friday'" },
+      },
+      required: ["groups"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "record_regroup",
+    description: "The group says it is back together today ('we're all back', 'regrouped', 'meeting up again').",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "add_suggestion",
+    description:
+      "Someone names a place or thing they want to do: 'we should go to teamLab', 'there's a jazz bar in golden gai i want to hit', 'put the fish market on day 3'. place: the name as said. neighborhood if they gave one. day only if they named one.",
+    parameters: {
+      type: "object",
+      properties: {
+        place: { type: "string" },
+        neighborhood: { type: "string" },
+        day: { type: "string" },
+      },
+      required: ["place"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "avoid_category",
+    description: "The group does not want a kind of thing: 'we don't want to do temples', 'no more museums'. category: in their words.",
+    parameters: {
+      type: "object",
+      properties: { category: { type: "string" } },
+      required: ["category"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "update_my_setting",
+    description:
+      "The sender wants to change one of their own settings, any time, for any reason: pace, tasks per day, talking to strangers, interests, budget, chaos, diet, mobility, drinking, off-limits times, food adventure. setting: which one. value: what they want it to BE now, in their words ('faster', 'chaotic', '150', 'museums', 'fine with strangers', 'more'). mode for interests: add, remove or set. Code writes it and sends the reply.",
+    parameters: {
+      type: "object",
+      properties: {
+        setting: { type: "string" },
+        value: { type: "string" },
+        mode: { type: "string", enum: ["set", "add", "remove"] },
+      },
+      required: ["setting", "value"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "update_trip_setting",
+    description:
+      "Change a trip-level setting: destination, dates, difficulty, board time, stake. value in their words. Code checks who can and sends the reply.",
+    parameters: {
+      type: "object",
+      properties: { setting: { type: "string" }, value: { type: "string" } },
+      required: ["setting", "value"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "request_tasks",
+    description:
+      "The sender wants more tasks, or a specific number ('7 attractions', 'give me more', 'a packed day'). count: the number they asked for, if they gave one. day: only if not today. Code adds as many as fit in the day and sends the reply with their board.",
+    parameters: {
+      type: "object",
+      properties: { count: { type: "integer" }, day: { type: "string" } },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "redo_today",
+    description:
+      "Remake today's board from current settings, usually after a settings change ('yes', 'redo it'). everyone: true only for a trip-level change for the whole group. Claimed tasks stay. Code sends the reply.",
+    parameters: {
+      type: "object",
+      properties: { everyone: { type: "boolean" } },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "show_my_profile",
+    description:
+      "The sender asks what the bot knows about them ('what do you know about me', 'what's my profile'). Code sends their profile to their DM.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
     name: "no_action",
     description: "Talk without changing game state.",
     parameters: { type: "object", properties: {}, additionalProperties: false },
   },
 ];
+
+function stringArg(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
 
 function clampAxis(value: unknown): number {
   const n = Math.round(Number(value));
@@ -144,34 +267,6 @@ function openTasksFor(tasks: TaskRow[], claims: ClaimRow[]): TaskRow[] {
   return tasks.filter((task) => isOpenTask(task.id, claims));
 }
 
-async function recentChatLines(chatId: string): Promise<{ role: "user" | "model"; text: string }[]> {
-  const { data, error } = await getServiceClient()
-    .from("events")
-    .select("payload, created_at, type")
-    .eq("type", "message.received")
-    .order("created_at", { ascending: false })
-    .limit(80);
-  if (error) throw error;
-  const lines: { role: "user" | "model"; text: string }[] = [];
-  for (const row of data ?? []) {
-    const payload = row.payload as { data?: unknown } | null;
-    const inner = payload && typeof payload === "object" ? payload.data : payload;
-    const eventChat = chatIdFromData(inner);
-    if (eventChat !== chatId) continue;
-    const text = textFromParts(
-      inner && typeof inner === "object"
-        ? (inner as { parts?: unknown }).parts
-        : undefined,
-    );
-    if (!text) continue;
-    lines.push({
-      role: isFromMe(inner) ? "model" : "user",
-      text,
-    });
-    if (lines.length >= CONVERSATION_HISTORY_LIMIT) break;
-  }
-  return lines.reverse();
-}
 
 function userPrompt(opts: {
   text: string;
@@ -192,7 +287,9 @@ function userPrompt(opts: {
     `destination: ${opts.destination ?? "unknown"}`,
     `day: ${opts.day}`,
     `people: ${opts.people.join(", ") || "(none)"}`,
-    `sender survey: ${JSON.stringify(opts.survey)}`,
+    // Their own settings, all editable by them any time (update_my_setting).
+    // Not rules: never quote one back as a reason something cannot happen.
+    `sender's own settings (editable by them any time, not rules): ${JSON.stringify(opts.survey)}`,
     `open tasks: ${opts.openTasks.map((t) => `${t.code} ${t.title}`).join("; ") || "(none)"}`,
     `consecutive off-topic: ${opts.offTopicCount}`,
     `recent chat:\n${history || "(none)"}`,
@@ -228,6 +325,7 @@ export async function handleConversation(
     text: miss.text,
     isDm: miss.isDm,
     openTaskContext: miss.hasPhoto,
+    engaged: miss.engaged,
   }).respond;
   if (!addressed) return;
 
@@ -252,7 +350,21 @@ export async function handleConversation(
     miss.isDm,
   );
   const others = foreignSurveySecrets(miss.people, miss.claimant.id);
-  const history = await recentChatLines(miss.chatId);
+  // The last 15 messages of THIS chat, the bot's own replies included, with
+  // who said what. A bot replying to nothing is usually a bot given nothing,
+  // so the length is logged on every call.
+  const transcript = await recentMessages(miss.chatId, TRANSCRIPT_LIMIT);
+  const lines = transcript.at(-1)?.text === miss.text ? transcript.slice(0, -1) : transcript;
+  const history = lines.map((l) => ({
+    role: l.role === "bot" ? ("model" as const) : ("user" as const),
+    text: l.role === "bot" ? l.text : `${l.sender ?? "someone"}: ${l.text}`,
+  }));
+  console.info("[japlan.conversation] context", {
+    chatId: miss.chatId,
+    lines: history.length,
+    empty: history.length === 0,
+  });
+  const toolText: string[] = [];
   const contents: ToolContent[] = [];
   for (const line of history) {
     contents.push({ role: line.role, parts: [{ text: line.text }] });
@@ -265,11 +377,9 @@ export async function handleConversation(
           text: miss.text,
           senderName: miss.claimant.display_name,
           survey,
-          openTasks: open.map((task) => ({
-            code: task.code,
-            title: task.title,
-            neighborhood: task.neighborhood,
-          })),
+          // No task list here: tasks are facts, and facts come from
+          // get_open_tasks in this turn, not from the prompt.
+          openTasks: [],
           people: miss.people.map((person) => person.display_name),
           destination: miss.trip.destination,
           day,
@@ -336,6 +446,7 @@ export async function handleConversation(
     },
     execute: async (call) => {
       const result = await executeConversationTool(call.name, call.args, miss);
+      toolText.push(JSON.stringify(result.result));
       if (toolResultHasInventedPoints(result.result)) {
         throw new Error("conversation tool returned an invented point value");
       }
@@ -389,8 +500,55 @@ export async function handleConversation(
     privacyLine: CONVERSATION_PRIVACY_LINE,
   });
 
+  // Checked against reality before it goes out: nothing untrue, nothing
+  // empty, and actually a reply to what was said. Code-written lines (the
+  // fallback, the privacy line) are not model text and skip the checks.
+  const fromModel = reply !== CONVERSATION_FALLBACK && reply !== CONVERSATION_PRIVACY_LINE;
+  const verdict = fromModel ? await vetReply(reply, miss, toolText, history) : { ok: true as const };
+  const out = verdict.ok ? reply : DISCARD_FALLBACK;
+  if (!verdict.ok) {
+    console.warn("[japlan.conversation] discard", { chatId: miss.chatId, reason: verdict.reason, reply: reply.slice(0, 300) });
+  }
+
   recordConversationalReply(miss.chatId, now);
-  await send(miss.chatId, reply);
+  await send(miss.chatId, out);
+}
+
+// The trip's own names (places, task titles and neighborhoods) a reply may
+// mention without a tool having returned them this turn.
+function tripContextText(miss: ClaimFallthrough, history: { text: string }[]): string {
+  const profile = (miss.trip.destination_profile_json ?? null) as DestinationProfile | null;
+  return [
+    ...history.map((h) => h.text),
+    ...(profile?.landmarks ?? []).map((l) => l.name),
+    ...(profile?.neighborhoods ?? []).map((n) => n.name),
+    ...miss.tasks.flatMap((t) => [t.title, t.neighborhood ?? ""]),
+    miss.trip.destination ?? "",
+  ].join(" | ");
+}
+
+async function vetReply(
+  reply: string,
+  miss: ClaimFallthrough,
+  toolText: string[],
+  history: { text: string }[],
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const facts = checkReply(reply, {
+    taskCodes: miss.tasks.map((t) => t.code),
+    people: miss.people.map((p) => p.display_name),
+    toolText: toolText.join(" "),
+    userText: miss.text,
+    contextText: tripContextText(miss, history),
+  });
+  if (!facts.ok) return facts;
+  // One cheap check: does it respond to what was actually said?
+  const recent = [...history.slice(-5).map((h) => h.text), `${miss.claimant.display_name}: ${miss.text}`].join("\n");
+  const relevant = await judgeRelevance({ provider: miss.provider, transcript: recent, reply });
+  if (relevant === null) {
+    console.info("[japlan.conversation] relevance unchecked", { chatId: miss.chatId });
+    return { ok: true };
+  }
+  return relevant.decision ? { ok: true } : { ok: false, reason: `irrelevant: ${relevant.reason}` };
 }
 
 async function executeConversationTool(
@@ -489,6 +647,119 @@ async function executeConversationTool(
       provider: miss.provider,
     });
     return { result: { ok: true, code: task.code }, sent: true };
+  }
+  if (name === "show_my_profile") {
+    const send = miss.send ?? sendText;
+    const text = profileLine(await profileFor(miss.trip, miss.claimant.id));
+    // DM-private, exactly like survey_json: never in the group.
+    if (miss.isDm) {
+      await send(miss.chatId, text);
+    } else {
+      await sendDM(miss.claimant.phone, text);
+      await send(miss.chatId, PROFILE_IN_DM_LINE);
+    }
+    return { result: { ok: true }, sent: true };
+  }
+  if (
+    name === "update_my_setting" ||
+    name === "update_trip_setting" ||
+    name === "request_tasks" ||
+    name === "redo_today"
+  ) {
+    const ctx = {
+      trip: miss.trip,
+      people: miss.people,
+      sender: miss.claimant,
+      now: new Date(miss.now ?? Date.now()),
+      text: miss.text,
+    };
+    const send = miss.send ?? sendText;
+    if (name === "update_my_setting") {
+      const setting = stringArg(args.setting);
+      const value = stringArg(args.value);
+      if (!setting || !value) return { result: { ok: false, reason: "need_setting_and_value" }, sent: false };
+      const mode = args.mode === "add" || args.mode === "remove" ? args.mode : "set";
+      const out = await updateMySetting({ ...ctx, isDm: miss.isDm }, { setting, value, mode });
+      await send(miss.chatId, out.reply);
+      if (out.dm) await sendDM(miss.claimant.phone, out.dm);
+      return { result: { ok: true }, sent: true };
+    }
+    let reply: string;
+    if (name === "update_trip_setting") {
+      const setting = stringArg(args.setting);
+      const value = stringArg(args.value);
+      if (!setting || !value) return { result: { ok: false, reason: "need_setting_and_value" }, sent: false };
+      reply = await updateTripSetting(ctx, { setting, value });
+    } else if (name === "request_tasks") {
+      const count = Number(args.count);
+      const text = await requestTasks(ctx, {
+        count: Number.isFinite(count) && count > 0 ? Math.round(count) : null,
+        day: stringArg(args.day),
+      });
+      // The board is personal: in a group it goes to their DM.
+      if (!miss.isDm) {
+        await sendDM(miss.claimant.phone, text);
+        await send(miss.chatId, BOARD_IN_DM_LINE);
+        return { result: { ok: true }, sent: true };
+      }
+      reply = text;
+    } else {
+      reply = await redoToday(ctx, { everyone: args.everyone === true });
+      if (!miss.isDm && args.everyone !== true) {
+        await sendDM(miss.claimant.phone, reply);
+        await send(miss.chatId, BOARD_IN_DM_LINE);
+        return { result: { ok: true }, sent: true };
+      }
+    }
+    await send(miss.chatId, reply);
+    return { result: { ok: true }, sent: true };
+  }
+  if (
+    name === "record_split" ||
+    name === "record_regroup" ||
+    name === "add_suggestion" ||
+    name === "avoid_category"
+  ) {
+    const ctx = {
+      trip: miss.trip,
+      people: miss.people,
+      sender: miss.claimant,
+      now: new Date(miss.now ?? Date.now()),
+      text: miss.text,
+    };
+    let reply: string;
+    if (name === "record_split") {
+      const groups = Array.isArray(args.groups) ? args.groups : [];
+      reply = await recordSplit(ctx, {
+        groups: groups
+          .filter((g): g is Record<string, unknown> => Boolean(g) && typeof g === "object")
+          .map((g) => ({
+            who: Array.isArray(g.who) ? g.who.filter((w): w is string => typeof w === "string") : [],
+            where: stringArg(g.where),
+            starts: stringArg(g.starts),
+          })),
+        from: stringArg(args.from),
+        rejoinTime: stringArg(args.rejoin_time),
+        rejoinPlace: stringArg(args.rejoin_place),
+        day: stringArg(args.day),
+      });
+    } else if (name === "record_regroup") {
+      reply = await recordRegroup(ctx);
+    } else if (name === "add_suggestion") {
+      const place = stringArg(args.place);
+      if (!place) return { result: { ok: false, reason: "need_place" }, sent: false };
+      reply = await addSuggestion(ctx, {
+        place,
+        neighborhood: stringArg(args.neighborhood),
+        day: stringArg(args.day),
+      });
+    } else {
+      const category = stringArg(args.category);
+      if (!category) return { result: { ok: false, reason: "need_category" }, sent: false };
+      reply = await avoidCategory(ctx, category);
+    }
+    await (miss.send ?? sendText)(miss.chatId, reply);
+    return { result: { ok: true }, sent: true };
   }
   return { result: { ok: false, reason: "unknown_tool" }, sent: false };
 }

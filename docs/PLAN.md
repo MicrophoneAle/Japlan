@@ -337,7 +337,8 @@ These break the trip if you get them wrong, and they are filters rather than wei
 - **Interest allocation.** Give a fixed pool of points to distribute across food, nature, museums, nightlife, shopping, architecture, local weird stuff. The categories have to work for any destination, not one country. Forced tradeoff beats rating each 1-5, because everyone rates everything a 4.
 - **Pace.** Up at 7 and moving, versus two things and a long lunch.
 - **Chaos tolerance.** Unique to Japlan. Determines whether they get social-friction tasks at all.
-- **Competitiveness.** Some want to win, some want to be dragged along. Feeds team balancing.
+- **Sociability.** Separate from chaos: someone can be up for anything and still not want to talk to strangers. love it / fine in small doses / rather not, enforced as a filter on tasks that need a stranger. (Added 2026-09-19.)
+- **Competitiveness.** Some want to win, some want to be dragged along. Feeds team balancing. (Not asked since 2026-09-19: teams now form from conversation, so nothing consumed it.)
 - **Attraction recommendations.** Their own list, which feeds the itinerary pool.
 
 ### Social graph
@@ -345,7 +346,7 @@ These break the trip if you get them wrong, and they are filters rather than wei
 Asked privately, never revealed:
 
 - Who would you like to be with if the group splits up for an afternoon?
-- Who have you already travelled with a lot? (the gentle phrasing of the inverse)
+- Who have you already travelled with a lot? (the gentle phrasing of the inverse; not asked since 2026-09-19, nothing consumed it once teams became conversational)
 - Couples: split or keep together, asked rather than assumed
 
 This one question set makes team assignment dramatically better than random.

@@ -43,6 +43,8 @@ import {
   visionRejectedLine,
 } from "@/lib/game/copy";
 import { endOfLocalDayContaining, localDateString } from "@/lib/game/time";
+import { prefDimsFor } from "@/lib/game/prefs";
+import { learnFrom } from "./profiles";
 import { isBoardRequest } from "@/lib/game/board-schedule";
 import {
   FREEFORM_PHOTO_BONUS_MAX,
@@ -174,6 +176,8 @@ export type ClaimHandlerDeps = {
   // A DM from someone on a group trip: which trip chat the claim belongs to.
   // Replies go to the DM; the claim confirmation also goes to the group.
   tripChatId?: string;
+  // The group is in a conversation with the bot: no keyword needed.
+  engaged?: boolean;
 };
 
 export type ClaimFallthrough = {
@@ -195,6 +199,7 @@ export type ClaimFallthrough = {
   now?: number;
   // One clause naming the claimant's open codes, for replies that close something.
   nextStep: string;
+  engaged?: boolean;
 };
 
 function asTasks(rows: unknown): TaskRow[] {
@@ -1074,6 +1079,12 @@ async function resolveKnownTask(opts: {
     }
     throw err;
   }
+  // What people actually do moves their weights, a little each time.
+  await learnFrom(opts.trip, opts.claimant.id, {
+    dims: prefDimsFor(`${opts.task.title} ${opts.task.neighborhood ?? ""}`),
+    direction: 1,
+    why: `claimed ${opts.task.code}`,
+  }).catch((err) => console.error("[japlan.profile] learn failed", err));
 }
 
 async function tryHandleFreeform(opts: {
@@ -1593,6 +1604,7 @@ async function handleGroupClaimInner(
     text,
     isDm,
     openTaskContext: hasPhoto && (Boolean(recentCode) || Boolean(deps.photoBonusOpen)),
+    engaged: deps.engaged,
   });
   // Addressed only by a loose code: silent unless it is the sender's own task.
   const tentative = address.reason === "loose_task_code";
@@ -1670,6 +1682,7 @@ async function handleGroupClaimInner(
     provider: deps.provider,
     now: deps.now,
     nextStep,
+    engaged: deps.engaged,
   });
 
   if (hasPhoto && photo) {

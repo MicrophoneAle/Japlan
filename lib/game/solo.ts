@@ -92,16 +92,14 @@ export function defaultSoloSurveyAnswers(): SurveyAnswers {
     mobility: { skipped: true },
     budget: { value: "medium" },
     blackout: { skipped: true },
-    interests: { value: "balanced" },
-    nightlife: { value: "yes" },
+    interest_picks: { value: "food,weird" },
     drinking: { value: "sometimes" },
     pace: { value: "two_things_and_lunch" },
+    sociability: { value: "love_it" },
     chaos: { value: "high" },
     chaos_dares: { value: "strangers, unidentifiable food" },
-    competitiveness: { value: "along_for_the_ride" },
     attractions: { skipped: true },
     social_with: { skipped: true },
-    social_travelled: { skipped: true },
     social_couples: { value: "n/a" },
   };
 }

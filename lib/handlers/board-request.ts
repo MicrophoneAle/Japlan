@@ -18,7 +18,10 @@ import {
   finishYourSurveyLine,
   refillLimitLine,
   waitingOnSetupLine,
+  UNDER_AGE_LINE,
 } from "@/lib/game/copy";
+import { isUnderAge } from "@/lib/game/preferences";
+import type { SurveyAnswers } from "@/lib/game/survey";
 import { missingRequiredSetup, type SetupFields } from "@/lib/game/setup";
 import { localDateString } from "@/lib/game/time";
 import { sendDM } from "@/lib/linq/send";
@@ -26,6 +29,8 @@ import type { ClaimFallthrough } from "./claims";
 import {
   buildBoardForDate,
   constraintsKnown,
+  dayAnchorsForBoard,
+  type BoardAnchor,
   deliverExistingBoard,
   getBoard,
   lockNewBoard,
@@ -53,9 +58,11 @@ function boardStep(step: string, fields: Record<string, unknown> = {}): void {
 function boardText(
   day: number,
   tasks: Pick<TaskRow, "code" | "title" | "base_points" | "slot" | "neighborhood">[],
+  anchors: BoardAnchor[] = [],
 ): string {
   return formatPersonalBoard({
     day,
+    anchors,
     tasks: tasks.map((t) => ({
       code: t.code,
       title: t.title,
@@ -146,6 +153,12 @@ export async function answerBoardRequest(
     return;
   }
 
+  // REAL: PLAN's 18+ gate for v1.
+  if (isUnderAge((miss.claimant.survey_json ?? {}) as SurveyAnswers)) {
+    await reply(UNDER_AGE_LINE);
+    return;
+  }
+
   const target = parseBoardDay(miss.text, {
     today,
     startDate: trip.start_date,
@@ -177,7 +190,7 @@ export async function answerBoardRequest(
 
   if (open.length > 0) {
     boardStep("list", { tripId: trip.id, day, open: open.length, provisional });
-    const text = boardText(day, open);
+    const text = boardText(day, open, await dayAnchorsForBoard(trip, day));
     await reply(provisional ? provisionalBoard(text) : text, { board: true });
     return;
   }
@@ -224,7 +237,7 @@ export async function answerBoardRequest(
       return;
     }
     boardStep(isRefill ? "refill" : "late_joiner", { tripId: trip.id, day, count: rows.length });
-    const text = boardText(day, rows);
+    const text = boardText(day, rows, await dayAnchorsForBoard(trip, day));
     await reply(isRefill ? boardRefillLine(text) : provisional ? provisionalBoard(text) : text, {
       board: true,
     });
@@ -287,6 +300,6 @@ export async function answerBoardRequest(
     await reply(BOARD_MAKE_FAILED_LINE);
     return;
   }
-  const text = boardText(day, myRows);
+  const text = boardText(day, myRows, await dayAnchorsForBoard(trip, day));
   await reply(isFuture ? provisionalBoard(text) : text, { board: true });
 }

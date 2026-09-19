@@ -132,9 +132,9 @@ async function bootstrapGroup() {
 async function finishSurvey(phone: string, dm: string) {
   // Jump to the last question, then answer it for real.
   const p = person(phone)!;
-  p.survey_state = "social_couples";
+  p.survey_state = "splitting";
   p.survey_json = {};
-  await send(phone, dm, "n/a");
+  await send(phone, dm, "yes");
 }
 
 describe("organizer setup", () => {
@@ -146,7 +146,7 @@ describe("organizer setup", () => {
     expect(lastTo(MIKE_DM)).toBe(
       "trip setup, 4 quick ones. where are you going? a city is plenty. (skip and i'll ask again later)",
     );
-    expect(lastTo(SAM_DM)).toMatch(/what should i call you\?$/); // Sam gets the personal survey
+    expect(lastTo(SAM_DM)).toMatch(/^quick personality test.*stupidly pretty\?$/); // Sam gets the personal survey
 
     await send(MIKE, MIKE_DM, "tokyo");
     expect(openTrip()!.destination).toBe("tokyo, japan");
@@ -166,9 +166,9 @@ describe("organizer setup", () => {
     expect(openTrip()!.stake_text).toBe("karaoke solo in shinjuku");
     expect(openTrip()!.setup_state).toBe("done");
     expect(lastTo(MIKE_DM)).toBe(
-      "got it. setup's done. a few quick ones so the tasks fit you. skip any of them by saying skip. what should i call you?",
+      `got it. setup's done. quick personality test, because asking "what do you like" is useless. pick whatever you'd rather be doing, don't overthink it. say skip whenever. insane local food spot you've never heard of, or kayaking somewhere stupidly pretty?`,
     );
-    expect(person(MIKE)!.survey_state).toBe("first_name");
+    expect(person(MIKE)!.survey_state).toBe("ab_food_outdoors");
   });
 
   it("does not go active until destination and dates are set, then does", async () => {

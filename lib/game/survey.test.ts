@@ -7,6 +7,7 @@ import {
   displayNameFromFirstName,
   includeQuestion,
   isSkip,
+  startSidequestOnboarding,
   startSurvey,
   type PublicTripFields,
   type SurveyAnswers,
@@ -22,20 +23,18 @@ const PRIVATE_ANSWERS: SurveyAnswers = {
   social_couples: { value: "together" },
 };
 
-function answerUntil(
-  stopAt: string,
-  replies: Partial<Record<string, string>>,
-) {
-  let step = startSurvey();
-  const seen: string[] = [step.state.awaiting as string];
-  while (step.state.awaiting !== "done" && step.state.awaiting !== stopAt) {
-    const awaiting = step.state.awaiting;
-    const reply = replies[awaiting] ?? "skip";
-    step = applyReply(step.state, reply);
-    seen.push(step.state.awaiting);
-  }
-  return { step, seen };
-}
+describe("survey helpers", () => {
+  it("counts a trip complete only when everyone is done", () => {
+    expect(allParticipantsComplete(["done", "done"])).toBe(true);
+    expect(allParticipantsComplete(["done", "ab_pace"])).toBe(false);
+    expect(allParticipantsComplete([])).toBe(false);
+  });
+
+  it("reads skip exactly", () => {
+    expect(isSkip("  Skip ")).toBe(true);
+    expect(isSkip("skip this one")).toBe(false);
+  });
+});
 
 describe("first name for standings", () => {
   it("uses the first token of the survey answer", () => {
@@ -46,139 +45,109 @@ describe("first name for standings", () => {
   });
 });
 
-describe("survey skip and branching", () => {
-  it("always accepts skip", () => {
-    expect(isSkip("skip")).toBe(true);
-    expect(isSkip(" SKIP ")).toBe(true);
-    const started = startSurvey();
-    const skipped = applyReply(started.state, "skip");
-    expect(started.state.awaiting).toBe("first_name");
-    expect(skipped.state.answers.first_name).toEqual({ skipped: true });
-    expect(skipped.state.awaiting).toBe("age_bracket");
-  });
-
-  it("asks dietary_strictness only when there is a restriction", () => {
-    const withRestriction = answerUntil("mobility", {
-      age_bracket: "skip",
-      dietary: "has_restriction",
-      dietary_strictness: "allergy",
-    });
-    expect(withRestriction.seen).toContain("dietary_strictness");
-
-    const none = answerUntil("mobility", {
-      age_bracket: "skip",
-      dietary: "none",
-    });
-    expect(none.seen).not.toContain("dietary_strictness");
-    expect(includeQuestion("dietary_strictness", { dietary: { value: "none" } })).toBe(
-      false,
-    );
-  });
-
-  it("asks food_adventure only for food-heavy allocation", () => {
-    expect(
-      includeQuestion("food_adventure", { interests: { value: "food_heavy" } }),
-    ).toBe(true);
-    expect(
-      includeQuestion("food_adventure", { interests: { value: "balanced" } }),
-    ).toBe(false);
-  });
-
-  it("asks drinking only when nightlife is yes", () => {
-    expect(includeQuestion("drinking", { nightlife: { value: "yes" } })).toBe(
-      true,
-    );
-    expect(includeQuestion("drinking", { nightlife: { value: "no" } })).toBe(
-      false,
-    );
-  });
-
-  it("skips paid attractions on low budget", () => {
-    expect(
-      includeQuestion("paid_attractions", { budget: { value: "low" } }),
-    ).toBe(false);
-    expect(
-      includeQuestion("paid_attractions", { budget: { value: "high" } }),
-    ).toBe(true);
-  });
-
-  it("branches chaos high vs low", () => {
-    expect(includeQuestion("chaos_dares", { chaos: { value: "high" } })).toBe(
-      true,
-    );
-    expect(
-      includeQuestion("chaos_alternative", { chaos: { value: "high" } }),
-    ).toBe(false);
-    expect(includeQuestion("chaos_dares", { chaos: { value: "low" } })).toBe(
-      false,
-    );
-    expect(
-      includeQuestion("chaos_alternative", { chaos: { value: "low" } }),
-    ).toBe(true);
-  });
-
-  it("completes after the last included question", () => {
+describe("survey v2: eight quick ones, anything accepted", () => {
+  const at = (awaiting: SurveyAwaiting, answers: SurveyAnswers = {}) => ({ awaiting, answers });
+  const walk = (replies: string[], isSolo = false) => {
     let step = startSurvey();
-    let guard = 0;
-    while (step.state.awaiting !== "done" && guard < 40) {
-      step = applyReply(step.state, "skip");
-      guard += 1;
+    const asked = [step.state.awaiting as string];
+    for (const reply of replies) {
+      step = applyReply(step.state, reply, { isSolo });
+      asked.push(step.state.awaiting as string);
+      if (step.completed) break;
     }
+    return { step, asked };
+  };
+
+  it("opens with the intro and the first either-or, and asks at most eight things", () => {
+    const first = startSurvey();
+    expect(first.prompt).toMatch(/^quick personality test, because asking "what do you like" is useless\./);
+    expect(first.prompt).toMatch(/kayaking somewhere stupidly pretty\?$/);
+    const { step, asked } = walk(["food", "wander", "museum", "cram", "$80", "none", "eat something i can't identify", "yes"]);
     expect(step.completed).toBe(true);
-    expect(step.state.awaiting).toBe("done");
-    expect(allParticipantsComplete(["done"])).toBe(true);
-    expect(allParticipantsComplete(["done", "done", "done"])).toBe(true);
-    expect(allParticipantsComplete(["age_bracket"])).toBe(false);
-    expect(allParticipantsComplete(["done", "age_bracket"])).toBe(false);
-    expect(allParticipantsComplete([])).toBe(false);
-  });
-});
-
-describe("choice answers never store raw text", () => {
-  function at(awaiting: SurveyAwaiting, answers: SurveyAnswers = {}) {
-    return { awaiting, answers };
-  }
-
-  it("re-asks dietary on 'yes, peanuts' instead of storing it", () => {
-    const step = applyReply(at("dietary"), "yes, peanuts");
-    expect(step.state.awaiting).toBe("dietary");
-    expect(step.state.answers.dietary).toBeUndefined();
-    expect(step.completed).toBe(false);
-    expect(step.prompt).toBe("didn't catch that. reply none / yes, or skip.");
+    expect(asked.filter((id) => id !== "done")).toHaveLength(8);
+    expect(step.prompt).toBe("done. you're less mysterious than you think.");
   });
 
-  it("then asks strictness once the restriction is picked", () => {
-    const step = applyReply(at("dietary"), "Has Restriction.");
-    expect(step.state.answers.dietary).toEqual({ value: "has_restriction" });
-    expect(step.state.awaiting).toBe("dietary_strictness");
+  it("reads either-or answers loosely, and stores vague ones as vague, never re-asking", () => {
+    const pick = (text: string) => applyReply(at("ab_food_outdoors"), text).state.answers.ab_food_outdoors;
+    expect(pick("the food one obviously")).toEqual({ value: "a", confidence: "high" });
+    expect(pick("kayak")).toEqual({ value: "b", confidence: "medium" });
+    expect(pick("b")).toEqual({ value: "b", confidence: "medium" });
+    expect(pick("both honestly")).toEqual({ value: "both", confidence: "low" });
+    expect(pick("somewhere in between")).toEqual({ value: "both", confidence: "low" });
+    expect(pick("whatever the group wants")).toEqual({ value: "both", confidence: "low" });
+    expect(pick("neither tbh")).toEqual({ value: "none", confidence: "low" });
+    // A vague answer moves on.
+    expect(applyReply(at("ab_food_outdoors"), "idk").state.awaiting).toBe("ab_discover_iconic");
+    // Skip is a low-confidence middle, still stored.
+    expect(applyReply(at("ab_food_outdoors"), "skip").state.answers.ab_food_outdoors).toEqual({ skipped: true, confidence: "low" });
   });
 
-  it("re-asks an unmatched budget", () => {
-    const step = applyReply(at("budget"), "around $50 a day");
-    expect(step.state.awaiting).toBe("budget");
-    expect(step.state.answers.budget).toBeUndefined();
-    expect(step.prompt).toContain("low / medium / high");
+  it("flags an off-topic reply as unclear, keeps the question, and re-asks it another way", () => {
+    const step = applyReply(at("ab_discover_iconic"), "wait is it raining in tokyo rn");
+    expect(step.unclear).toBe(true);
+    expect(step.state.awaiting).toBe("ab_discover_iconic");
+    expect(step.prompt).toBe("wandering and finding random stuff, or the famous thing?");
   });
 
-  it("offers an explicit no limits option for mobility", () => {
-    expect(applyReply(at("mobility"), "no limits").state.answers.mobility).toEqual({
-      value: "no_limits",
-    });
-    expect(applyReply(at("mobility"), "has_limits").state.answers.mobility).toEqual({
-      value: "has_limits",
-    });
-    const reask = applyReply(at("mobility"), "none");
-    expect(reask.state.awaiting).toBe("mobility");
-    expect(reask.prompt).toContain("no limits / has limits");
+  it("clarifies budget once when it is unusable, then settles on the middle", () => {
+    const vague = applyReply(at("budget_band"), "not too expensive");
+    expect(vague.state.awaiting).toBe("fu_budget");
+    const settled = applyReply(vague.state, "idk, normal");
+    expect(settled.state.answers.budget_band).toEqual({ value: "50_100", confidence: "low" });
+    expect(applyReply(at("budget_band"), "like $80 a day").state.answers.budget_band).toEqual({ value: "50_100", confidence: "medium" });
+    expect(applyReply(at("budget_band"), "don't make me think about money").state.answers.budget_band?.value).toBe("no_limit");
   });
 
-  it("still accepts skip and free text where free text is allowed", () => {
-    expect(applyReply(at("dietary"), "skip").state.answers.dietary).toEqual({
-      skipped: true,
-    });
-    expect(applyReply(at("blackout"), "work call 3pm").state.answers.blackout).toEqual({
-      value: "work call 3pm",
-    });
+  it("asks a follow-up only when it changes a decision", () => {
+    const allergy = applyReply(at("hard_constraints"), "shellfish allergy");
+    expect(allergy.state.awaiting).toBe("fu_allergy_cc");
+    expect(allergy.prompt).toBe("actual allergy where cross-contamination matters too?");
+    const said = applyReply(at("hard_constraints"), "severe peanut allergy, even traces");
+    expect(said.state.awaiting).toBe("must_have");
+    const veg = applyReply(at("hard_constraints"), "vegetarian but not that strict on vacation");
+    expect(veg.state.awaiting).toBe("fu_diet_strict");
+    expect(veg.prompt).toBe("got it, preference not a hard rule?");
+    expect(applyReply(at("hard_constraints"), "none").state.awaiting).toBe("must_have");
+    expect(applyReply(at("hard_constraints"), "a few things").state.awaiting).toBe("fu_constraints");
+    const depends = applyReply(at("splitting"), "depends");
+    expect(depends.state.awaiting).toBe("fu_split");
+    expect(depends.prompt).toBe("depends on what? someone you want to stick with, or just what we're doing?");
+  });
+
+  it("keeps an answer that arrives early and skips that question later", () => {
+    const step = applyReply(at("budget_band"), "also i'm vegetarian lol, 60 a day");
+    expect(step.state.answers.budget_band?.value).toBe("50_100");
+    expect(step.state.answers.hard_constraints).toMatchObject({ value: "i'm vegetarian lol", early: true });
+    expect(includeQuestion("hard_constraints", step.state.answers)).toBe(false);
+    const early = applyReply(at("ab_pace"), "cram it all in. oh and i'm allergic to peanuts");
+    expect(early.state.answers.hard_constraints?.early).toBe(true);
+    expect(early.state.awaiting).toBe("budget_band");
+  });
+
+  it("goes back on 'wait, go back'", () => {
+    const first = applyReply(at("ab_food_outdoors"), "food");
+    const back = applyReply(first.state, "wait, go back");
+    expect(back.state.awaiting).toBe("ab_food_outdoors");
+    expect(back.state.answers.ab_food_outdoors).toBeUndefined();
+    expect(back.prompt).toMatch(/^sure\. insane local food spot/);
+  });
+
+  it("skips the splitting question solo", () => {
+    const { asked } = walk(["a", "a", "a", "a", "$30", "none", "ramen"], true);
+    expect(asked).not.toContain("splitting");
+    expect(asked.at(-1)).toBe("done");
+  });
+
+  it("runs the sidequest onboarding on its own, with red lines only for 2 or 3", () => {
+    const start = startSidequestOnboarding({});
+    expect(start.prompt).toMatch(/^btw i'm turning on sidequests\. how unhinged am i allowed to get\?/);
+    const two = applyReply(start.state, "2");
+    expect(two.state.awaiting).toBe("sidequest_red_lines");
+    const done = applyReply(two.state, "strangers");
+    expect(done.completed).toBe(true);
+    expect(applyReply(start.state, "absolutely not").completed).toBe(true);
+    expect(applyReply(start.state, "civilized").prompt).toBe("civilized it is. i'll keep it polite.");
   });
 });
 

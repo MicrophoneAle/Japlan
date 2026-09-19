@@ -4,6 +4,9 @@ export type AddressingInput = {
   // Photo within 60s of a task code, set by dispatch from recentCodeFor.
   openTaskContext?: boolean;
   wakeKeyword?: string;
+  // The group is in a conversation with the bot (lib/handlers/engagement):
+  // follow-ups need no "japlan".
+  engaged?: boolean;
 };
 
 export type AddressReason =
@@ -14,6 +17,7 @@ export type AddressReason =
   // claim handler stays silent unless it resolves to the sender's own task.
   | "loose_task_code"
   | "wake_keyword"
+  | "engaged"
   | "help"
   | "silent";
 
@@ -168,6 +172,15 @@ export function evaluateAddress(input: AddressingInput): AddressDecision {
     return {
       respond: true,
       reason: "wake_keyword",
+      intent: "none",
+      bypassRateLimit: false,
+    };
+  }
+
+  if (input.engaged) {
+    return {
+      respond: true,
+      reason: "engaged",
       intent: "none",
       bypassRateLimit: false,
     };

@@ -282,7 +282,7 @@ describe("day planning", () => {
 
   it("stores a curveball as source curveball when one lands", async () => {
     const { isCurveballBoard } = await import("@/lib/game/generate");
-    const day = [1, 2, 3, 4, 5].find((d) => isCurveballBoard(`trip-1:${d}:p-mike`));
+    const day = [1, 2, 3, 4, 5].find((d) => isCurveballBoard(`trip-1:${d}:together`));
     expect(day).toBeDefined();
     seedTrip({});
     await say(MIKE, DM[MIKE], `japlan day ${day}`);

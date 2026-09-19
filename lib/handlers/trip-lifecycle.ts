@@ -13,8 +13,17 @@ import {
   finalStandingsLine,
   notOnTripLine,
   onlyOrganizerLine,
+  PROFILE_IN_DM_LINE,
+  profileLine,
+  resurveyStartLine,
+  SETTINGS_IN_DM_LINE,
+  settingsListLine,
   tripNotReadyLine,
 } from "@/lib/game/copy";
+import { settingsSummary } from "@/lib/game/settings";
+import { profileFor } from "./profiles";
+import type { SurveyAnswers } from "@/lib/game/survey";
+import { FIRST_QUESTION_ID, QUESTIONS } from "@/lib/game/survey-questions";
 import { losersOf } from "@/lib/game/setup";
 import { formatBoardTime } from "@/lib/game/board-schedule";
 import { soloModeEnabled } from "@/lib/game/solo";
@@ -26,6 +35,7 @@ import {
   getLatestTripByChatId,
   getTripByChatId,
   listParticipants,
+  persistSurveyProgress,
 } from "./bootstrap";
 import { beginSetup } from "./setup";
 import { bootstrapSoloIfNeeded } from "./solo";
@@ -144,6 +154,46 @@ export async function handleTripCommand(opts: {
     return;
   }
   const people = await listParticipants(trip.id);
+
+  // Everyone's own answers are theirs to see and change, any time. Private
+  // ones, so the list goes to their DM.
+  if (opts.command === "settings") {
+    const text = settingsListLine(settingsSummary((participant.survey_json ?? {}) as SurveyAnswers));
+    if (opts.isDm) {
+      await send(opts.chatId, text);
+    } else {
+      await sendDM(participant.phone, text);
+      await send(opts.chatId, SETTINGS_IN_DM_LINE);
+    }
+    return;
+  }
+  if (opts.command === "profile") {
+    const text = profileLine(await profileFor(trip, participant.id));
+    if (opts.isDm) {
+      await send(opts.chatId, text);
+    } else {
+      await sendDM(participant.phone, text);
+      await send(opts.chatId, PROFILE_IN_DM_LINE);
+    }
+    return;
+  }
+  if (opts.command === "resurvey") {
+    // Back to the first question, keeping every answer until it is replaced
+    // (skip keeps the old one). Their boards keep working meanwhile.
+    await persistSurveyProgress({
+      participantId: participant.id,
+      awaiting: FIRST_QUESTION_ID,
+      answers: (participant.survey_json ?? {}) as SurveyAnswers,
+    });
+    const prompt = resurveyStartLine(QUESTIONS[FIRST_QUESTION_ID].prompt);
+    if (opts.isDm) {
+      await send(opts.chatId, prompt);
+    } else {
+      await sendDM(participant.phone, prompt);
+      await send(opts.chatId, SETTINGS_IN_DM_LINE.replace("your settings are", "your questions are"));
+    }
+    return;
+  }
 
   if (opts.command === "setup") {
     const refusal = await authorize({ trip, participant, people, action: "change the setup" });
