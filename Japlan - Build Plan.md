@@ -71,7 +71,7 @@ teams          id, trip_id, name, color, formed_at, dissolved_at
 
 team_members   id, team_id, participant_id
 
-places         id, trip_id, name, lat, lng, category, source,
+places         id, trip_id, fsq_place_id, name, lat, lng, category, source,
                suggested_by, hours_json, price_band, score
 
 itinerary      id, trip_id, day, anchor_order, place_id, planned_time
@@ -202,6 +202,27 @@ Peer-confirmed is both your cheating defense and a way to pull the other team in
 - Reused photos: caught by the perceptual hash
 - Team task claimed by one member: awards to every member of that team at resolution time
 
+### Splitting up
+
+A split is triggered conversationally, not by a command. Someone says the group is dividing, the bot confirms who is with whom, and teams exist until the group reconverges or the day ends.
+
+```
+Sarah: japlan me and jess are doing shimokita, boys are
+       going to akihabara
+```
+
+The bot parses the split from the message where it can and asks only about people it could not place. It never makes anyone register for a team.
+
+Team boards are generated per team from that point, along the route each team is actually taking. That is where the mechanic pays off: teams doing different tasks along a shared route, reconverging at the next anchor.
+
+### Disengagement
+
+One person dropping out around day two is the common case, and an unhandled one. The scoreboard showing them falling further behind is exactly the wrong feedback.
+
+When a participant has claimed nothing for roughly a day and has not replied to a DM, the bot stops DMing them, keeps them on the standings without comment, and does not chase. If they claim something later, they resume as if nothing happened. No "welcome back", no catch-up offer, no mention of the gap.
+
+The principle matches the rest of the scoring design: nothing about the system should make a quiet afternoon feel like a penalty.
+
 ## Tasks and sidequests
 
 ### Generation, in three layers
@@ -289,6 +310,22 @@ Tomorrow is always provisional until the night before. That is what makes last-m
 
 After each anchor, prompt for a rating. A thumbs down on a temple lowers the weight on religious sites for the rest of the trip. Ratings feed preferences only, never points, or people will spam them.
 
+### Last-minute changes
+
+Re-planning is regeneration, not editing. When a constraint moves (the group wakes up late, it starts raining, someone is sick), the day is rebuilt from the updated constraints and the unchanged anchors happen to survive.
+
+The hours filter is code, so a dropped anchor is a fact rather than a judgement call: shifting a start time from 9am to 2pm removes a morning-only market automatically. The bot states what dropped and why in one line, and does not negotiate.
+
+Only the current day and later are regenerated. Completed anchors and resolved claims are immutable, which is what makes retroactive claims safe.
+
+### Ratings
+
+Fired after each anchor, tapback-only so nobody has to type. A thumbs down on a temple lowers the weight on religious sites for the rest of the trip and reshuffles tomorrow's unconfirmed candidates.
+
+Ratings feed preference weights only and never award points. Attach points and people spam them.
+
+Ratings on an anchor also feed task generation, not just the itinerary: a group that dislikes museums should stop getting museum-adjacent tasks too.
+
 ### Foursquare as the places layer
 
 All structured place data comes from the Foursquare Places API. Base URL `https://places-api.foursquare.com`, search at `GET /places/search`.
@@ -302,7 +339,7 @@ Two constraints that shape the design:
 - **Call budget.** The free Pro allowance dropped to 500 calls a month on June 1, 2026. One trip's destination profile can eat a meaningful chunk of that. Batch all searches at trip creation, cache into the `places` table, and never call Foursquare from the webhook path.
 - **Storage terms.** The standard Places license restricts storing, merging, or redistributing data outside the application, which is in tension with caching a profile for five days. Read the terms on the actual plan before building the cache layer. If storage is restricted, use Foursquare Open Places (flat quotas, results can be stored) for the cacheable bulk layer and Pro only for live lookups.
 
-The payoff is the taxonomy: over 1,500 stable category IDs. Map the survey's interest buckets to category ID sets once in a constants file, and preference weighting becomes a filter rather than a prompt. Store `fsq_id` on every row in `places` so a specific venue can be re-fetched later.
+The payoff is the taxonomy: over 1,500 stable category IDs. Map the survey's interest buckets to category ID sets once in a constants file, and preference weighting becomes a filter rather than a prompt. Store the venue id on every row in `places` so a specific venue can be re-fetched later. The field is `fsq_place_id`, not `fsq_id`, confirmed against a live response.
 
 ### Scope for v1
 
@@ -372,6 +409,14 @@ Re-survey briefly on day three. What people said they wanted before the trip and
 ### The rule that matters most
 
 **Everything collected in DM stays in DM.** If the bot ever says "Michael's budget is low" in the group chat, you have built a machine for creating awkwardness. Enforce it at the prompt level and write a deliberate test for it.
+
+### Split the survey in two
+
+Six questions is already near the abandonment threshold, and the current design asks all of them before the bot has done anything useful. Someone just got added to a group chat by a friend and is immediately asked about allergies, budget, and who they want to be teamed with.
+
+Better: ask only the hard constraints at setup (dietary, mobility, budget ceiling, age bracket), then ask the preference questions on day one once the bot has posted a board and earned some trust. Two short conversations instead of one long one, and the day-one answers are better because the person now knows what they are answering for.
+
+`survey_state` already supports this, since it tracks position across many messages. The change is a second survey phase, not a second mechanism.
 
 ## Gemini integration
 
@@ -556,27 +601,245 @@ What Browserbase is explicitly **not** doing in v1: booking accommodations. That
 
 Also not in v1: bulk hours scraping. It was tempting, but scraping gets you the page and the parsing is still the hard part, and a confidently wrong closure day is worse than no data because the group shows up.
 
+## Message formats
+
+Every string the bot sends lives in `lib/game/copy.ts` as a constant or template, never inline in logic. The wording is product design and gets edited by hand; generated copy reads like a form.
+
+House style: lowercase and conversational, no emoji except the status glyphs below, no exclamation marks, never more than one message where one will do.
+
+### The daily board
+
+```
+Day 3 · Asakusa → Ueno · 18°C, rain after 4pm
+
+⚓ 10:00 Senso-ji
+⚓ 14:00 Ueno Park
+⚓ 19:00 Ameyoko
+
+C1 · eat something starting with A-D in Ameyoko (15)
+C2 · find a vending machine drink nobody recognizes (20)
+C3 · get from Senso-ji to Ueno without a train (30)
+C4 · learn one phrase from a stranger, use it wrong (25)
+
+Michael 140 · Sarah 135 · Dev 110 · Jess 95 · Aidan 95
+```
+
+The code letter is the day: A is day 1, B is day 2. That keeps a retroactive claim legible on day five. Digits are the task index within the day, one or two of them, so a board can exceed nine tasks.
+
+Weather is in the header because it should already have shifted generation. A rain-heavy afternoon produces an indoor-weighted board, not an outdoor board with a warning attached.
+
+### Claim confirmation
+
+One line, always. The running total is the last element so the eye lands on it.
+
+```
+✅ C2 · Michael +20 · 160
+✅ C2 · Michael +20 +2 photo · 162
+```
+
+No commentary, no congratulation, no restating the task. The bot is a scorekeeper.
+
+### Peer confirmation
+
+```
+Dev claims C3 (no train, Senso-ji → Ueno).
+👍 this if you believe him.
+```
+
+Resolves on the tapback event from anyone who is not the claimant.
+
+### Splitting up
+
+Triggered by someone saying so, not by a command. The bot confirms the shape rather than asking people to register.
+
+```
+got it. two groups till dinner.
+
+Sarah + Jess · D5, D6
+Michael + Dev + Aidan · D7, D8
+
+team tasks pay full points to everyone on the team.
+```
+
+That last line is stated once per split, because the full-points rule is unintuitive and it changes how people behave.
+
+### Ratings
+
+Fired after an anchor. Tapback-only, no typing required.
+
+```
+Senso-ji, worth it?
+👍 / 👎
+```
+
+The response is at most one short line, and never a score: `noted. fewer temples.`
+
+### Sidequests
+
+DM out:
+
+```
+sidequest, 30 min. first only.
+order something by pointing, no english. 10 pts.
+ignore this if you're not up for it.
+```
+
+Group announce in, only on a win. A sidequest nobody took is never mentioned again.
+
+```
+Dev took the sidequest. +10 · 150
+```
+
+### End of day
+
+The better storytelling moment than the morning board, and currently the weakest-specified message. It should recap what people actually did, not just print standings.
+
+```
+day 3 done.
+
+Dev crossed Asakusa on a rented bike (C3, 30)
+Sarah found a drink none of you could read (C2, 20)
+nobody touched C4.
+
+Michael 160 · Sarah 155 · Dev 150 · Jess 95 · Aidan 95
+
+C4 rolls over to tomorrow, worth 30 now.
+```
+
+### Last-minute changes
+
+The bot re-plans rather than negotiating. Hours filtering is code, so a dropped anchor is a fact, not an opinion.
+
+```
+fair. Day 4 starts at 2pm now.
+dropped Tsukiji (it's a morning thing).
+Hama-rikyu moved to 2:30, Ginza after.
+new board coming at 1.
+```
+
+### Itinerary proposal
+
+Attribution matters here: naming who suggested a place is what makes the plan feel like the group's rather than the bot's. Unresolved candidates are surfaced, never silently dropped, and an empty day is stated honestly rather than padded.
+
+```
+here's a shape for the week. nothing's locked.
+
+Day 1 · Asakusa + Ueno
+  Senso-ji
+  Ameyoko
+  + the izakaya Dev linked
+
+Day 3 · open
+  I've got nothing clustered here yet
+
+3 places didn't resolve: "that cat cafe emma sent",
+"the vending machine place", "kenji's ramen rec".
+want me to guess, or will someone paste links?
+
+swap anything, or say go.
+```
+
 ## Wrapped
 
-Almost free if you instrument from day one, so do the instrumenting in step 2 rather than retrofitting it later.
+Almost free if you instrument from day one, so log location, timestamp, participant, task, points and photo on every claim in step 2 rather than retrofitting it. Retrofitting means a trip's data is already gone.
 
-Log on every claim: timestamp, location, participant, task, points, photo. That gives you:
+### Build it against fixtures
 
-- Cities and neighborhoods visited
-- Attractions visited (from itinerary anchors plus location-bound claims)
-- Distance travelled, summed Haversine between consecutive claims
-- Photos posted
-- The score timeline, as a chart of both teams over the trip
+**Wrapped must render from seed data before it renders from the database.** A page that only works after a real five-day trip cannot be built, tested, or shown until a real five-day trip exists. Ship `fixtures/wrapped-demo.json` matching the contract below on day one, build the entire page against it, and swap to a live aggregation query at the end.
 
-The stats people actually screenshot are the weird ones, not the totals. Worth computing:
+That also makes Wrapped fully parallelizable with the bot, which is the main reason to freeze the contract early.
+
+### The data contract
+
+```ts
+type WrappedData = {
+  trip: {
+    name: string;
+    destination: string;
+    startDate: string;
+    endDate: string;
+    days: number;
+  };
+  stats: {
+    distanceKm: number;
+    tasksClaimed: number;
+    photosPosted: number;
+    neighborhoods: string[];
+    sidequestsClaimed: number;
+  };
+  route: {
+    lat: number;
+    lng: number;
+    label: string;
+    day: number;
+    timestamp: string;
+  }[];
+  photos: {
+    url: string;
+    taskTitle: string;
+    participant: string;
+    awarded: number;
+  }[];
+  standings: { name: string; score: number; rank: number }[];
+  superlatives: {
+    label: string;
+    value: string;
+    detail?: string;
+    photoUrl?: string;
+  }[];
+  stake: string | null;
+  perPerson: Record<string, {
+    score: number;
+    rank: number;
+    tasksClaimed: number;
+    favoriteCategory: string;
+    longestStreak: number;
+    personalSuperlatives: { label: string; value: string }[];
+  }>;
+};
+```
+
+### Page structure
+
+A vertical scroll of full-viewport cards, one claim per card, animating in. Not a dashboard: each screen makes exactly one point.
+
+| # | Card | Content |
+| --- | --- | --- |
+| 1 | Cover | Trip name, destination, dates |
+| 2 | The numbers | Distance, tasks, photos, neighborhoods |
+| 3 | The map | Route drawn from claim coordinates, animated |
+| 4 | Photo wall | Every claimed photo, grid |
+| 5 | Standings | Final scores, animated count-up |
+| 6 | Superlatives | One card each, five or six of them |
+| 7 | The stake | What the group agreed the loser does |
+| 8 | Share | Screenshot-sized card plus copy link |
+
+Card 3 is the strongest visual and the cheapest to build well: claims carry coordinates and timestamps, so the actual path through the city is a polyline over a map.
+
+### Superlatives beat totals
+
+Totals are forgettable. These are what get screenshotted, so compute five or six and give each its own card with one large number and one line of text:
 
 - Longest gap between two claims
 - The task nobody completed
-- Who claimed the most sidequests after midnight
-- The most-rejected photo
+- Most sidequests claimed after midnight
+- Most-rejected photo, with the photo
 - Biggest single-day comeback
+- Fastest claim after a board dropped
+- The one person who never took a sidequest
 
-Render as a shareable page, drop the link in the group chat on the last night. This is also your only real growth loop, since a Wrapped page shared outside the group is how the next group hears about Japlan.
+### Group and personal views
+
+One page, two sections. Group cards first, then a personalized section keyed off a participant id in the query string.
+
+```
+/w/<trip-slug>              group view
+/w/<trip-slug>?p=<person>   group view plus your section
+```
+
+Each person gets their own link on the last night. The personal section is where sharing actually comes from, since people share things about themselves.
+
+Render as a shareable page and drop the link in the group chat on the last night. This is also the only real growth loop: a Wrapped page shared outside the group is how the next group hears about Japlan.
 
 ## Build order
 
@@ -604,6 +867,24 @@ Do step 2 in an actual group chat with two friends on day one. Group payload sha
 - **Instrument for Wrapped in step 2**, because retrofitting location logging means a trip's data is gone
 - **Channel abstraction** even though v1 is iOS-only: one `channel` field, all Linq calls behind one adapter, so adding RCS or WhatsApp later is a change in one module
 - **Addressing gate first**, before any claim logic: the keyword check and the silent-by-default path are cheaper to build correctly than to retrofit onto a chatty bot
+
+### Parallelizing across a team
+
+The critical path is the bot: Linq, webhook, claim resolution, scoring. Everything else can proceed independently once the schema and the `WrappedData` contract are frozen.
+
+| Track | Owns | Blocked by |
+| --- | --- | --- |
+| Bot core | Linq adapter, webhook, addressing, claims, scoring | Nothing after milestone 2 |
+| Generation | Gemini task generation, template bank, survey copy | Schema only |
+| Wrapped | The full page, against fixtures | The data contract only |
+| Itinerary | Foursquare resolution, clustering, proposal formatting | Schema only |
+
+Wrapped finishes first because fixtures unblock it completely. When it does, that track picks up itinerary proposal formatting, which is similarly self-contained.
+
+The two things that must be hand-written rather than generated, by whoever owns them:
+
+- **Survey question text.** The whole premise is that it feels like texting, and that is carried entirely by wording.
+- **The task template bank.** Twenty to thirty archetypes. A model asked to invent them produces generic filler; a model filling slots in good templates produces your voice at scale.
 
 ## Open decisions
 

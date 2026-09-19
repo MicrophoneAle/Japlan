@@ -1,11 +1,13 @@
 import { getServiceClient } from "@/lib/db/client";
 import { evaluateAddress } from "@/lib/game/addressing";
-import {
-  onChatCreated,
-  onParticipantAdded,
-} from "@/lib/handlers/bootstrap";
+import { bootstrapGroupIfNeeded } from "@/lib/handlers/bootstrap";
 import { handleSurveyDm } from "@/lib/handlers/survey";
 import {
+  chatIdFromData,
+  isDirectChat,
+  isFromMe,
+  isGroupChat,
+  senderFromData,
   textFromParts,
   type LinqEnvelope,
 } from "@/lib/linq/payload";
@@ -30,34 +32,20 @@ async function markProcessed(eventId: string | undefined, tripId?: string) {
   }
 }
 
-function senderPhone(data: Record<string, unknown>): string | null {
-  const sender = data.sender_handle;
-  if (!isRecord(sender) || typeof sender.handle !== "string") return null;
-  return sender.handle;
-}
-
-function chatMeta(data: Record<string, unknown>): {
-  chatId: string | null;
-  isGroup: boolean | null;
-} {
-  const chat = data.chat;
-  if (!isRecord(chat) || typeof chat.id !== "string") {
-    return { chatId: null, isGroup: null };
-  }
-  const isGroup =
-    chat.is_group === true ? true : chat.is_group === false ? false : null;
-  return { chatId: chat.id, isGroup };
-}
-
 async function onMessageReceived(data: unknown): Promise<void> {
   if (!isRecord(data)) return;
   if (data.direction === "outbound") return;
 
-  const { chatId, isGroup } = chatMeta(data);
+  const chatId = chatIdFromData(data);
   if (!chatId) return;
 
+  const isGroup = isGroupChat(data);
+  if (isGroup) {
+    await bootstrapGroupIfNeeded(chatId);
+  }
+
   const text = textFromParts(data.parts);
-  const isDm = isGroup === false;
+  const isDm = isDirectChat(data);
   const decision = evaluateAddress({
     text,
     isDm,
@@ -75,7 +63,7 @@ async function onMessageReceived(data: unknown): Promise<void> {
     return;
   }
 
-  const phone = senderPhone(data);
+  const phone = senderFromData(data)?.handle ?? null;
   const messageId = typeof data.id === "string" ? data.id : null;
   if (messageId) {
     try {
@@ -94,13 +82,17 @@ async function onMessageReceived(data: unknown): Promise<void> {
 
 export async function dispatchLinqEvent(envelope: LinqEnvelope): Promise<void> {
   try {
-    const type = envelope.event_type;
-    if (type === "message.received") {
+    if (isFromMe(envelope.data)) {
+      console.debug("[japlan.dispatch] ignore is_me", {
+        type: envelope.event_type,
+        eventId: envelope.event_id,
+      });
+      await markProcessed(envelope.event_id);
+      return;
+    }
+
+    if (envelope.event_type === "message.received") {
       await onMessageReceived(envelope.data);
-    } else if (type === "chat.created") {
-      await onChatCreated(envelope.data);
-    } else if (type === "participant.added") {
-      await onParticipantAdded(envelope.data);
     }
     await markProcessed(envelope.event_id);
   } catch (err) {

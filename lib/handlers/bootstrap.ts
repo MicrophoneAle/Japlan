@@ -10,11 +10,8 @@ import {
 } from "@/lib/game/survey";
 import { getLinqClient } from "@/lib/linq/client";
 import {
-  handleFromUnknown,
   handlesFromUnknown,
   humansFromHandles,
-  isBotHandle,
-  sameHandle,
   type HandleLike,
 } from "@/lib/linq/payload";
 import { sendDM, sendText } from "@/lib/linq/send";
@@ -32,7 +29,7 @@ function asParticipants(rows: unknown): ParticipantRow[] {
   return (rows ?? []) as ParticipantRow[];
 }
 
-async function fetchChatHandles(chatId: string): Promise<{
+async function fetchChat(chatId: string): Promise<{
   displayName: string | null;
   handles: HandleLike[];
 }> {
@@ -43,7 +40,7 @@ async function fetchChatHandles(chatId: string): Promise<{
   };
 }
 
-async function getTripByChatId(chatId: string): Promise<TripRow | null> {
+export async function getTripByChatId(chatId: string): Promise<TripRow | null> {
   const { data, error } = await getServiceClient()
     .from("trips")
     .select(TRIP_COLS)
@@ -62,7 +59,10 @@ async function listParticipants(tripId: string): Promise<ParticipantRow[]> {
   return asParticipants(data);
 }
 
-async function createTrip(chatId: string, displayName: string | null): Promise<TripRow> {
+async function insertTrip(
+  chatId: string,
+  displayName: string | null,
+): Promise<{ trip: TripRow; created: boolean }> {
   const { data, error } = await getServiceClient()
     .from("trips")
     .insert({
@@ -82,11 +82,11 @@ async function createTrip(chatId: string, displayName: string | null): Promise<T
   if (error) {
     if (error.code === "23505") {
       const existing = await getTripByChatId(chatId);
-      if (existing) return existing;
+      if (existing) return { trip: existing, created: false };
     }
     throw error;
   }
-  return asTrip(data);
+  return { trip: asTrip(data), created: true };
 }
 
 async function upsertHumans(
@@ -147,93 +147,38 @@ export async function maybeActivateTrip(trip: TripRow): Promise<void> {
   if (error) throw error;
 }
 
-export async function bootstrapGroupChat(opts: {
-  chatId: string;
-  displayName?: string | null;
-  handles?: HandleLike[];
-}): Promise<TripRow> {
-  let handles = opts.handles ?? [];
-  let displayName = opts.displayName ?? null;
-  if (handles.length === 0) {
-    const fetched = await fetchChatHandles(opts.chatId);
-    handles = fetched.handles;
-    displayName = displayName ?? fetched.displayName;
-  }
+// First group message.received with no trip: fetch members from Linq, create
+// the trip, post intro, DM the survey. The insert winner owns side effects so
+// concurrent first messages do not double-intro.
+export async function bootstrapGroupIfNeeded(chatId: string): Promise<TripRow> {
+  const existing = await getTripByChatId(chatId);
+  if (existing) return existing;
 
-  let trip = await getTripByChatId(opts.chatId);
-  if (!trip) {
-    trip = await createTrip(opts.chatId, displayName);
-  }
+  const fetched = await fetchChat(chatId);
+  const { trip, created } = await insertTrip(chatId, fetched.displayName);
+  if (!created) return trip;
 
-  const participants = await upsertHumans(trip.id, handles);
+  const participants = await upsertHumans(trip.id, fetched.handles);
 
-  if (trip.state === "bootstrapping") {
-    const publicTrip = {
-      id: trip.id,
-      linq_chat_id: trip.linq_chat_id,
-      name: trip.name,
-      state: trip.state,
-    };
-    await sendText(trip.linq_chat_id, buildIntroGroupPost(publicTrip));
-  }
+  const publicTrip = {
+    id: trip.id,
+    linq_chat_id: trip.linq_chat_id,
+    name: trip.name,
+    state: trip.state,
+  };
+  await sendText(trip.linq_chat_id, buildIntroGroupPost(publicTrip));
 
   for (const person of participants) {
     await startSurveyDm(person);
   }
 
-  if (trip.state === "bootstrapping") {
-    const { error } = await getServiceClient()
-      .from("trips")
-      .update({ state: "surveying" })
-      .eq("id", trip.id)
-      .eq("state", "bootstrapping");
-    if (error) throw error;
-    trip = { ...trip, state: "surveying" };
-  }
-
-  return trip;
-}
-
-export async function onBotAddedToChat(chatId: string): Promise<void> {
-  if (!chatId) return;
-  await bootstrapGroupChat({ chatId });
-}
-
-export async function onChatCreated(data: unknown): Promise<void> {
-  if (!data || typeof data !== "object") return;
-  const row = data as Record<string, unknown>;
-  if (typeof row.id !== "string") return;
-  if (row.is_group !== true) return;
-  await bootstrapGroupChat({
-    chatId: row.id,
-    displayName: typeof row.display_name === "string" ? row.display_name : null,
-    handles: handlesFromUnknown(row.handles),
-  });
-}
-
-export async function onParticipantAdded(data: unknown): Promise<void> {
-  if (!data || typeof data !== "object") return;
-  const row = data as Record<string, unknown>;
-  const chatId = typeof row.chat_id === "string" ? row.chat_id : "";
-  if (!chatId) return;
-
-  const added =
-    handleFromUnknown(row.participant) ??
-    (typeof row.handle === "string" ? { handle: row.handle, is_me: null } : null);
-  if (!added) return;
-
-  const addedIsBot = added.is_me === true || isBotHandle(added.handle);
-  if (addedIsBot) {
-    await onBotAddedToChat(chatId);
-    return;
-  }
-
-  const trip = await getTripByChatId(chatId);
-  if (!trip) return;
-
-  const participants = await upsertHumans(trip.id, [added]);
-  const person = participants.find((p) => sameHandle(p.phone, added.handle));
-  if (person) await startSurveyDm(person);
+  const { error } = await getServiceClient()
+    .from("trips")
+    .update({ state: "surveying" })
+    .eq("id", trip.id)
+    .eq("state", "bootstrapping");
+  if (error) throw error;
+  return { ...trip, state: "surveying" };
 }
 
 export async function findOpenSurveyByPhone(
@@ -244,14 +189,17 @@ export async function findOpenSurveyByPhone(
     .select(`${PARTICIPANT_COLS}, trips (${TRIP_COLS})`)
     .eq("phone", phone);
   if (error) throw error;
-  const rows = (data ?? []) as Array<ParticipantRow & { trips: TripRow | TripRow[] | null }>;
+  const rows = (data ?? []) as Array<
+    ParticipantRow & { trips: TripRow | TripRow[] | null }
+  >;
   const mapped = rows.flatMap((row) => {
     const trip = Array.isArray(row.trips) ? row.trips[0] : row.trips;
     if (!trip) return [];
     return [{ trip, participant: row }];
   });
   const open = mapped.find(
-    (row) => row.participant.survey_state && row.participant.survey_state !== "done",
+    (row) =>
+      row.participant.survey_state && row.participant.survey_state !== "done",
   );
   return open ?? mapped[0] ?? null;
 }

@@ -1,6 +1,6 @@
-// Field names are from @linqapp/sdk webhook types (webhook_version 2026-02-03).
-// TODO: no .captures/events.ndjson report exists yet; re-check these paths
-// against scripts/inspect-captures.ts once real events are on disk.
+// Field names confirmed from .captures/events.ndjson plus @linqapp/sdk
+// webhook_version 2026-02-03. participant.added and chat.created do not fire
+// when the bot is added to an iMessage group.
 
 export type LinqEnvelope = {
   event_id?: string;
@@ -11,6 +11,12 @@ export type LinqEnvelope = {
 export type HandleLike = {
   handle: string;
   is_me?: boolean | null;
+};
+
+export type MediaPart = {
+  type: "media";
+  mime: string;
+  url: string;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -43,6 +49,23 @@ export function textFromParts(parts: unknown): string {
   return chunks.join("\n").trim();
 }
 
+export function mediaFromParts(parts: unknown): MediaPart[] {
+  if (!Array.isArray(parts)) return [];
+  const out: MediaPart[] = [];
+  for (const part of parts) {
+    if (!isRecord(part)) continue;
+    if (part.type !== "media") continue;
+    const mime =
+      (typeof part.mime === "string" && part.mime) ||
+      (typeof part.mime_type === "string" && part.mime_type) ||
+      "";
+    const url = typeof part.url === "string" ? part.url : "";
+    if (!url) continue;
+    out.push({ type: "media", mime, url });
+  }
+  return out;
+}
+
 export function handleFromUnknown(value: unknown): HandleLike | null {
   if (!isRecord(value)) return null;
   if (typeof value.handle !== "string" || value.handle.length === 0) return null;
@@ -50,6 +73,15 @@ export function handleFromUnknown(value: unknown): HandleLike | null {
     handle: value.handle,
     is_me: value.is_me === true ? true : value.is_me === false ? false : null,
   };
+}
+
+export function senderFromData(data: unknown): HandleLike | null {
+  if (!isRecord(data)) return null;
+  return handleFromUnknown(data.sender_handle);
+}
+
+export function isFromMe(data: unknown): boolean {
+  return senderFromData(data)?.is_me === true;
 }
 
 export function handlesFromUnknown(value: unknown): HandleLike[] {
@@ -63,5 +95,29 @@ export function handlesFromUnknown(value: unknown): HandleLike[] {
 }
 
 export function humansFromHandles(handles: HandleLike[]): HandleLike[] {
-  return handles.filter((handle) => handle.is_me !== true && !isBotHandle(handle.handle));
+  return handles.filter(
+    (handle) => handle.is_me !== true && !isBotHandle(handle.handle),
+  );
+}
+
+// Captures show the chat id as both data.chat_id and data.chat.id.
+export function chatIdFromData(data: unknown): string | null {
+  if (!isRecord(data)) return null;
+  const nested =
+    isRecord(data.chat) && typeof data.chat.id === "string" && data.chat.id
+      ? data.chat.id
+      : null;
+  const flat =
+    typeof data.chat_id === "string" && data.chat_id ? data.chat_id : null;
+  return nested ?? flat;
+}
+
+export function isGroupChat(data: unknown): boolean {
+  if (!isRecord(data)) return false;
+  return isRecord(data.chat) && data.chat.is_group === true;
+}
+
+export function isDirectChat(data: unknown): boolean {
+  if (!isRecord(data)) return false;
+  return isRecord(data.chat) && data.chat.is_group === false;
 }

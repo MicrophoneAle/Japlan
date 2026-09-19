@@ -30,8 +30,9 @@ export async function POST(request: Request): Promise<Response> {
     return new Response("invalid json", { status: 400 });
   }
 
-  // TODO: confirm whether events.linq_event_id should be payload.event_id or the webhook-id header when they differ.
-  const linqEventId = envelope.event_id ?? request.headers.get("webhook-id");
+  // Idempotency key is payload.event_id. webhook-id is a per-delivery id and
+  // does not match event_id (confirmed 19/19 in .captures/events.ndjson).
+  const linqEventId = envelope.event_id;
   const type = envelope.event_type;
   if (!linqEventId || !type) {
     return new Response("missing event_id or event_type", { status: 400 });
