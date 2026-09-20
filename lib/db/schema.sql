@@ -165,6 +165,13 @@ create table places (
   -- Which city this place is in. Clustering never routes across legs, so a
   -- Tokyo place can never be the nearest neighbour of an Osaka task.
   leg_id uuid references trip_legs (id) on delete set null,
+  -- source 'social': the link it came from, the street address off the
+  -- caption (the poster's own words, not a licensed Foursquare field), and
+  -- when it resolved. fsq_place_id stays null while Foursquare has no
+  -- credits; places_needs_fsq is the backfill query.
+  source_url text,
+  address text,
+  resolved_at timestamptz,
   created_at timestamptz not null default now(),
   unique (trip_id, fsq_place_id)
 );
@@ -415,6 +422,33 @@ create table multiplier_days (
   unique (trip_id, local_date)
 );
 create index multiplier_days_trip_date on multiplier_days (trip_id, local_date);
+
+-- Links dropped in the chat, resolved into places. One table is both the
+-- queue and the attempt log: every try keeps the text it extracted and why it
+-- ended the way it did, so the real hit rate per source comes from live
+-- traffic (select kind, status, count(*) from social_links group by 1, 2).
+create table social_links (
+  id uuid primary key default gen_random_uuid(),
+  trip_id uuid not null references trips (id) on delete cascade,
+  participant_id uuid references participants (id) on delete set null,
+  chat_id text,
+  url text not null,
+  -- tiktok | instagram | maps | article
+  kind text not null,
+  -- queued | resolved | unresolved | failed | skipped. "unresolved" means we
+  -- read something but it named no venue: a first-class outcome, and the
+  -- caption is kept so the group can clarify later.
+  status text not null default 'queued',
+  attempts integer not null default 0,
+  extracted_text text,
+  outcome text,
+  place_id uuid references places (id) on delete set null,
+  created_at timestamptz not null default now(),
+  attempted_at timestamptz,
+  resolved_at timestamptz,
+  unique (trip_id, url)
+);
+create index social_links_queue on social_links (trip_id, status, created_at);
 
 -- Credential smoke test only. Not part of the game data model.
 create table if not exists smoke_scratch (

@@ -43,7 +43,12 @@ import type { LatLng } from "@/lib/game/duration";
 import { parseClockMinutes } from "@/lib/game/day-plan";
 import { resolvePlace } from "@/lib/game/plan-board";
 import { categoryKeyFor } from "@/lib/game/preferences";
-import { fitSuggestion, splitPlaceList, type DayPoints } from "@/lib/game/suggestions";
+import {
+  fitSuggestion,
+  splitPlaceList,
+  type DayPoints,
+  type SuggestionFit,
+} from "@/lib/game/suggestions";
 import { hhmm, resolveSplit, type SplitInput } from "@/lib/game/split";
 import { answerValue, displayNameFromFirstName, type SurveyAnswers } from "@/lib/game/survey";
 import { looksLikePhone } from "@/lib/linq/payload";
@@ -342,6 +347,26 @@ async function saveSuggestion(opts: {
 }
 
 // "we should go to teamLab", "there's a jazz bar in golden gai i want to hit".
+// Put an already-saved place on the day it best fits, and say which. Shared
+// by the conversation tool (add_suggestion) and by link resolution, so a place
+// from a TikTok lands exactly the way a place someone typed does.
+export async function anchorSuggestion(opts: {
+  trip: TripRow;
+  now: Date;
+  placeId: string;
+  coords: LatLng | null;
+  askedDay?: number | null;
+}): Promise<SuggestionFit> {
+  const profile = profileOf(opts.trip);
+  const ctx = { trip: opts.trip, now: opts.now } as Ctx;
+  const days = await dayPoints(ctx, profile);
+  const fit = fitSuggestion({ coords: opts.coords, days, askedDay: opts.askedDay ?? null });
+  if (fit.kind === "near" || fit.kind === "open_day" || fit.kind === "asked_day") {
+    await anchorOnDay(opts.trip.id, fit.day, opts.placeId);
+  }
+  return fit;
+}
+
 export async function addSuggestion(
   ctx: Ctx,
   args: { place: string; neighborhood?: string | null; day?: string | null },

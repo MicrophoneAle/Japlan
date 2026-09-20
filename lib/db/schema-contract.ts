@@ -50,7 +50,7 @@ export const SCHEMA_CONTRACT: TableColumns = {
   board_requests: ["id", "trip_id", "participant_id", "requested_on", "day", "kind", "created_at"],
   teams: ["id", "trip_id", "name", "color", "formed_at", "dissolved_at", "day", "starts_at", "rejoin_at", "rejoin_place", "area"],
   team_members: ["id", "team_id", "participant_id", "created_at"],
-  places: ["id", "trip_id", "fsq_place_id", "name", "lat", "lng", "category", "source", "suggested_by", "hours_json", "price_band", "score", "note", "leg_id", "created_at"],
+  places: ["id", "trip_id", "fsq_place_id", "name", "lat", "lng", "category", "source", "suggested_by", "hours_json", "price_band", "score", "note", "leg_id", "source_url", "resolved_at", "address", "created_at"],
   itinerary: ["id", "trip_id", "day", "anchor_order", "place_id", "planned_time", "created_at"],
   ratings: ["id", "participant_id", "place_id", "score", "created_at"],
   events: ["id", "trip_id", "linq_event_id", "type", "payload", "processed_at", "retried_at", "created_at"],
@@ -66,6 +66,10 @@ export const SCHEMA_CONTRACT: TableColumns = {
   group_decision_options: ["id", "decision_id", "option_index", "label", "message_id"],
   group_decision_votes: ["id", "decision_id", "participant_id", "option_index", "created_at", "updated_at"],
   multiplier_days: ["id", "trip_id", "local_date", "multiplier", "label", "source", "leg_id", "created_at"],
+  social_links: [
+    "id", "trip_id", "participant_id", "chat_id", "url", "kind", "status", "attempts",
+    "extracted_text", "outcome", "place_id", "created_at", "attempted_at", "resolved_at",
+  ],
   trip_legs: [
     "id", "trip_id", "leg_order", "city", "start_date", "end_date", "timezone",
     "destination_profile_json", "is_travel_day", "created_at",

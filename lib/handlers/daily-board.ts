@@ -88,6 +88,7 @@ import { recordTasksChanged } from "./stats";
 import { boardDueNow, dateForTripDay, tripDayForDate } from "@/lib/game/board-schedule";
 import { cityFor, isMultiCity, isTravelDate, legForDate, todayFor, zoneFor, zoneNow } from "@/lib/game/legs";
 import { dayMultiplierFor, loadMultiplierDays, refreshTripMultipliers } from "@/lib/handlers/holidays";
+import { resolveQueuedLinks } from "@/lib/handlers/social-links";
 import { multiplierHeaderPart, multiplierDayAnnouncement } from "@/lib/game/copy";
 import { multiplierLabel, taskMultiplierFor, type TaskMultiplier } from "@/lib/game/multipliers";
 import { remindOpenGroupDecisions } from "@/lib/handlers/group-decisions";
@@ -2017,6 +2018,20 @@ export async function runDailyBoards(opts: {
       await refreshTripMultipliers(trip, { now });
     } catch (err) {
       console.error("[japlan.multipliers] refresh failed", {
+        tripId: trip.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    // Links people dropped in the chat, resolved into places. Off the webhook
+    // path entirely, rate limited per trip, one attempt each. Only a real
+    // resolution says anything; a miss is silent by design.
+    try {
+      await resolveQueuedLinks(trip, {
+        now,
+        send: (text) => sendText(trip.linq_chat_id, text),
+      });
+    } catch (err) {
+      console.error("[japlan.social] resolve failed", {
         tripId: trip.id,
         error: err instanceof Error ? err.message : String(err),
       });

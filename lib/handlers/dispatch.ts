@@ -1,4 +1,6 @@
 import { getServiceClient } from "@/lib/db/client";
+import { captureLinks } from "./social-links";
+import { findUrls } from "@/lib/game/urls";
 import { defaultWakeKeyword, evaluateAddress, findTaskCode, wakeKeywordRe } from "@/lib/game/addressing";
 import { detectBoardTimeCommand, detectTeamNameCommand, detectTripCommand } from "@/lib/game/commands";
 import { DISPATCH_ERROR_LINE } from "@/lib/game/copy";
@@ -194,6 +196,15 @@ async function onMessageReceivedInner(
     senderName,
     text: text || (media.length > 0 ? "[sent a photo]" : ""),
   });
+
+  // Links go on a queue and nothing more: one insert, no fetch, no model, no
+  // browser. Resolution happens on the cron, off this path entirely, because
+  // a session-free read is still a network call and the 200 comes first.
+  if (text) {
+    await dispatchAwait("capture_links", { chatId }, () => captureLinksFor(chatId, phone, text)).catch(
+      (err) => dispatchStep("capture_links.failed", { chatId, error: err instanceof Error ? err.message : String(err) }),
+    );
+  }
 
   // Groups: is the bot part of this conversation? (DMs always are.)
   let engagement: EngagementDecision | null = null;
@@ -473,4 +484,29 @@ export async function dispatchLinqEvent(envelope: LinqEnvelope): Promise<void> {
       eventId: envelope.event_id ?? null,
     });
   }
+}
+
+
+// One insert per new link in a message. Never throws and never blocks: a link
+// we fail to record is worth less than the message it arrived in.
+async function captureLinksFor(
+  chatId: string,
+  phone: string | null,
+  text: string,
+): Promise<void> {
+  if (findUrls(text).length === 0) return;
+  const trip = await getTripByChatId(chatId);
+  if (!trip) return;
+  const participantId = phone ? await participantIdFor(trip.id, phone) : null;
+  await captureLinks({ tripId: trip.id, participantId, chatId, text });
+}
+
+async function participantIdFor(tripId: string, phone: string): Promise<string | null> {
+  const { data } = await getServiceClient()
+    .from("participants")
+    .select("id")
+    .eq("trip_id", tripId)
+    .eq("phone", phone)
+    .maybeSingle();
+  return (data as { id: string } | null)?.id ?? null;
 }

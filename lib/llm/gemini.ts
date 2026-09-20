@@ -545,6 +545,81 @@ ${opts.pageText}`,
   });
 }
 
+export const SOCIAL_PLACE_SCHEMA = {
+  type: "object",
+  properties: {
+    place_name: { type: "string" },
+    city: { type: "string" },
+    address: { type: "string" },
+    category: { type: "string" },
+    confident: { type: "boolean" },
+  },
+  required: ["place_name", "city", "address", "category", "confident"],
+};
+
+export type SocialPlace = {
+  place_name: string | null;
+  city: string | null;
+  address: string | null;
+  category: string | null;
+};
+
+// A caption or article body to a place, if it names one. Reading only: the
+// text came off a TikTok caption or an Instagram post (lib/social/read-link.ts)
+// and is full of hashtags, emoji and unrelated chatter.
+//
+// Returning nothing is a NORMAL outcome and the prompt says so, because most
+// of the miss cases are posts that genuinely do not name a venue. An invented
+// place is far worse than an unresolved one: the unresolved caption is kept
+// and the group can clarify, while a made-up name lands on someone's board.
+export async function extractPlaceFromText(opts: {
+  provider?: LLMProvider;
+  text: string;
+  destination?: string | null;
+}): Promise<SocialPlace | null> {
+  const provider = opts.provider ?? new GeminiProvider();
+  const raw = await withTimeout(
+    provider.complete({
+      system: [
+        "You read a social media caption or article and say which real, visitable place it is about, if any.",
+        "place_name is the venue as a person would search for it: a restaurant, bar, cafe, shop, museum, park or landmark.",
+        "city is the city it is in. address is the street address ONLY if the text states one. category is one word.",
+        "confident is true only when the text actually names the place.",
+        "Return empty strings and confident=false when the text names no specific venue, which is common and completely fine.",
+        "Never invent a name, a city or an address. Never guess from a hashtag alone. Never return a person, a dish or a brand as the place.",
+        "JSON only.",
+      ].join(" "),
+      messages: [
+        {
+          role: "user",
+          content: opts.destination
+            ? `The trip is to ${opts.destination}.
+
+Text:
+${opts.text}`
+            : `Text:
+${opts.text}`,
+        },
+      ],
+      schema: SOCIAL_PLACE_SCHEMA,
+      tier: "fast",
+      thinkingBudget: 0,
+    }),
+    SETUP_LLM_TIMEOUT_MS,
+    "gemini.social_place",
+  );
+  const parsed = raw ? parseJsonObject(raw) : null;
+  if (!parsed) return null;
+  const str = (key: string): string | null => {
+    const value = parsed[key];
+    return typeof value === "string" && value.trim() ? value.trim() : null;
+  };
+  if (parsed.confident !== true) return null;
+  const place_name = str("place_name");
+  if (!place_name) return null;
+  return { place_name, city: str("city"), address: str("address"), category: str("category") };
+}
+
 export const PLACE_TIMEZONE_SCHEMA = {
   type: "object",
   properties: {

@@ -302,6 +302,21 @@ export function multiplierDayAnnouncement(opts: {
   return `⚡ it's ${opts.label}, so ${worth}.`;
 }
 
+// A link someone dropped resolved into a real place. ONE line, and only ever
+// on a hit: a link that resolves to nothing says nothing at all, because
+// "couldn't read that tiktok" on every link is worse than silence.
+export function socialPlaceAddedLine(opts: {
+  name: string;
+  by: string | null;
+  day: number | null;
+}): string {
+  const who = opts.by ? `${opts.by}'s` : "that";
+  // No day means we could not pin it on a map. Say that, rather than putting
+  // it on a day we guessed: a wrong day is worse than an honest "not yet".
+  const when = opts.day ? ` on day ${opts.day}` : ", not sure which day yet";
+  return `📍 added ${opts.name} from ${who} link${when} 🔥`;
+}
+
 // A place someone in the group asked for, on the day's route. Credit is the
 // point: people need to see their idea survive.
 export function boardAnchorLine(name: string, by: string | null, slot?: string | null): string {
