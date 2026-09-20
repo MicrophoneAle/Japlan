@@ -89,6 +89,7 @@ import { boardDueNow, dateForTripDay, tripDayForDate } from "@/lib/game/board-sc
 import { cityFor, isMultiCity, isTravelDate, legForDate, todayFor, zoneFor, zoneNow } from "@/lib/game/legs";
 import { dayMultiplierFor, loadMultiplierDays, refreshTripMultipliers } from "@/lib/handlers/holidays";
 import { resolveQueuedLinks } from "@/lib/handlers/social-links";
+import { suggestShowOnce } from "@/lib/handlers/show-suggestion";
 import { multiplierHeaderPart, multiplierDayAnnouncement } from "@/lib/game/copy";
 import { multiplierLabel, taskMultiplierFor, type TaskMultiplier } from "@/lib/game/multipliers";
 import { remindOpenGroupDecisions } from "@/lib/handlers/group-decisions";
@@ -2032,6 +2033,23 @@ export async function runDailyBoards(opts: {
       await refreshTripMultipliers(trip, { now });
     } catch (err) {
       console.error("[japlan.multipliers] refresh failed", {
+        tripId: trip.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    // One show, once a trip, for whoever said the trip is a waste without
+    // one. Silent unless it actually finds a real, linkable event.
+    try {
+      const showPeople = await tripPeople(trip.id);
+      const line = await suggestShowOnce({
+        trip,
+        people: showPeople,
+        interests: [...new Set(showPeople.flatMap((p) => sharedInterests(p)))],
+        now,
+      });
+      if (line) await sendText(trip.linq_chat_id, line);
+    } catch (err) {
+      console.error("[japlan.show] suggestion failed", {
         tripId: trip.id,
         error: err instanceof Error ? err.message : String(err),
       });

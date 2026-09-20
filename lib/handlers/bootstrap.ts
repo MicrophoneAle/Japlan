@@ -32,7 +32,8 @@ import { describeBoardTime, nextBoardAt } from "@/lib/game/board-schedule";
 import { formTeamsForTrip, teamsAnnouncement } from "@/lib/handlers/teams";
 
 import { TRIP_COLS } from "@/lib/db/columns";
-import { withLegs } from "./legs";
+import { LEG_COLS } from "./legs";
+import type { TripLeg } from "@/lib/game/legs";
 
 // Until the group chat's own name is known.
 const UNNAMED_TRIP = "unnamed trip";
@@ -49,8 +50,48 @@ function asTrip(row: unknown): TripRow {
 // query of their own. A trip with no legs (migration not run, setup not
 // finished) resolves to a synthesised single leg in lib/game/legs.ts, which is
 // exactly the old single-city behaviour.
-async function asTripWithLegs(row: unknown): Promise<TripRow> {
-  return withLegs(asTrip(row));
+// Legs come back embedded in the trip query itself, so the claim path makes
+// ONE Supabase call and never exposes itself to the second-call hang. The
+// embed is a PostgREST join on the trip_legs foreign key.
+//
+// Falls back to a plain trip on any embed error: if 2026-10-03 has not run,
+// trip_legs does not exist and the embed 42P01s, which would otherwise break
+// every trip lookup. That is precisely the outage shape CLAUDE.md warns about,
+// so the embed is never allowed to be load-bearing.
+export const TRIP_COLS_WITH_LEGS = `${TRIP_COLS}, trip_legs (${LEG_COLS})`;
+
+type TripRowWithEmbed = Record<string, unknown> & { trip_legs?: TripLeg[] | null };
+
+// Run a trip query with legs embedded, and fall back to plain columns if the
+// embed itself is what failed (migration not run, relation missing). Anything
+// else is a real error and is rethrown.
+export async function tripQuery(
+  build: (cols: string) => PromiseLike<{ data: unknown; error: { code?: string; message?: string } | null }>,
+  // Overridable so scripts/verify-embed.ts can point it at a deliberately bad
+  // relation and prove the fallback fires against the real database.
+  embedCols: string = TRIP_COLS_WITH_LEGS,
+): Promise<unknown> {
+  const withLegs = await build(embedCols);
+  if (!withLegs.error) return withLegs.data;
+  const code = withLegs.error.code ?? "";
+  const missing = code === "42P01" || code === "PGRST200" || /trip_legs/i.test(withLegs.error.message ?? "");
+  if (!missing) throw withLegs.error;
+  console.warn("[japlan.dispatch] step", {
+    step: "trip_legs.embed_unavailable",
+    code,
+    note: "migration 2026-10-03 applied? falling back to a trip with no legs",
+  });
+  const plain = await build(TRIP_COLS);
+  if (plain.error) throw plain.error;
+  return plain.data;
+}
+
+export function asTripWithEmbeddedLegs(row: unknown): TripRow {
+  const raw = row as TripRowWithEmbed;
+  const { trip_legs: embedded, ...rest } = raw;
+  const trip = asTrip(rest);
+  trip.legs = Array.isArray(embedded) ? [...embedded].sort((a, b) => a.leg_order - b.leg_order) : [];
+  return trip;
 }
 
 function asParticipants(rows: unknown): ParticipantRow[] {
@@ -90,22 +131,29 @@ function logError(
 // hold many trips over time; trips_one_open_trip_per_chat allows only one open.
 export async function getTripByChatId(chatId: string): Promise<TripRow | null> {
   console.log("[japlan.dispatch] step", { step: "getTripByChatId.before", chatId });
-  const { data, error } = await getServiceClient()
-    .from("trips")
-    .select(TRIP_COLS)
-    .eq("linq_chat_id", chatId)
-    .neq("state", "complete")
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (error) {
+  let data: unknown;
+  try {
+    // ONE call, legs embedded: the claim path never makes a second Supabase
+    // query, which is the call that hangs.
+    data = await tripQuery((cols) =>
+      getServiceClient()
+        .from("trips")
+        .select(cols)
+        .eq("linq_chat_id", chatId)
+        .neq("state", "complete")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+    );
+  } catch (err) {
+    const error = err as { message?: string; code?: string };
     console.error("[japlan.dispatch] step", {
       step: "getTripByChatId.throw",
       chatId,
       message: error.message,
       code: error.code ?? null,
     });
-    throw error;
+    throw err;
   }
   console.log("[japlan.dispatch] step", {
     step: "getTripByChatId.after",
@@ -115,30 +163,28 @@ export async function getTripByChatId(chatId: string): Promise<TripRow | null> {
     isSolo: data ? Boolean((data as { is_solo?: boolean }).is_solo) : null,
     state: data ? (data as { state?: string }).state ?? null : null,
   });
-  return data ? asTripWithLegs(data) : null;
+  return data ? asTripWithEmbeddedLegs(data) : null;
 }
 
 // The most recent trip for a chat in any state, for "this trip is over".
 export async function getLatestTripByChatId(chatId: string): Promise<TripRow | null> {
-  const { data, error } = await getServiceClient()
-    .from("trips")
-    .select(TRIP_COLS)
-    .eq("linq_chat_id", chatId)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (error) throw error;
-  return data ? asTripWithLegs(data) : null;
+  const data = await tripQuery((cols) =>
+    getServiceClient()
+      .from("trips")
+      .select(cols)
+      .eq("linq_chat_id", chatId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  );
+  return data ? asTripWithEmbeddedLegs(data) : null;
 }
 
 export async function getTripById(tripId: string): Promise<TripRow | null> {
-  const { data, error } = await getServiceClient()
-    .from("trips")
-    .select(TRIP_COLS)
-    .eq("id", tripId)
-    .maybeSingle();
-  if (error) throw error;
-  return data ? asTripWithLegs(data) : null;
+  const data = await tripQuery((cols) =>
+    getServiceClient().from("trips").select(cols).eq("id", tripId).maybeSingle(),
+  );
+  return data ? asTripWithEmbeddedLegs(data) : null;
 }
 
 export async function listParticipants(tripId: string): Promise<ParticipantRow[]> {
@@ -179,7 +225,7 @@ async function insertTrip(
     throw error;
   }
   if (!data) throw new Error("trip insert returned no row");
-  return { trip: await asTripWithLegs(data), created: true };
+  return { trip: asTripWithEmbeddedLegs(data), created: true };
 }
 
 async function upsertHumans(

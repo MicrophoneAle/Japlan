@@ -98,6 +98,10 @@ describe("what a group prompt may see", () => {
     expect(dm.must_have).toBe("see a show");
     expect(dm.dietary).toBe("vegetarian");
     expect(dm.mobility).toBe("bad knee");
+    // Survey v2 fields that used to reach no prompt at all.
+    expect(dm.budget_band).toBe("under_100");
+    expect(dm.hard_constraints).toBe("severe peanut allergy");
+    expect(dm.fu_allergy_cc).toBe("yes, cross contact matters");
   });
 
   // The property that matters for every field added after this test: the
@@ -122,25 +126,8 @@ describe("what a group prompt may see", () => {
     const undecided = asked.filter(
       (id) => !PUBLIC_SURVEY_IDS.includes(id) && !PRIVATE_SURVEY_IDS.includes(id),
     );
-    // The v2 ids nobody has classified. They are excluded from EVERY slice
-    // today, which is fail-closed and therefore safe, but it is not free:
-    // budget_band, hard_constraints and the allergy/diet follow-ups are
-    // missing from the person's own DM prompt too, where they are both safe
-    // and useful. Moving those to PRIVATE_SURVEY_IDS is a deliberate change
-    // for somebody to make; this list is here so it stays visible.
-    expect(undecided).toEqual([
-      "ab_food_outdoors",
-      "ab_discover_iconic",
-      "ab_culture_nightlife",
-      "ab_pace",
-      "budget_band",
-      "fu_budget",
-      "hard_constraints",
-      "fu_constraints",
-      "fu_allergy_cc",
-      "fu_diet_strict",
-      "splitting",
-      "fu_split",
-    ]);
+    // Every question survey v2 asks is now classified, so this is empty. A
+    // new one lands here by name rather than defaulting either way.
+    expect(undecided).toEqual([]);
   });
 });

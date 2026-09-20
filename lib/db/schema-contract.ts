@@ -27,7 +27,7 @@ export const SCHEMA_CONTRACT: TableColumns = {
     "difficulty", "stake_text", "timezone", "destination_profile_json", "is_solo", "daily_points_cap",
     "organizer_participant_id", "setup_state", "completed_at", "board_time", "category_weights",
     "group_profile_md", "engagement_json", "waiting_notice_sent_at", "sidequest_state",
-    "multipliers_checked_at", "created_at",
+    "multipliers_checked_at", "show_suggested_at", "created_at",
   ],
   participants: [
     "id", "trip_id", "phone", "display_name", "score", "survey_json", "survey_state",
@@ -70,6 +70,10 @@ export const SCHEMA_CONTRACT: TableColumns = {
   social_links: [
     "id", "trip_id", "participant_id", "chat_id", "url", "kind", "status", "attempts",
     "extracted_text", "outcome", "place_id", "created_at", "attempted_at", "resolved_at",
+  ],
+  trip_events: [
+    "id", "trip_id", "leg_id", "name", "venue", "lat", "lng", "starts_at",
+    "category", "url", "price_note", "source", "created_at",
   ],
   trip_legs: [
     "id", "trip_id", "leg_order", "city", "start_date", "end_date", "timezone",

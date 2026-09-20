@@ -52,6 +52,9 @@ create table trips (
   -- When this trip's holidays were last fetched (lib/handlers/holidays.ts).
   -- Not in TRIP_COLS on purpose: only the holiday refresh selects it.
   multipliers_checked_at timestamptz,
+  -- One show suggestion per trip, ever (lib/handlers/show-suggestion.ts).
+  -- Also deliberately out of TRIP_COLS.
+  show_suggested_at timestamptz,
   created_at timestamptz not null default now()
 );
 
@@ -481,6 +484,29 @@ create table social_links (
   unique (trip_id, url)
 );
 create index social_links_queue on social_links (trip_id, status, created_at);
+
+-- Ticketable events for a trip, in the shape a Discovery result arrives in.
+-- The matcher reads this table and never an API, so matching, attribution and
+-- copy are the same whether a row came from Ticketmaster or a seed. Japan has
+-- no usable Discovery inventory (no purchase URLs), hence source='seed'.
+create table trip_events (
+  id uuid primary key default gen_random_uuid(),
+  trip_id uuid not null references trips (id) on delete cascade,
+  leg_id uuid references trip_legs (id) on delete set null,
+  name text not null,
+  venue text,
+  lat double precision,
+  lng double precision,
+  starts_at timestamptz not null,
+  category text,
+  url text not null,
+  -- A note, not a number: priceRanges is 0% filled in every Discovery market.
+  price_note text,
+  source text not null default 'seed' check (source in ('seed', 'discovery')),
+  created_at timestamptz not null default now(),
+  unique (trip_id, url)
+);
+create index trip_events_trip_starts on trip_events (trip_id, starts_at);
 
 -- Credential smoke test only. Not part of the game data model.
 create table if not exists smoke_scratch (

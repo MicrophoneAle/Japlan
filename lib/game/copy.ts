@@ -302,6 +302,53 @@ export function multiplierDayAnnouncement(opts: {
   return `⚡ it's ${opts.label}, so ${worth}.`;
 }
 
+// One show, once a trip, for whoever said the trip is a waste without one.
+// The attribution is what makes it land: it is somebody's own words coming
+// back at them, not a recommendation from nowhere.
+//
+// The URL goes in THIS message, last and alone on its line, so iMessage
+// renders the link preview card. One link per message or the preview
+// suppresses, and one message rather than two so the text and the card stay
+// together.
+//
+// The price is not stated. Ticketmaster's priceRanges was 0% filled in every
+// market tested, so there is nothing to check a budget against; saying so is
+// honest and a human looks before buying anyway.
+export function showSuggestionLine(opts: {
+  who: string;
+  mustHave: string;
+  title: string;
+  venue?: string | null;
+  startsAt?: string | null;
+  priceNote?: string | null;
+  url: string;
+}): string {
+  const where = opts.venue ? ` at ${opts.venue}` : "";
+  const when = opts.startsAt ? eventWhen(opts.startsAt) : null;
+  return [
+    `${opts.who} said the trip's a waste without ${opts.mustHave}.`,
+    `found this: ${opts.title}${where}${when ? `, ${when}` : ""}`,
+    opts.priceNote ?? "no idea what tickets cost, have a look 👀",
+    opts.url,
+  ].join("\n");
+}
+
+// "saturday 8pm" from a stored timestamp. Only ever from a real clock time:
+// a date with no time would invent the hour, which is the one thing a
+// suggestion must not do.
+function eventWhen(startsAt: string): string | null {
+  const at = new Date(startsAt);
+  if (Number.isNaN(at.getTime())) return null;
+  const day = at.toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" }).toLowerCase();
+  const hour = at.getUTCHours();
+  const minute = at.getUTCMinutes();
+  const suffix = hour < 12 ? "am" : "pm";
+  const twelve = hour % 12 === 0 ? 12 : hour % 12;
+  const clock = minute === 0 ? `${twelve}${suffix}` : `${twelve}:${String(minute).padStart(2, "0")}${suffix}`;
+  return `${day} ${clock}`;
+}
+
+
 // A link someone dropped resolved into a real place. ONE line, and only ever
 // on a hit: a link that resolves to nothing says nothing at all, because
 // "couldn't read that tiktok" on every link is worse than silence.

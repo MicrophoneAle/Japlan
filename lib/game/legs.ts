@@ -129,12 +129,24 @@ export function todayFor(trip: LeggedTrip, now: Date): string {
 }
 
 // The read that replaces trips.destination everywhere.
+//
+// A synthesised leg carries a DISPLAY placeholder ("the trip") when the
+// destination is not set yet, so that a board header is never blank. That
+// placeholder must never escape into a query: it would become the city in a
+// geocode, a holiday country lookup or a ticket search. On a synthesised leg
+// this answers from the trip itself, which is empty when nothing is set, and
+// an empty city is something callers already check for.
+function cityOf(leg: TripLeg, trip: LeggedTrip): string {
+  if (isSyntheticLeg(leg)) return trip.destination?.trim() ?? "";
+  return leg.city || trip.destination?.trim() || "";
+}
+
 export function cityFor(trip: LeggedTrip, date: string): string {
-  return legForDate(trip, date).city || trip.destination?.trim() || "";
+  return cityOf(legForDate(trip, date), trip);
 }
 
 export function cityNow(trip: LeggedTrip, now: Date): string {
-  return legForNow(trip, now).city || trip.destination?.trim() || "";
+  return cityOf(legForNow(trip, now), trip);
 }
 
 // A travel day is the first date of a leg that follows another one: you arrive
