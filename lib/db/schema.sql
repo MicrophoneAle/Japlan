@@ -77,6 +77,8 @@ create table participants (
   profile_md text,
   -- Last local day this person got a "your next question" DM at board time.
   survey_nudged_on date,
+  -- The group-setup-pending DM notice is said once, not on every message.
+  setup_pending_told_at timestamptz,
   consented_at timestamptz,
   created_at timestamptz not null default now(),
   unique (trip_id, phone)

@@ -22,6 +22,7 @@ import {
   surveyDoneLine,
   UNDER_AGE_LINE,
   groupSetupPendingDmLine,
+  personLabel,
   surveyProgressGroupLine,
   sidequestClarificationLine,
   ONBOARDING_ACK_LINE,
@@ -75,15 +76,45 @@ export async function handleSurveyDm(opts: {
   const state = participant.survey_state;
   const surveyInProgress = Boolean(state && state !== "done" && state !== "not_started");
 
-  if (!trip.is_solo && isSetupQuestion(trip.setup_state)) {
+  // Group setup is not finished, so there is no survey to send yet. Three
+  // exemptions, each one a live bug this gate caused:
+  //
+  //  - a survey ALREADY IN PROGRESS is never blocked. This sat above the
+  //    survey continuation with no exemption, so the first answer after the
+  //    survey started ("Michael") was swallowed and every later message got
+  //    this identical line, forever, with no state change. That is the loop.
+  //  - the ORGANIZER is never blocked. Their setup happens in the group chat,
+  //    so blocking their DM only blocks their own survey, and they are the
+  //    one person who cannot be waiting on themselves.
+  //  - it is said ONCE per person. Repeating it on every message is what made
+  //    it read as a loop even when the state was right.
+  if (!trip.is_solo && !isOrganizer && !surveyInProgress && isSetupQuestion(trip.setup_state)) {
+    if (participant.setup_pending_told_at) {
+      // Already told them. Silence beats saying it a fourth time.
+      return;
+    }
     const { data: organizerRow, error } = await getServiceClient()
       .from("participants")
       .select("display_name")
       .eq("id", trip.organizer_participant_id ?? "")
       .maybeSingle();
     if (error) throw error;
-    const organizerName = (organizerRow as { display_name?: string } | null)?.display_name ?? "the organizer";
+    // personLabel: Linq hands us a phone number when it has no display name,
+    // and "+19057580877 is setting the shared city" is worse than a generic
+    // noun.
+    const organizerName = personLabel((organizerRow as { display_name?: string } | null)?.display_name);
     await sendText(opts.chatId, groupSetupPendingDmLine(organizerName));
+    const { error: markErr } = await getServiceClient()
+      .from("participants")
+      .update({ setup_pending_told_at: new Date().toISOString() })
+      .eq("id", participant.id);
+    if (markErr) {
+      console.warn("[japlan.survey] could not mark setup notice as told", {
+        participantId: participant.id,
+        code: markErr.code,
+        note: "migration 2026-10-07 applied?",
+      });
+    }
     return;
   }
 

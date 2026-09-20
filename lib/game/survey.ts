@@ -431,7 +431,10 @@ export function recordAnswer(
 export function startSurvey(answers: SurveyAnswers = {}): SurveyStep {
   return {
     state: { awaiting: FIRST_QUESTION_ID, answers },
-    prompt: `${SURVEY_INTRO} ${QUESTIONS[FIRST_QUESTION_ID].prompt}`,
+    // A blank line, not a space: the intro and the first question are two
+    // distinct ideas, and space-joining them made one run-on that read as a
+    // glitch ("...if i need a safety detail right. a few quick ones...").
+    prompt: `${SURVEY_INTRO}\n\n${QUESTIONS[FIRST_QUESTION_ID].prompt}`,
     completed: false,
   };
 }

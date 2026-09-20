@@ -329,6 +329,15 @@ export const SURVEY_INTRO =
   `🔒 quick private setup: up to 8 short questions to shape your board. replies stay in this dm; the group sees who's done, never your answers. use the number shown, say “both” on either-or questions, or “skip”; i'll only ask extra questions if i need a safety detail right.`;
 
 export const SURVEY_V2: Partial<Record<QuestionId, Question>> = {
+  // v2's own first question. The legacy first_name prompt re-explains "skip",
+  // which SURVEY_INTRO has already done two sentences earlier, and re-opens
+  // with "a few quick ones" after the intro has already opened. Together they
+  // read as two messages glued into one.
+  first_name: {
+    id: "first_name",
+    kind: "free_text",
+    prompt: "what should i call you?",
+  },
   ab_food_outdoors: {
     id: "ab_food_outdoors",
     kind: "either_or",

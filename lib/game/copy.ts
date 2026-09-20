@@ -95,6 +95,19 @@ export function setupFinishedLine(missing: ("destination" | "dates")[]): string 
   return `setup's paused rq.\nstill need ${what} before the game can start, i'll ask again next time you text.`;
 }
 
+// Linq gives a phone number when it has no display name, and a participant
+// keeps it until they answer the name question. Printing "+19057580877 is
+// setting the shared city" is worse than saying nothing specific, so a
+// phone-shaped name reads as "the organizer".
+export function personLabel(name: string | null | undefined): string {
+  const value = (name ?? "").trim();
+  if (!value) return "the organizer";
+  // +19057580877, 09057580877, (905) 758-0877: digits and punctuation only.
+  const digits = value.replace(/[^0-9]/g, "");
+  const looksLikePhone = digits.length >= 7 && /^[+()\-.\s0-9]+$/.test(value);
+  return looksLikePhone ? "the organizer" : value;
+}
+
 export function organizerOnlySetupLine(name: string): string {
   return `👑 ${name} is organizing this trip and controls the shared setup.\nthey can change it with “japlan setup.”\nyour personal survey answers stay private.`;
 }

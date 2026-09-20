@@ -126,6 +126,7 @@ export type ParticipantRow = {
   sidequests_muted: boolean;
   // Read in its own query (not in the standard participant selects).
   survey_nudged_on?: string | null;
+  setup_pending_told_at?: string | null;
   consented_at: string | null;
   created_at?: string;
 };

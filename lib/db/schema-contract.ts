@@ -31,7 +31,8 @@ export const SCHEMA_CONTRACT: TableColumns = {
   ],
   participants: [
     "id", "trip_id", "phone", "display_name", "score", "survey_json", "survey_state",
-    "sidequests_muted", "consented_at", "prefs_json", "profile_md", "survey_nudged_on", "created_at",
+    "sidequests_muted", "consented_at", "prefs_json", "profile_md", "survey_nudged_on",
+    "setup_pending_told_at", "created_at",
   ],
   tasks: [
     "id", "trip_id", "participant_id", "team_id", "code", "title", "tier", "axes_json", "base_points",
