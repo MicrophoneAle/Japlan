@@ -7,10 +7,18 @@
 // The logo never leaves Linq's own infrastructure: it's uploaded via the
 // attachments API to get a cdn.linqapp.com URL, so this doesn't depend on the
 // app being deployed anywhere.
+//
+// Registering the card does NOT retroactively refresh a chat that already
+// exists: iMessage Name and Photo Sharing only updates a chat when it is
+// actively shared into it. shareContactCardSafely only fires on a brand-new
+// chat's first message, so an existing conversation (e.g. your own test
+// thread from before this was set up right) keeps showing whatever it saw
+// before until it gets a fresh share. Pass that chat's id as an argument to
+// push one immediately: `npx tsx scripts/setup-contact-card.ts <chatId>`.
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadEnvConfig } from "@next/env";
-import { ConflictError } from "@linqapp/sdk";
+import { ConflictError, type LinqAPIV3 } from "@linqapp/sdk";
 
 loadEnvConfig(process.cwd(), true);
 
@@ -42,9 +50,13 @@ async function uploadLogo(): Promise<string> {
 async function main(): Promise<void> {
   const fromNumber = process.env.LINQ_FROM_NUMBER;
   if (!fromNumber) throw new Error("missing LINQ_FROM_NUMBER");
+  const reshareChatId = process.argv[2]?.trim() || null;
 
   const { getLinqClient } = await import("../lib/linq/client");
   const client = getLinqClient();
+
+  const before = await client.contactCard.retrieve({ phone_number: fromNumber });
+  console.log("current card(s) for this number:", JSON.stringify(before.contact_cards, null, 2));
 
   const imageUrl = await uploadLogo();
 
@@ -66,9 +78,25 @@ async function main(): Promise<void> {
         image_url: imageUrl,
       });
       console.log("contact card updated:", card);
+      await confirm(client, fromNumber, reshareChatId);
       return;
     }
     throw err;
+  }
+  await confirm(client, fromNumber, reshareChatId);
+}
+
+async function confirm(
+  client: LinqAPIV3,
+  fromNumber: string,
+  reshareChatId: string | null,
+): Promise<void> {
+  const after = await client.contactCard.retrieve({ phone_number: fromNumber });
+  console.log("card(s) after the write:", JSON.stringify(after.contact_cards, null, 2));
+
+  if (reshareChatId) {
+    await client.chats.shareContactCard(reshareChatId);
+    console.log(`shared into ${reshareChatId}`);
   }
 }
 
