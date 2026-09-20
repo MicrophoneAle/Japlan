@@ -49,6 +49,9 @@ create table trips (
   waiting_notice_sent_at timestamptz,
   -- Sidequest tick bookkeeping (lib/handlers/sidequests.ts).
   sidequest_state jsonb,
+  -- When this trip's holidays were last fetched (lib/handlers/holidays.ts).
+  -- Not in TRIP_COLS on purpose: only the holiday refresh selects it.
+  multipliers_checked_at timestamptz,
   created_at timestamptz not null default now()
 );
 
@@ -193,6 +196,13 @@ create table tasks (
   -- Day planning: rough time of day and the code's duration estimate.
   slot text,
   duration_minutes integer,
+  -- What the board promised on a special day (lib/game/multipliers.ts): the
+  -- factor on base_points, and what to call it. Kept off base_points so the
+  -- printed points and the tier band stay the task's own worth; on a
+  -- multiplier day base_points is the task's UNSCALED worth, because the
+  -- multiplier replaces dayValueMultiplier rather than compounding with it.
+  day_multiplier numeric check (day_multiplier is null or (day_multiplier > 1 and day_multiplier <= 3)),
+  multiplier_reason text,
   created_at timestamptz not null default now(),
   -- Shared board tasks may have both assignee columns null (first write wins).
   -- Split-team tasks set team_id; personal tasks set participant_id. Never both.
@@ -356,6 +366,21 @@ create table ratings (
   score integer not null,
   created_at timestamptz not null default now()
 );
+
+-- Days worth more points for everyone: national holidays (Nager.Date) and
+-- local festivals (Browserbase), looked up per trip. Weekends and friday
+-- nights are computed in lib/game/multipliers.ts and never stored.
+create table multiplier_days (
+  id uuid primary key default gen_random_uuid(),
+  trip_id uuid not null references trips (id) on delete cascade,
+  local_date date not null,
+  multiplier numeric not null check (multiplier > 1 and multiplier <= 3),
+  label text not null,
+  source text not null check (source in ('holiday', 'festival')),
+  created_at timestamptz not null default now(),
+  unique (trip_id, local_date)
+);
+create index multiplier_days_trip_date on multiplier_days (trip_id, local_date);
 
 -- Credential smoke test only. Not part of the game data model.
 create table if not exists smoke_scratch (

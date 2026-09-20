@@ -48,7 +48,11 @@ import { dispatchLinqEvent } from "./dispatch";
 
 const CHAT = "chat-group";
 const MIKE = "+15550000001";
-const NOON_JST = new Date("2026-09-19T03:00:00Z");
+// The trip runs thursday to monday on purpose. Weekends and friday nights
+// carry a points multiplier (lib/game/multipliers.ts), so a claim seeded on a
+// saturday awards 1.25x and these base-points assertions would be measuring
+// the calendar. The window also has to contain fakeHeic's baked exif date.
+const NOON_JST = new Date("2026-09-17T03:00:00Z");
 let eventCounter = 0;
 
 function message(parts: Record<string, unknown>[]) {
@@ -96,11 +100,11 @@ beforeEach(async () => {
       linq_chat_id: CHAT,
       name: "tokyo",
       destination: "Tokyo",
-      start_date: "2026-09-19",
-      end_date: "2026-09-23",
+      start_date: "2026-09-17",
+      end_date: "2026-09-21",
       state: "active",
       timezone: "Asia/Tokyo",
-      intro_sent_at: "2026-09-18T00:00:00Z",
+      intro_sent_at: "2026-09-16T00:00:00Z",
     },
   ]);
   h.db.seed("participants", [
@@ -239,7 +243,7 @@ describe("photo sent alone after claiming", () => {
 
     // 30 minutes later: well past the old 60s in-memory binding.
     vi.setSystemTime(new Date(NOON_JST.getTime() + 30 * 60 * 1000));
-    photoBytes = await patternJpeg("vertical", { exifDate: "2026:09:19 11:40:00" });
+    photoBytes = await patternJpeg("vertical", { exifDate: "2026:09:17 11:40:00" });
     await dispatchLinqEvent(message([{ ...photoPart, mime_type: "image/jpeg" }]));
 
     expect(a1Claim()?.awarded_points).toBe(11);
@@ -286,7 +290,7 @@ describe("photo sent alone after claiming", () => {
   it("sends the model an upright, downscaled jpeg", async () => {
     h.vision.mockResolvedValue(verdict(true, 2));
     await dispatchLinqEvent(message([text("A1")]));
-    photoBytes = await patternJpeg("vertical", { exifDate: "2026:09:19 11:40:00" });
+    photoBytes = await patternJpeg("vertical", { exifDate: "2026:09:17 11:40:00" });
     await dispatchLinqEvent(message([{ ...photoPart, mime_type: "image/jpeg" }]));
     const image = h.vision.mock.calls[0][0].image as { data: string; mime: string };
     expect(image.mime).toBe("image/jpeg");

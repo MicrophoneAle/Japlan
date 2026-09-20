@@ -1,12 +1,16 @@
 import { getServiceClient } from "@/lib/db/client";
-import type { TaskRow } from "@/lib/db/types";
+import type { TaskRow, TripRow } from "@/lib/db/types";
 import { formatPersonalBoard } from "@/lib/game/board";
 import {
   boardDueNow,
+  dateForTripDay,
   parseBoardDay,
   shortDate,
   tripDayForDate,
 } from "@/lib/game/board-schedule";
+import { dayMultiplierFor } from "./holidays";
+import { multiplierHeaderPart } from "@/lib/game/copy";
+import { multiplierLabel } from "@/lib/game/multipliers";
 import { isOpenTask, tasksClaimableBy } from "@/lib/game/claims";
 import {
   BOARD_IN_DM_LINE,
@@ -61,10 +65,12 @@ function boardText(
   day: number,
   tasks: Pick<TaskRow, "code" | "title" | "base_points" | "slot" | "neighborhood">[],
   anchors: BoardAnchor[] = [],
+  multiplierPart: string | null = null,
 ): string {
   return formatPersonalBoard({
     day,
     anchors,
+    multiplierPart,
     tasks: tasks.map((t) => ({
       code: t.code,
       title: t.title,
@@ -72,6 +78,18 @@ function boardText(
       slot: t.slot ?? null,
       neighborhood: t.neighborhood,
     })),
+  });
+}
+
+// The day's multiplier, as the tail of the board header. Weekends need
+// nothing looked up, so this answers before any holiday lookup has run.
+async function bannerFor(trip: TripRow, day: number): Promise<string | null> {
+  if (!trip.start_date) return null;
+  const special = await dayMultiplierFor(trip, day, dateForTripDay(trip.start_date, day));
+  if (!special) return null;
+  return multiplierHeaderPart({
+    label: special.label,
+    multiplier: multiplierLabel(special.value),
   });
 }
 
@@ -201,7 +219,7 @@ export async function answerBoardRequest(
     // Served the stored board: a request to SEE it. Asking for a different
     // one is isRedoRequest, routed before this (redo_today).
     boardStep("list", { path: "served_existing", tripId: trip.id, day, open: open.length, provisional });
-    const text = boardText(day, open, await dayAnchorsForBoard(trip, day));
+    const text = boardText(day, open, await dayAnchorsForBoard(trip, day), await bannerFor(trip, day));
     await reply(provisional ? provisionalBoard(text) : text, { board: true });
     return;
   }
@@ -254,7 +272,7 @@ export async function answerBoardRequest(
       return;
     }
     boardStep(isRefill ? "refill" : "late_joiner", { path: "regenerated", tripId: trip.id, day, count: rows.length });
-    const text = boardText(day, rows, await dayAnchorsForBoard(trip, day));
+    const text = boardText(day, rows, await dayAnchorsForBoard(trip, day), await bannerFor(trip, day));
     await reply(isRefill ? boardRefillLine(text) : provisional ? provisionalBoard(text) : text, {
       board: true,
     });
@@ -319,7 +337,7 @@ export async function answerBoardRequest(
     await reply(BOARD_MAKE_FAILED_LINE);
     return;
   }
-  const text = boardText(day, myRows, await dayAnchorsForBoard(trip, day));
+  const text = boardText(day, myRows, await dayAnchorsForBoard(trip, day), await bannerFor(trip, day));
   await reply(isFuture ? provisionalBoard(text) : text, { board: true });
 }
 
@@ -386,7 +404,7 @@ export async function boardForNewlyReady(
     if (rows.length === 0) return null;
     // The cron skips people who already got this day's board.
     await logRequest(trip.id, participantId, today, day, "generate");
-    const text = boardText(day, rows, await dayAnchorsForBoard(trip, day));
+    const text = boardText(day, rows, await dayAnchorsForBoard(trip, day), await bannerFor(trip, day));
     return date > today ? provisionalBoard(text) : text;
   } catch (err) {
     boardStep("ready.board.failed", { tripId: trip.id, day, participantId, error: err instanceof Error ? err.message : String(err) });

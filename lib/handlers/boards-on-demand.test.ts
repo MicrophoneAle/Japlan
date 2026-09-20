@@ -310,12 +310,16 @@ describe("in a group", () => {
     expect(board(1)?.delivered_at ?? null).toBeNull();
 
     // The 08:00 tick delivers to Sam, not Mike again, and posts standings.
+    // Day 1 is a saturday, so the group also gets the one multiplier
+    // announcement for the day, before the standings.
     at("2026-09-19T08:05:00");
     h.sent.length = 0;
     await runDailyBoards({});
     expect(to(DM[SAM])).toHaveLength(1);
     expect(to(DM[MIKE])).toHaveLength(0);
-    expect(to(GROUP)).toHaveLength(1);
+    expect(to(GROUP)).toHaveLength(2);
+    expect(to(GROUP)[0]).toContain("everything on the board is worth 1.25x");
+    expect(to(GROUP)[1]).toMatch(/^Day 1/);
     expect(board(1)?.delivered_at).toBeTruthy();
   });
 

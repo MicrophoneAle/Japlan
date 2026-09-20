@@ -1,4 +1,5 @@
 import { getServiceClient } from "@/lib/db/client";
+import { refreshTripMultipliers } from "./holidays";
 import type { ParticipantRow, TripRow } from "@/lib/db/types";
 import {
   BOARD_TIME_UNREADABLE_LINE,
@@ -248,6 +249,9 @@ async function setupChange(
           resolved.center,
         );
         if (!resolved.timezone) patch.timezone = null;
+        // Another country's holidays are not this trip's. Clearing the mark
+        // makes the next lookup run instead of backing off for a week.
+        patch.multipliers_checked_at = null;
         setupStep("destination.profile_refresh", { tripId: trip.id });
       }
       said = destinationSetLine(
@@ -385,6 +389,21 @@ export async function answerSetup(opts: {
   const missing = missingRequiredSetup(updated as SetupFields) as ("destination" | "dates")[];
   await saveTrip(trip.id, { ...patch, setup_state: missing.length > 0 ? SETUP_DEFERRED : SETUP_DONE });
   setupStep("finish", { tripId: trip.id, missing });
+  // Trip creation, so this is the moment to learn which days are worth more:
+  // the destination and the dates are both settled and the first board is
+  // about to be built. Holidays only (`festivals: false`), because that tier
+  // is one keyless JSON GET with its own 6s cap; the festival scrape needs
+  // Browserbase and stays on the cron, off the webhook path. Never fatal: a
+  // trip with no special days is an ordinary trip.
+  if (missing.length === 0) {
+    const forLookup = (await getTripById(trip.id)) ?? updated;
+    await refreshTripMultipliers(forLookup, { festivals: false, force: true }).catch((err) => {
+      setupStep("multipliers.failed", {
+        tripId: trip.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  }
   const finished = `${said} ${setupFinishedLine(missing)}`.trim();
   const surveyPrompt = opts.viaGroup ? null : await surveyPromptAfterSetup(opts.organizer);
   // Solo: the trip chat is this DM, so "we're live" rides in this reply.

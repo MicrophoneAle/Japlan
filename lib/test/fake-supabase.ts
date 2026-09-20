@@ -54,6 +54,7 @@ const UNIQUE: [string, string[], ((row: Row) => boolean)?][] = [
   ["sidequest_offers", ["participant_id"], (row) => row.status === "live"],
   ["sidequest_offers", ["participant_id"], (row) => row.status === "queued"],
   ["sidequest_offers", ["sidequest_id"], (row) => row.status === "won"],
+  ["multiplier_days", ["trip_id", "local_date"]],
 ];
 
 function compare(a: unknown, b: unknown): number | null {

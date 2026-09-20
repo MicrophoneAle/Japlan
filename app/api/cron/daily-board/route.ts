@@ -1,5 +1,6 @@
 import { runDailyBoards } from "@/lib/handlers/daily-board";
 import { sweepStalledEvents } from "@/lib/handlers/event-sweep";
+import { verifySchemaOnce } from "@/lib/db/schema-check";
 
 export const maxDuration = 60;
 
@@ -19,6 +20,7 @@ export async function GET(request: Request): Promise<Response> {
   const tripId = url.searchParams.get("trip_id") ?? undefined;
 
   try {
+    await verifySchemaOnce();
     const result = await runDailyBoards({ force, tripId });
     await sweepStalledEvents({ force: true }).catch((err) => console.error("[japlan.cron] sweep failed", err));
     return Response.json({ ok: true, ...result });
