@@ -355,3 +355,75 @@ describe("putting a social place on a day", () => {
     expect(places()[0]).toMatchObject({ lat: 35.6586, lng: 139.7454 });
   });
 });
+
+// The Shibuya Sky bug: a reel naming a well-known venue came back "couldn't
+// pin it on a map". The geocoder was never the problem (Nominatim returns it
+// at place_rank 30 even with emoji and hashtags around the name); it was that
+// only the cron path had a geocoder at all, and the conversation tool answered
+// first. One venue also has to mean one row and one message.
+describe("one venue, one row, one message", () => {
+  it("attaches to a place another path already added, and stays quiet", async () => {
+    // The conversation tool got there first with the same venue.
+    h.db.seed("places", [
+      {
+        id: "pl-1",
+        trip_id: "trip-1",
+        name: "Shibuya Sky",
+        source: "suggestion",
+        suggested_by: "p-dev",
+        lat: null,
+        lng: null,
+      },
+    ]);
+    h.page = { ok: true, text: "sunset from 📍Shibuya Sky #tokyo" };
+    h.place = { place_name: "Shibuya Sky", city: "Tokyo", address: null, category: "viewpoint" };
+    h.geo = { lat: 35.6583, lng: 139.7023, label: "Shibuya Sky" };
+
+    await capture("https://www.instagram.com/reel/SKY/");
+    await resolveQueuedLinks(TRIP as never, { send });
+
+    // No second row.
+    expect(places()).toHaveLength(1);
+    // No second message: the other path already announced it.
+    expect(h.sent).toEqual([]);
+    // The link still counts as resolved, and points at the row that exists.
+    expect(links()[0]).toMatchObject({ status: "resolved", place_id: "pl-1" });
+  });
+
+  it("fills in coordinates the first path could not find", async () => {
+    h.db.seed("places", [
+      {
+        id: "pl-1",
+        trip_id: "trip-1",
+        name: "Shibuya Sky",
+        source: "suggestion",
+        suggested_by: "p-dev",
+        lat: null,
+        lng: null,
+      },
+    ]);
+    h.page = { ok: true, text: "📍Shibuya Sky" };
+    h.place = { place_name: "Shibuya Sky", city: "Tokyo", address: "Shibuya, Tokyo", category: "viewpoint" };
+    h.geo = { lat: 35.6583, lng: 139.7023, label: "Shibuya Sky" };
+
+    await capture("https://www.instagram.com/reel/SKY2/");
+    await resolveQueuedLinks(TRIP as never, { send });
+
+    const row = places()[0];
+    expect(row.lat).toBe(35.6583);
+    expect(row.address).toBe("Shibuya, Tokyo");
+    expect(row.source_url).toBe("https://www.instagram.com/reel/SKY2/");
+  });
+
+  it("matches on the name whatever punctuation and case it carries", async () => {
+    h.db.seed("places", [
+      { id: "pl-1", trip_id: "trip-1", name: "shibuya  sky.", source: "social", suggested_by: "p-dev", lat: 1, lng: 2 },
+    ]);
+    h.page = { ok: true, text: "x" };
+    h.place = { place_name: "Shibuya Sky", city: "Tokyo", address: null, category: null };
+    await capture("https://www.instagram.com/reel/SKY3/");
+    await resolveQueuedLinks(TRIP as never, { send });
+    expect(places()).toHaveLength(1);
+    expect(h.sent).toEqual([]);
+  });
+});

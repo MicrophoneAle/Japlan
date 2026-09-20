@@ -1,5 +1,6 @@
 import { REFILLS_PER_DAY } from "./board-request";
-import { todayFor, zoneNow } from "@/lib/game/legs";
+import { cityFor, todayFor, zoneNow } from "@/lib/game/legs";
+import { geocodePlace } from "@/lib/geo/geocode";
 import { getServiceClient } from "@/lib/db/client";
 import type { ParticipantRow, PlaceRow, TripRow } from "@/lib/db/types";
 import { parseBoardDay } from "@/lib/game/board-schedule";
@@ -44,6 +45,7 @@ import { parseClockMinutes } from "@/lib/game/day-plan";
 import { resolvePlace } from "@/lib/game/plan-board";
 import { categoryKeyFor } from "@/lib/game/preferences";
 import {
+  existingSuggestion,
   fitSuggestion,
   splitPlaceList,
   type DayPoints,
@@ -256,17 +258,40 @@ async function tripPlaces(tripId: string): Promise<PlaceRow[]> {
 // Foursquare, chat mentions, earlier suggestions), then the destination
 // profile, then the neighborhood they named. No live Foursquare call: this
 // runs off a message, and the places layer is batch-only.
-function locate(
+// Where a named place actually is. Shared by every path that puts a place on a
+// day: the conversation tool, survey must-haves, and link resolution.
+//
+// Cheapest first, and the geocoder only ever runs on a miss:
+//   1. a place this trip already knows, with coordinates
+//   2. the destination profile (neighbourhoods and landmarks, no network)
+//   3. Nominatim on the venue name plus the city (lib/geo/geocode.ts)
+//   4. the neighbourhood they named, as a coarse last resort
+//
+// Step 3 is why "japlan we should do Shibuya Sky" works: the profile is a
+// hand-seeded list and will never contain every venue, so without it anything
+// not already on the map came back unplaceable. It never throws and never
+// blocks: a timeout, a miss, or a busy pacing slot all fall through to no
+// coordinates, which is an honest "on the ideas list" rather than a wrong day.
+async function locate(
   name: string,
   neighborhood: string | null,
   places: PlaceRow[],
   profile: DestinationProfile | null,
-): { coords: LatLng | null; category: string | null; name: string } {
+  city?: string | null,
+): Promise<{ coords: LatLng | null; category: string | null; name: string }> {
   const want = norm(name);
   const known = places.find((p) => norm(p.name) === want && p.lat !== null && p.lng !== null);
   if (known) return { coords: { lat: known.lat!, lng: known.lng! }, category: known.category, name: known.name };
   const onMap = profile ? resolvePlace(name, profile) : null;
   if (onMap?.coords) return { coords: onMap.coords, category: onMap.category, name: onMap.name };
+
+  const geo = await geocodePlace({
+    name,
+    city: city ?? profile?.destination ?? null,
+    near: profile?.center ?? null,
+  }).catch(() => null);
+  if (geo) return { coords: { lat: geo.lat, lng: geo.lng }, category: null, name };
+
   const area = profile && neighborhood ? resolvePlace(neighborhood, profile) : null;
   return { coords: area?.coords ?? null, category: null, name };
 }
@@ -326,8 +351,22 @@ async function saveSuggestion(opts: {
   located: { coords: LatLng | null; category: string | null; name: string };
 }): Promise<{ id: string; duplicate: boolean }> {
   const places = await tripPlaces(opts.tripId);
-  const same = places.find((p) => p.source === "suggestion" && norm(p.name) === norm(opts.located.name));
-  if (same) return { id: same.id, duplicate: true };
+  // Across every "somebody asked for this" source, not just typed-in ones: a
+  // reel about a place someone already mentioned attaches to that row instead
+  // of making a second one.
+  const same = existingSuggestion(places, opts.located.name);
+  if (same) {
+    // Whichever path landed first owns the row; a later one that knows more
+    // (coordinates the first could not find) fills the gap rather than
+    // creating a rival.
+    if (same.lat === null && opts.located.coords) {
+      await getServiceClient()
+        .from("places")
+        .update({ lat: opts.located.coords.lat, lng: opts.located.coords.lng })
+        .eq("id", same.id);
+    }
+    return { id: same.id, duplicate: true };
+  }
   const { data, error } = await getServiceClient()
     .from("places")
     .insert({
@@ -372,7 +411,13 @@ export async function addSuggestion(
   args: { place: string; neighborhood?: string | null; day?: string | null },
 ): Promise<string> {
   const profile = profileOf(ctx.trip);
-  const located = locate(args.place, args.neighborhood ?? null, await tripPlaces(ctx.trip.id), profile);
+  const located = await locate(
+    args.place,
+    args.neighborhood ?? null,
+    await tripPlaces(ctx.trip.id),
+    profile,
+    cityFor(ctx.trip, todayFor(ctx.trip, ctx.now)),
+  );
   const saved = await saveSuggestion({
     tripId: ctx.trip.id,
     by: ctx.sender.id,
@@ -441,7 +486,7 @@ export async function importSurveySuggestions(trip: TripRow, participant: Partic
       by: participant.id,
       name,
       note: "from the survey",
-      located: locate(name, null, places, profile),
+      located: await locate(name, null, places, profile),
     });
     if (!saved.duplicate) added += 1;
   }

@@ -555,7 +555,7 @@ export const HELP_TEXT = {
 · did something cool i didn't even ask for? just tell me, i'll score it
 · "japlan lb" or "japlan standings" for the leaderboard
 · "japlan settings" to see or change anything you told me
-· "japlan chill" if i'm being too much lol
+· "japlan quiet" if i'm being too much lol
 
 that's it. now go do something unhinged.`,
   dm: `ok here's the whole deal 📋
@@ -568,7 +568,7 @@ that's it. now go do something unhinged.`,
 · did something cool i didn't even ask for? just tell me, i'll score it
 · "japlan lb" or "japlan standings" for the leaderboard
 · "japlan settings" to see or change anything you told me
-· "japlan chill" if i'm being too much lol
+· "japlan quiet" if i'm being too much lol
 
 that's it. now go do something unhinged.`,
 } as const;
@@ -658,7 +658,7 @@ export function preferenceNotedLine(what: string, more: boolean, offerRedo: bool
   return `got it, ${more ? "more" : "less"} ${what}.${offerRedo ? " want me to redo today's board?" : ""}`;
 }
 
-// "japlan chill": about three words, then quiet until mentioned.
+// "japlan quiet": about three words, then quiet until mentioned.
 export const STOP_LINE = "ok, going quiet.";
 
 // Sidequests: DM out, group announce in. Optional, never chased.

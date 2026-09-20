@@ -18,7 +18,7 @@ import type { LLMProvider } from "@/lib/llm";
 
 export type EngagementDecision = {
   engaged: boolean;
-  // "japlan chill": acknowledge and go quiet.
+  // "japlan quiet": acknowledge and go quiet.
   stop?: boolean;
   // Joined only because a photo may match an open task: claims may use it,
   // but a miss is silence, not conversation.

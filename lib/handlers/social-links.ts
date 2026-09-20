@@ -27,6 +27,7 @@ import { followShortLink, readerFor, type ReadOutcome } from "@/lib/social/read-
 import { cityFor } from "@/lib/game/legs";
 import { legIdForWrite } from "./legs";
 import { socialPlaceAddedLine } from "@/lib/game/copy";
+import { existingSuggestion } from "@/lib/game/suggestions";
 import { anchorSuggestion } from "./plan-changes";
 import { geocodePlace } from "@/lib/geo/geocode";
 import { resolvePlace } from "@/lib/game/plan-board";
@@ -168,7 +169,34 @@ async function insertPlace(opts: {
   lat: number | null;
   lng: number | null;
   date: string;
-}): Promise<string | null> {
+}): Promise<{ id: string; duplicate: boolean } | null> {
+  // One venue, one row. The conversation tool may already have added this
+  // place from the same message (the model sees the link text and calls
+  // add_suggestion), so whichever path landed first owns the row and this one
+  // attaches to it instead of making a rival.
+  const existing = await getServiceClient()
+    .from("places")
+    .select("id, name, source, lat")
+    .eq("trip_id", opts.trip.id);
+  if (!existing.error) {
+    const same = existingSuggestion(
+      (existing.data ?? []) as { id: string; name: string; source: string | null; lat: number | null }[],
+      opts.name,
+    );
+    if (same) {
+      // Fill in what the first path could not work out, and record where it
+      // came from, without touching what it already got right.
+      const patch: Record<string, unknown> = { source_url: opts.row.url, resolved_at: new Date().toISOString() };
+      if (same.lat === null && opts.lat !== null) {
+        patch.lat = opts.lat;
+        patch.lng = opts.lng;
+      }
+      if (opts.address) patch.address = opts.address;
+      await getServiceClient().from("places").update(patch).eq("id", same.id);
+      step("place.attached", { name: opts.name, placeId: same.id });
+      return { id: same.id, duplicate: true };
+    }
+  }
   // fsq_place_id stays null: Foursquare is out of credits, and a name plus an
   // address is enough to put a place on a day. places_needs_fsq_idx is exactly
   // the backfill query for when credits return.
@@ -194,7 +222,8 @@ async function insertPlace(opts: {
     step("place.insert_failed", { code: error.code, name: opts.name });
     return null;
   }
-  return (data as { id: string } | null)?.id ?? null;
+  const id = (data as { id: string } | null)?.id ?? null;
+  return id ? { id, duplicate: false } : null;
 }
 
 // One link, start to finish. Returns a line to say in the chat, or null.
@@ -224,7 +253,7 @@ async function resolveOne(opts: {
 
   // A Maps link already names the place; nothing needs a model.
   if (read.maps?.name) {
-    const placeId = await insertPlace({
+    const saved = await insertPlace({
       trip: opts.trip,
       row,
       name: read.maps.name,
@@ -235,12 +264,16 @@ async function resolveOne(opts: {
       date: opts.date,
     });
     await markLink(row.id, {
-      status: placeId ? "resolved" : "failed",
-      outcome: placeId ? "maps_url" : "place_insert_failed",
+      status: saved ? "resolved" : "failed",
+      outcome: saved ? (saved.duplicate ? "maps_url_duplicate" : "maps_url") : "place_insert_failed",
       extracted_text: read.text,
-      place_id: placeId,
+      place_id: saved?.id ?? null,
     });
-    if (!placeId) return null;
+    if (!saved) return null;
+    // Already announced by whichever path got here first: one venue, one
+    // message.
+    if (saved.duplicate) return null;
+    const placeId = saved.id;
     // A Maps link is the only source that hands over real coordinates, so it
     // is also the one that always lands on the right day.
     const fit = await anchorSuggestion({
@@ -295,7 +328,7 @@ async function resolveOne(opts: {
     if (geo) coords = { lat: geo.lat, lng: geo.lng };
   }
 
-  const placeId = await insertPlace({
+  const savedPlace = await insertPlace({
     trip: opts.trip,
     row,
     name: found.place_name,
@@ -306,12 +339,25 @@ async function resolveOne(opts: {
     date: opts.date,
   });
   await markLink(row.id, {
-    status: placeId ? "resolved" : "failed",
-    outcome: placeId ? (found.address ? "venue_with_address" : "venue_no_address") : "place_insert_failed",
+    status: savedPlace ? "resolved" : "failed",
+    outcome: savedPlace
+      ? savedPlace.duplicate
+        ? "venue_duplicate"
+        : found.address
+          ? "venue_with_address"
+          : "venue_no_address"
+      : "place_insert_failed",
     extracted_text: read.text.slice(0, 2000),
-    place_id: placeId,
+    place_id: savedPlace?.id ?? null,
   });
-  if (!placeId) return null;
+  if (!savedPlace) return null;
+  // The conversation tool already said this one out loud when it read the same
+  // message. One venue, one row, one message.
+  if (savedPlace.duplicate) {
+    step("resolved.duplicate", { kind: row.kind, url: row.url, place: found.place_name });
+    return null;
+  }
+  const placeId = savedPlace.id;
   // Same fit and anchor the typed-in suggestions use, so a place from a TikTok
   // lands exactly the way one someone typed does. With no coordinates the fit
   // is "no_location": it goes on the ideas list rather than onto a guessed day.

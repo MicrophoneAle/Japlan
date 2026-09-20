@@ -8,7 +8,7 @@
 
 export type EngagementState = {
   engaged: boolean;
-  // "japlan chill": only a direct mention brings it back.
+  // "japlan quiet": only a direct mention brings it back.
   stopped: boolean;
   reason: string;
   at: string;
@@ -22,9 +22,16 @@ export const ENGAGED_GAP_MS = 20 * 60 * 1000;
 // clearly a conversation between them.
 export const OTHERS_IN_A_ROW = 4;
 
-// "japlan chill", "shut up japlan", "stop japlan", "we're good japlan",
-// "japlan that's all". Needs the name: "stop" alone is chat.
-const STOP_WORDS = "(?:chill|stop|shut up|shush|be quiet|quiet|pipe down|enough|go away|leave us|we'?re good|that'?s all|thanks,? we'?re good|not now|mute)";
+// "japlan quiet", "shut up japlan", "stop japlan", "japlan stop", "japlan
+// shut up", "we're good japlan", "japlan that's all". Needs the name: "stop"
+// alone is chat.
+//
+// "chill" is deliberately NOT here. It is a difficulty level (chill / normal /
+// unhinged), and engagement is decided before setup answers are read, so
+// "japlan chill" was muting the bot instead of setting the difficulty. A word
+// that means two things is a bug waiting to happen; "quiet" means one thing
+// and is what people reach for anyway.
+const STOP_WORDS = "(?:quiet|stop|shut up|shush|be quiet|pipe down|enough|go away|leave us|we'?re good|that'?s all|thanks,? we'?re good|not now|mute)";
 const STOP_RE = new RegExp(
   `(?:\\bjaplan\\b[,!. ]*${STOP_WORDS}[.! ]*$)|(?:^[a-z ,']*?${STOP_WORDS}[,!. ]*\\bjaplan\\b[.!]*$)`,
   "i",

@@ -342,10 +342,10 @@ describe("following a group conversation", () => {
     });
   });
 
-  it("'japlan chill' goes quiet in three words, and only a mention brings it back", async () => {
+  it("'japlan quiet' goes quiet in three words, and only a mention brings it back", async () => {
     seed();
     await say("maya", "japlan hey");
-    await say("sam", "japlan chill");
+    await say("sam", "japlan quiet");
     expect(lastIn(GROUP)).toBe(STOP_LINE);
     const count = sentTo(GROUP).length;
     h.shouldJoin.mockResolvedValue({ decision: true, reason: "score" });
@@ -356,6 +356,16 @@ describe("following a group conversation", () => {
     await say("maya", "japlan ok you can talk");
     expect(sentTo(GROUP)).toHaveLength(count + 1);
     expect(trip().engagement_json).toMatchObject({ engaged: true, stopped: false });
+  });
+
+  // "chill" is a difficulty level. It used to mute, which meant the organizer
+  // could not set the difficulty to chill with the keyword attached.
+  it("does not go quiet on 'japlan chill', which is a difficulty", async () => {
+    seed();
+    await say("maya", "japlan hey");
+    await say("sam", "japlan chill");
+    expect(lastIn(GROUP)).not.toBe(STOP_LINE);
+    expect(trip().engagement_json).not.toMatchObject({ stopped: true });
   });
 });
 

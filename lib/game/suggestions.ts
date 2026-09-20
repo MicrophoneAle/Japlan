@@ -57,3 +57,34 @@ export function splitPlaceList(text: string | null | undefined): string[] {
     .map((s) => s.trim())
     .filter((s) => s.length >= 3 && !/^(none|nothing|no|not really|n\/?a|idk|skip)$/i.test(s));
 }
+
+// Sources that represent "somebody on this trip asked for this place": typed
+// into the chat, pulled off a link they posted, or named in their survey. One
+// venue is one row across all of them, or a pasted reel about a place someone
+// already mentioned becomes a second row and a second message.
+export const SUGGESTED_SOURCES = ["suggestion", "social"] as const;
+
+function normalizeName(name: string): string {
+  return name
+    .toLowerCase()
+    .normalize("NFKC")
+    .replace(/\s+/g, " ")
+    .replace(/[.,!?'"`]/g, "")
+    .trim();
+}
+
+// The row this place is already stored as, whichever path put it there first.
+export function existingSuggestion<T extends { name: string; source?: string | null }>(
+  places: T[],
+  name: string,
+): T | null {
+  const want = normalizeName(name);
+  if (!want) return null;
+  return (
+    places.find(
+      (p) =>
+        SUGGESTED_SOURCES.includes((p.source ?? "") as (typeof SUGGESTED_SOURCES)[number]) &&
+        normalizeName(p.name) === want,
+    ) ?? null
+  );
+}

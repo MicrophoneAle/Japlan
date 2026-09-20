@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { hardNoWords, parseConstraints, readYesNo } from "./constraints";
 import { isStopCommand, entrySignal, obviousDisengage, OTHERS_IN_A_ROW } from "./engagement";
+import { matchDifficulty } from "./setup";
 import {
   compatAnswers,
   hasPreferenceSignal,
@@ -177,12 +178,56 @@ describe("filters from the new answers", () => {
 });
 
 describe("engagement rules", () => {
-  it("stop needs the name", () => {
-    for (const t of ["japlan chill", "shut up japlan", "stop japlan", "we're good japlan", "Japlan, chill."]) {
+  it("stop needs the name, and takes the phrasings people actually use", () => {
+    for (const t of [
+      "japlan quiet",
+      "japlan stop",
+      "japlan shut up",
+      "shut up japlan",
+      "stop japlan",
+      "we're good japlan",
+      "Japlan, quiet.",
+      "japlan be quiet",
+      "japlan that's all",
+    ]) {
       expect(isStopCommand(t)).toBe(true);
     }
-    for (const t of ["stop", "chill", "japlan what's the score", "we should chill at the park"]) {
+    for (const t of ["stop", "quiet", "japlan what's the score", "we should chill at the park"]) {
       expect(isStopCommand(t)).toBe(false);
+    }
+  });
+
+  // "chill" is a difficulty level, not the mute. Engagement is decided before
+  // setup answers are read, so while this was a stop word "japlan chill"
+  // muted the bot instead of setting the difficulty.
+  it("never mutes on 'chill', which means difficulty and only difficulty", () => {
+    for (const t of ["japlan chill", "chill japlan", "Japlan, chill.", "japlan chill!"]) {
+      expect(isStopCommand(t)).toBe(false);
+    }
+    expect(matchDifficulty("chill")).toBe("chill");
+    expect(matchDifficulty("easy")).toBe("chill");
+  });
+
+  // None of the mute phrasings may be readable as a difficulty either, or the
+  // collision just moves rather than going away.
+  it("keeps the mute vocabulary and the difficulty vocabulary disjoint", () => {
+    for (const t of [
+      "quiet",
+      "stop",
+      "shut up",
+      "be quiet",
+      "shush",
+      "enough",
+      "mute",
+      "we're good",
+      "that's all",
+      "go away",
+      "not now",
+    ]) {
+      expect(matchDifficulty(t)).toBeNull();
+    }
+    for (const t of ["chill", "normal", "unhinged", "easy", "chilled", "relaxed", "low", "hard", "wild"]) {
+      expect(isStopCommand(`japlan ${t}`)).toBe(false);
     }
   });
 

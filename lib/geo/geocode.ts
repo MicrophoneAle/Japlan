@@ -26,6 +26,11 @@ const TIMEOUT_MS = 6_000;
 // Nominatim's usage policy is one request a second and a User-Agent that
 // identifies the app. Both are honoured here.
 const MIN_GAP_MS = 1_100;
+// This now runs on a user-facing path (a typed suggestion, a pasted link), not
+// only on a cron. Nobody waits in a queue for a geocode: if the pacing slot is
+// further out than this, give up immediately and let the caller fall back to
+// "no location" rather than holding up a reply.
+const MAX_PACING_WAIT_MS = 1_000;
 const USER_AGENT = "japlan-trip-bot/1.0 (group trip planner; https://github.com/MicrophoneAle/japlan)";
 // place_rank is how specific a match is: 30 is a building or POI, the teens
 // are cities and administrative areas. Below this we did not find the venue.
@@ -36,16 +41,26 @@ const MAX_KM_FROM_TRIP = 150;
 
 export type GeoPoint = { lat: number; lng: number; label: string };
 
-let lastCallAt = 0;
+// The next instant a request may go out. Reserved SYNCHRONOUSLY so that two
+// callers in the same isolate queue behind each other properly: checking a
+// "last call" timestamp and then awaiting lets both pass the check at once.
+// Per-isolate, like any module state, so this paces one instance and not the
+// fleet; the per-trip hourly cap is what bounds total volume.
+let nextSlotAt = 0;
 
 function step(step: string, fields: Record<string, unknown> = {}): void {
   console.info("[japlan.geocode] step", { step, ...fields });
 }
 
-async function paceRequests(): Promise<void> {
-  const wait = MIN_GAP_MS - (Date.now() - lastCallAt);
-  if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
-  lastCallAt = Date.now();
+// Claims the next slot and says how long to wait for it, or null when the
+// queue is longer than anyone should wait on a reply.
+function reserveSlot(): number | null {
+  const now = Date.now();
+  const slot = Math.max(now, nextSlotAt);
+  const wait = slot - now;
+  if (wait > MAX_PACING_WAIT_MS) return null;
+  nextSlotAt = slot + MIN_GAP_MS;
+  return wait;
 }
 
 function kmBetween(a: GeoPoint, b: { lat: number; lng: number }): number {
@@ -79,7 +94,14 @@ export async function geocodePlace(opts: {
   const query = opts.city?.trim() ? `${name}, ${opts.city.trim()}` : name;
 
   try {
-    await paceRequests();
+    const wait = reserveSlot();
+    if (wait === null) {
+      // Someone else is already in the slot. A suggestion with no coordinates
+      // is a fine outcome; a reply that took three seconds is not.
+      step("paced_out", { query });
+      return null;
+    }
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
     const url =
       `${NOMINATIM}?q=${encodeURIComponent(query)}` +
       `&format=jsonv2&limit=1&addressdetails=0`;

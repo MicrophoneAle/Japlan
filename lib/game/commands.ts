@@ -10,13 +10,18 @@ const COMMANDS: [TripCommand, RegExp][] = [
   ["setup", /^(setup|set up|trip setup|change setup)$/],
   ["survey_status", /^(survey status|who'?s done with (the )?survey|who hasn'?t (answered|finished)( the survey)?)$/],
   // Anyone's own answers: see them all, or go through the questions again.
+  // NOTE: this owns bare "profile" and "my profile" because it is matched
+  // first. The "profile" command below is the "what do you know about me"
+  // readout and only takes the question forms; its "my profile" alternatives
+  // were unreachable and have been removed rather than left as a second
+  // meaning for the same words.
   ["settings", /^(my )?(settings|preferences|prefs|profile)$/],
   ["resurvey", /^(resurvey|re-?survey|redo (my )?survey|survey again|retake (the )?survey)$/],
   // "what do u know about me", "what can you tell me about myself", "what can
   // you tell me based on my survey answers" (all live, 2026-09-19).
   [
     "profile",
-    /^(?:(?:hi|hey|yo|ok|okay|so|and)\s+)?(?:(?:what|wat|wht)\s+(?:do|did|can|does)\s+(?:you|u|ya)\s+(?:know|tell me|remember|have)\s+(?:about|on)\s+(?:me|myself)(?:\s.*)?|what can (?:you|u) tell me (?:about myself|based on my (?:survey|answers|survey answers))|my profile|show (?:me )?my profile|whats my profile|who am i(?: to you)?)$/,
+    /^(?:(?:hi|hey|yo|ok|okay|so|and)\s+)?(?:(?:what|wat|wht)\s+(?:do|did|can|does)\s+(?:you|u|ya)\s+(?:know|tell me|remember|have)\s+(?:about|on)\s+(?:me|myself)(?:\s.*)?|what can (?:you|u) tell me (?:about myself|based on my (?:survey|answers|survey answers))|who am i(?: to you)?)$/,
   ],
 ];
 
