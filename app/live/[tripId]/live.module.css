@@ -1,0 +1,418 @@
+/* Live trip dashboard: a companion page, not a SaaS analytics dashboard.
+   Soft cream/mint backgrounds, one warm coral accent, rounded cards, big
+   friendly type. No neon, no glass, no charts. */
+
+.page {
+  --ink: #241f1a;
+  --muted: #7a7267;
+  --cream: #faf6f0;
+  --mint: #eef6f0;
+  --coral: #ef7a5a;
+  --sage: #4f7d64;
+  --line: #ece5da;
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 0 0 64px;
+  background: var(--cream);
+  color: var(--ink);
+  font-family: "Helvetica Neue", Arial, sans-serif;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+.page * {
+  min-width: 0;
+}
+
+.hero {
+  padding: 40px 24px 28px;
+  background: linear-gradient(180deg, var(--mint) 0%, var(--cream) 100%);
+  border-bottom: 1px solid var(--line);
+}
+
+.heroTop {
+  margin-bottom: 10px;
+}
+
+.planeIcon {
+  display: inline-block;
+  font-size: 22px;
+  transform: rotate(-18deg);
+}
+
+.destination {
+  font-size: clamp(2.4rem, 9vw, 3rem);
+  font-weight: 900;
+  letter-spacing: -0.03em;
+  margin: 0;
+  line-height: 1;
+}
+
+.dayLine {
+  margin: 10px 0 4px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.heroSub {
+  margin: 0;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.card {
+  margin: 20px 16px 0;
+  padding: 22px 20px;
+  background: #fff;
+  border-radius: 22px;
+  box-shadow: 0 10px 30px rgba(36, 31, 26, 0.05);
+}
+
+.sectionTitle {
+  margin: 0 0 16px;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* Leaderboard */
+.leaderboard {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.leaderRow {
+  position: relative;
+  display: grid;
+  grid-template-columns: 20px 34px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 12px;
+}
+
+.leaderRowMe {
+  background: var(--mint);
+  border-radius: 14px;
+  padding: 8px 10px;
+  margin: -8px -10px 4px;
+}
+
+.rank {
+  font-weight: 800;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--mint);
+  color: var(--sage);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: 14px;
+}
+
+.leaderName {
+  font-weight: 700;
+  font-size: 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.teamTag {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--sage);
+}
+
+.score {
+  font-weight: 900;
+  font-size: 18px;
+}
+
+.pointsToday {
+  grid-column: 3 / span 2;
+  font-size: 12px;
+  color: var(--coral);
+  font-weight: 700;
+}
+
+.raceTrack {
+  grid-column: 1 / -1;
+  height: 4px;
+  border-radius: 4px;
+  background: var(--line);
+  overflow: hidden;
+  margin-top: 6px;
+}
+
+.raceFill {
+  display: block;
+  height: 100%;
+  background: var(--coral);
+  border-radius: 4px;
+}
+
+/* Tasks */
+.taskGrid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.taskCard {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 14px 16px;
+}
+
+.taskCardDone {
+  background: var(--mint);
+  border-color: transparent;
+}
+
+.taskTop {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.taskCode {
+  font-weight: 900;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+}
+
+.taskTier {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.taskTitle {
+  margin: 6px 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.taskMeta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  font-size: 13px;
+}
+
+.taskPoints {
+  font-weight: 800;
+  color: var(--coral);
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.multiplierBadge {
+  font-size: 10px;
+  font-weight: 800;
+  background: var(--coral);
+  color: #fff;
+  border-radius: 999px;
+  padding: 2px 7px;
+  white-space: nowrap;
+}
+
+.taskAssignee {
+  color: var(--muted);
+  font-weight: 600;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.taskDone {
+  font-weight: 700;
+  color: var(--sage);
+}
+
+.taskFoot {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.taskPhoto {
+  margin-top: 10px;
+  width: 100%;
+  max-height: 220px;
+  object-fit: cover;
+  border-radius: 12px;
+}
+
+/* Proof */
+.proofGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.proofItem {
+  margin: 0;
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--mint);
+}
+
+.proofItem img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  display: block;
+}
+
+.proofItem figcaption {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 8px;
+  font-size: 10px;
+}
+
+.proofItem figcaption span:first-child {
+  font-weight: 700;
+}
+
+.proofItem figcaption span:last-child {
+  color: var(--muted);
+}
+
+/* Itinerary */
+.itineraryList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.itineraryRow {
+  display: grid;
+  grid-template-columns: 20px auto 1fr;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 14px;
+}
+
+.itineraryMark {
+  font-weight: 800;
+  color: var(--line);
+}
+
+.itineraryMark[data-status="done"] { color: var(--sage); }
+.itineraryMark[data-status="current"] { color: var(--coral); }
+
+.itineraryTime {
+  font-weight: 700;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.itineraryPlace {
+  font-weight: 600;
+}
+
+/* Personal grid ("your trip") */
+.personalGrid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+}
+
+.bigNumber {
+  display: block;
+  font-size: 28px;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+}
+
+.bigLabel {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+/* Skeleton loading state (loading.tsx) */
+.skeleton {
+  background: linear-gradient(90deg, var(--line) 25%, #f5efe4 50%, var(--line) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+  border-radius: 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton { animation: none; }
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.skeletonTitle {
+  height: 40px;
+  width: 70%;
+  margin: 4px 0 14px;
+  border-radius: 10px;
+}
+
+.skeletonLine {
+  height: 14px;
+  margin: 6px 0;
+}
+
+.skeletonLabel {
+  height: 12px;
+  width: 40%;
+  margin-bottom: 18px;
+}
+
+.skeletonRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.skeletonAvatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.skeletonCard {
+  height: 88px;
+  margin-bottom: 12px;
+  border-radius: 16px;
+}
