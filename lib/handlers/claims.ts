@@ -70,6 +70,7 @@ import {
 import { imageFingerprint, imageTakenAt, prepareForVision, sniffImageMime } from "@/lib/game/image-hash";
 import { fetchWithTimeout, withTimeout } from "@/lib/timeout";
 import { nextFreeformCode } from "@/lib/game/generate";
+import { personLabel } from "@/lib/handle";
 import {
   applyDailyPointsCap,
   claimEarnsScreenEffect,
@@ -851,9 +852,11 @@ async function applyAwards(opts: {
     remainingOpenPersonal = await countOpenPersonal(opts.trip.id, opts.claimant.id);
   }
 
-  const name =
+  const name = personLabel(
     opts.people.find((p) => p.id === opts.claimant.id)?.display_name ??
-    opts.claimant.display_name;
+      opts.claimant.display_name,
+    "someone",
+  );
   // Rare on purpose: only a claim that was genuinely worth it before the day
   // multiplier inflated it, and only when the claim actually paid out.
   const effect: MessageEffect | undefined =

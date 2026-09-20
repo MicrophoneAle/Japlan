@@ -25,6 +25,7 @@ import {
   splitNotedLine,
   suggestionLine,
   tasksRequestedLine,
+  constraintNotedLine,
 } from "@/lib/game/copy";
 import { formatPersonalBoard } from "@/lib/game/board";
 import { PRIVATE_SURVEY_IDS } from "@/lib/game/conversation";
@@ -53,7 +54,7 @@ import {
 } from "@/lib/game/suggestions";
 import { hhmm, resolveSplit, type SplitInput } from "@/lib/game/split";
 import { answerValue, displayNameFromFirstName, type SurveyAnswers } from "@/lib/game/survey";
-import { looksLikePhone } from "@/lib/linq/payload";
+import { looksLikeRawHandle } from "@/lib/linq/payload";
 import { addDaysIso, localTimeHHMM } from "@/lib/game/time";
 import { tripDayForDate } from "@/lib/game/board-schedule";
 import {
@@ -571,7 +572,7 @@ export async function updateMySetting(
   }
   const firstName =
     update.id === "first_name" ? answerValue(update.answers, "first_name") : undefined;
-  if (firstName && looksLikePhone(firstName)) {
+  if (firstName && looksLikeRawHandle(firstName)) {
     return { reply: settingUnclearLine("name", []), dm: null };
   }
   const displayName =
@@ -581,7 +582,13 @@ export async function updateMySetting(
   await saveAnswers(ctx.sender.id, update.answers, displayName);
   console.info("[japlan.settings] changed", { participantId: ctx.sender.id, setting: update.id });
   const label = SETTING_LABELS[update.id] ?? update.id.replace(/_/g, " ");
-  const line = settingChangedLine(label, update.shown, await boardReadyToday(ctx));
+  // A safety constraint gets its own confirmation, naming what is now stored:
+  // somebody who just told us about an allergy needs to SEE that it landed,
+  // not a generic "saved".
+  const line =
+    update.id === "hard_constraints" || update.id === "sidequest_red_lines"
+      ? constraintNotedLine(update.shown, await boardReadyToday(ctx))
+      : settingChangedLine(label, update.shown, await boardReadyToday(ctx));
   if (!ctx.isDm && PRIVATE_SURVEY_IDS.includes(update.id)) {
     return { reply: SETTING_IN_DM_LINE, dm: line };
   }

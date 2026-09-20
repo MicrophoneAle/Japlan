@@ -8,6 +8,7 @@ import {
   matchDifficulty,
   missingRequiredSetup,
   parseIsoRange,
+  setupOrderFor,
   setupReadyToActivate,
 } from "./setup";
 import { isValidTimeZone, zonePlausibleForLongitude } from "./time";
@@ -185,8 +186,10 @@ describe("final standings", () => {
 
 describe("setup prompts", () => {
   it("shows the current value on a re-run and never asks for a timezone", () => {
+    // The count in the lead has to match the questions actually asked, or the
+    // group is told four and gets five.
     expect(setupPrompt("destination", null, { first: true })).toBe(
-      "trip setup, 4 quick ones. ok where we headed? a city is plenty. (skip and i'll ask again later)",
+      `trip setup, ${setupOrderFor().length} quick ones. ok where we headed? a city is plenty. (skip and i'll ask again later)`,
     );
     expect(setupPrompt("destination", "tokyo, japan")).toContain("(rn: tokyo, japan. skip keeps it)");
     expect(setupPrompt("stake", null)).toContain("(skip is fine)");

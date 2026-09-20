@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LLMProvider } from "./index";
-import { matchClaimText, scorePhotoFidelity } from "./gemini";
+import { inferPlaceTimezone, matchClaimText, scorePhotoFidelity } from "./gemini";
 
 function providerWith(replies: string[]): LLMProvider {
   const queue = [...replies];
@@ -89,5 +89,68 @@ describe("scorePhotoFidelity", () => {
         await scorePhotoFidelity({ provider: providerWith([raw]), title: "find a bench", photoBonusMax: 2, image }),
       ).toBeNull();
     }
+  });
+});
+
+describe("inferPlaceTimezone", () => {
+  const area = { lat: 35.68, lng: 139.76, locality: "Tokyo", region: null, country: "JP" };
+
+  it("names the place and its zone when the model says it is one", async () => {
+    const found = await inferPlaceTimezone({
+      provider: providerWith([
+        JSON.stringify({ is_a_place: true, display_name: "tokyo, japan", timezone: "Asia/Tokyo" }),
+      ]),
+      text: "tokyo",
+      area,
+    });
+    expect(found).toEqual({ display: "tokyo, japan", timezone: "Asia/Tokyo" });
+  });
+
+  // The live bug: "where did you get that city from" came back as
+  // "kronjo, indonesia" and got written to trips.destination. The old prompt
+  // opened "given a travel destination", so there was no way to say no.
+  it("returns nothing when the model says it is not a place", async () => {
+    const found = await inferPlaceTimezone({
+      provider: providerWith([
+        JSON.stringify({ is_a_place: false, display_name: "", timezone: "" }),
+      ]),
+      text: "where did you get that city from",
+      area: null,
+    });
+    expect(found).toBeNull();
+  });
+
+  // Fail closed. This value is written to trips.destination.
+  it("treats a missing flag as not a place, however confident the rest looks", async () => {
+    const found = await inferPlaceTimezone({
+      provider: providerWith([
+        JSON.stringify({ display_name: "kronjo, indonesia", timezone: "Asia/Jakarta" }),
+      ]),
+      text: "that's wrong",
+      area: null,
+    });
+    expect(found).toBeNull();
+  });
+
+  it("still refuses a place it cannot put in a timezone", async () => {
+    const found = await inferPlaceTimezone({
+      provider: providerWith([
+        JSON.stringify({ is_a_place: true, display_name: "somewhere", timezone: "" }),
+      ]),
+      text: "somewhere nice",
+      area: null,
+    });
+    expect(found).toBeNull();
+  });
+
+  it("falls back to their own words when the model gives no display name", async () => {
+    const found = await inferPlaceTimezone({
+      provider: providerWith([
+        JSON.stringify({ is_a_place: true, display_name: "", timezone: "Asia/Tokyo" }),
+      ]),
+      text: "  Tokyo  ",
+      area,
+    });
+    expect(found).toEqual({ display: "Tokyo", timezone: "Asia/Tokyo" });
   });
 });

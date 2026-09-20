@@ -60,7 +60,11 @@ describe("survey v2: eight quick ones, anything accepted", () => {
 
   it("opens with the intro and asks for a preferred name before the personality questions", () => {
     const first = startSurvey();
-    expect(first.prompt).toMatch(/^quick personality test, because asking "what do you like" is useless\./);
+    // The intro says three things before any question: it is private, it is
+    // short, and how to answer. Wording is free to change; those are not.
+    expect(first.prompt).toMatch(/replies stay in this dm/);
+    expect(first.prompt).toMatch(/8 short questions/);
+    expect(first.prompt).toMatch(/skip/);
     expect(first.prompt).toMatch(/what should i call you\?$/);
     const { step, asked } = walk(["sam", "food", "wander", "museum", "cram", "$80", "none", "eat something i can't identify", "yes"]);
     expect(step.completed).toBe(true);
@@ -90,11 +94,14 @@ describe("survey v2: eight quick ones, anything accepted", () => {
     expect(step.prompt).toBe("wandering and finding random stuff, or the famous thing?");
   });
 
-  it("clarifies budget once when it is unusable, then settles on the middle", () => {
+  // A vague budget used to trigger fu_budget. It no longer does: readBudget
+  // settles it into the middle band at low confidence and moves on, which is
+  // the standing rule for every vague answer ("stored low-confidence, never
+  // re-asked"). The confidence is what carries the doubt forward.
+  it("settles an unusable budget into the middle band instead of asking again", () => {
     const vague = applyReply(at("budget_band"), "not too expensive");
-    expect(vague.state.awaiting).toBe("fu_budget");
-    const settled = applyReply(vague.state, "idk, normal");
-    expect(settled.state.answers.budget_band).toEqual({ value: "50_100", confidence: "low" });
+    expect(vague.state.awaiting).not.toBe("fu_budget");
+    expect(vague.state.answers.budget_band).toEqual({ value: "50_100", confidence: "low" });
     expect(applyReply(at("budget_band"), "like $80 a day").state.answers.budget_band).toEqual({ value: "50_100", confidence: "medium" });
     expect(applyReply(at("budget_band"), "don't make me think about money").state.answers.budget_band?.value).toBe("no_limit");
   });
@@ -110,9 +117,11 @@ describe("survey v2: eight quick ones, anything accepted", () => {
     expect(veg.prompt).toBe("got it, preference not a hard rule?");
     expect(applyReply(at("hard_constraints"), "none").state.awaiting).toBe("must_have");
     expect(applyReply(at("hard_constraints"), "a few things").state.awaiting).toBe("fu_constraints");
+    // The three that survive are all safety: an allergy's cross-contamination,
+    // how strict a diet is, and an unreadable constraint. A vague answer to
+    // anything else is stored as vague and the survey moves on.
     const depends = applyReply(at("splitting"), "depends");
-    expect(depends.state.awaiting).toBe("fu_split");
-    expect(depends.prompt).toBe("depends on what? someone you want to stick with, or just what we're doing?");
+    expect(depends.state.awaiting).not.toBe("fu_split");
   });
 
   it("keeps an answer that arrives early and skips that question later", () => {
@@ -130,7 +139,9 @@ describe("survey v2: eight quick ones, anything accepted", () => {
     const back = applyReply(first.state, "wait, go back");
     expect(back.state.awaiting).toBe("ab_food_outdoors");
     expect(back.state.answers.ab_food_outdoors).toBeUndefined();
-    expect(back.prompt).toMatch(/^sure\. insane local food spot/);
+    // It acknowledges, then re-asks the question it went back to.
+    expect(back.prompt).toMatch(/^sure\./);
+    expect(back.prompt).toMatch(/food spot/);
   });
 
   it("skips the splitting question solo", () => {
@@ -153,9 +164,15 @@ describe("survey v2: eight quick ones, anything accepted", () => {
 
 describe("survey ending", () => {
   it("says what happens next", () => {
-    expect(surveyDoneLine(0)).toBe(`${SURVEY_DONE_DM} your first board drops in the morning.`);
-    expect(surveyDoneLine(1)).toContain("waiting on 1 more person");
-    expect(surveyDoneLine(3)).toContain("waiting on 3 more people");
+    // Nobody outstanding: it says so, and when boards come.
+    expect(surveyDoneLine(0)).toContain(SURVEY_DONE_DM);
+    expect(surveyDoneLine(0)).toMatch(/board/);
+    expect(surveyDoneLine(0)).not.toMatch(/waiting on/);
+    // Outstanding people are counted, in the singular and the plural, and
+    // never named alongside anything they said.
+    expect(surveyDoneLine(1)).toMatch(/\b1 person\b/);
+    expect(surveyDoneLine(3)).toMatch(/\b3 people\b/);
+    // One message, never two.
     expect(surveyDoneLine(2)).not.toContain("\n");
   });
 });

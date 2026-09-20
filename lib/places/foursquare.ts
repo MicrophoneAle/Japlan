@@ -132,6 +132,8 @@ export function parseNearArea(payload: unknown): NearArea | null {
 }
 
 export const NEAR_TIMEOUT_MS = 6_000;
+// Batched profile search, off the webhook path but still on the cron clock.
+export const SEARCH_TIMEOUT_MS = 10_000;
 
 // Resolve a free-text destination ("tokyo") to an area, for the organizer
 // setup. One request per destination answer, at trip setup time. Null when
@@ -179,7 +181,12 @@ export async function searchPlaces(
   url.searchParams.set("limit", String(params.limit ?? 20));
   url.searchParams.set("fields", params.fields ?? SEARCH_FIELDS);
 
-  const res = await fetch(url, { headers: placesHeaders() });
+  // Timed like resolveNearArea: this runs during board generation, and an
+  // unbounded await here is the same silent-hang shape that cost four
+  // outages. searchPlaces was the last raw fetch in this file.
+  const res = await fetchWithTimeout(url, SEARCH_TIMEOUT_MS, "foursquare.search", {
+    headers: placesHeaders(),
+  });
   const bodyText = await res.text();
   if (!res.ok) {
     throw new Error(`Foursquare search HTTP ${res.status}: ${bodyText.slice(0, 400)}`);

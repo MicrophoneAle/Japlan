@@ -46,6 +46,7 @@ import {
   type BoardRow,
 } from "./daily-board";
 import { resumeSetup } from "./setup";
+import { personLabel } from "@/lib/handle";
 
 // Refills are the only way to regenerate a day on request, so they are the
 // only thing rate-limited: generous, per person per day of the trip. Asking
@@ -161,7 +162,10 @@ export async function answerBoardRequest(
   const today = todayFor(trip, now);
   const reply = async (text: string, opts: { board?: boolean } = {}) => {
     if (opts.board && trip.play_mode === "full_group") {
-      await miss.send(trip.linq_chat_id, `📣 ${miss.claimant.display_name} asked for the shared board:\n\n${text}`);
+      await miss.send(
+        trip.linq_chat_id,
+        `📣 ${personLabel(miss.claimant.display_name, "someone")} asked for the shared board:\n\n${text}`,
+      );
       if (miss.isDm) await miss.send(miss.chatId, BOARD_IN_GROUP_LINE);
       return;
     }
@@ -182,7 +186,7 @@ export async function answerBoardRequest(
       await reply(await resumeSetup(trip));
     } else {
       const organizer = miss.people.find((p) => p.id === trip.organizer_participant_id);
-      await reply(waitingOnSetupLine(organizer?.display_name ?? null));
+      await reply(waitingOnSetupLine(organizer ? personLabel(organizer.display_name) : null));
     }
     return;
   }

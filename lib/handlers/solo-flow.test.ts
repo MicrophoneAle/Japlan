@@ -138,8 +138,11 @@ describe("solo setup and survey", () => {
     await say("Tokyo");
     await say("Oct 17-20");
     await say("chill");
-    expect(last()).toMatch(/^chill, noted\. setup's done, we're so back\. quick personality test, because asking "what do you like" is useless\./);
-    expect(last()).toMatch(/kayaking somewhere stupidly pretty\?$/);
+    // Solo folds the setup close and the survey opening into one message:
+    // this DM is the trip chat, so there is nowhere else to put it.
+    expect(last()).toMatch(/^chill, noted\. setup's done, we're so back\./);
+    expect(last()).toMatch(/replies stay in this dm/);
+    expect(last()).toMatch(/what should i call you\?$/);
     expect(trip().setup_state).toBe("done");
     expect(trip().stake_text ?? null).toBeNull();
 
@@ -188,7 +191,7 @@ describe("asking for the day's plan", () => {
       },
     ]);
     await say("what's on the board?");
-    expect(last()).toContain("A1 · eat something starting with a-d · light (8)");
+    expect(last()).toContain("A1 · eat something starting with a-d\n   light · 8 pts");
   });
 });
 

@@ -431,9 +431,13 @@ describe("board and confirmation copy", () => {
       ],
     });
     expect(text).toContain("Day 1");
-    expect(text).toContain("A1 · first · light (7)");
-    expect(text).toContain("A2 · second · light (10)");
-    expect(text).toContain("Michael 20 · Sarah 10");
+    // Code and title on one line, tier and points indented under it.
+    expect(text).toContain("A1 · first\n   light · 7 pts");
+    expect(text).toContain("A2 · second\n   light · 10 pts");
+    // Standings are ranked, highest first, whatever order they arrived in.
+    expect(text).toContain("1. Michael · 20 pts");
+    expect(text).toContain("2. Sarah · 10 pts");
+    expect(text.indexOf("Michael")).toBeLessThan(text.indexOf("Sarah"));
     expect(text).not.toContain("⚓");
   });
 
@@ -444,7 +448,8 @@ describe("board and confirmation copy", () => {
       standings: [{ display_name: "Michael", score: 20 }],
     });
     expect(text).toContain("Day 1");
-    expect(text).toContain("Michael 20");
+    expect(text).toContain("Michael · 20 pts");
+    // The point of the group post: scores, never anyone's task codes.
     expect(text).not.toContain("A1");
   });
 
@@ -461,11 +466,17 @@ describe("board and confirmation copy", () => {
     // Tier from the points beside it, one line per task. Older tasks have no
     // time of day, and show without one.
     expect(text.split("\n").slice(2)).toEqual([
-      "A1 · first · light (15)",
-      "A2 · second · medium (16)",
-      "A3 · third · challenging (25)",
-      "A4 · fourth · challenging (34)",
+      "✨ anytime",
+      "A1 · first",
+      "   light · 15 pts",
+      "A2 · second",
+      "   medium · 16 pts",
+      "A3 · third",
+      "   challenging · 25 pts",
+      "A4 · fourth",
+      "   challenging · 34 pts",
     ]);
+    // A personal board is one person's: no standings, nobody else's name.
     expect(text).not.toContain("Michael");
   });
 
@@ -482,9 +493,17 @@ describe("board and confirmation copy", () => {
       [
         "Day 3 · Asakusa → Ueno",
         "",
-        "morning    A1 · ask a stranger for their best rec · medium (18)",
-        "afternoon  A2 · get to ueno without a train · challenging (26)",
-        "evening    A3 · order something you can't read · light (11)",
+        "🌅 morning",
+        "A1 · ask a stranger for their best rec",
+        "   medium · 18 pts",
+        "",
+        "☀️ afternoon",
+        "A2 · get to ueno without a train",
+        "   challenging · 26 pts",
+        "",
+        "🌙 evening",
+        "A3 · order something you can't read",
+        "   light · 11 pts",
       ].join("\n"),
     );
   });

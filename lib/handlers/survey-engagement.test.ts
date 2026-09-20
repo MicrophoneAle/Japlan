@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SURVEY_DONE_DM } from "@/lib/game/copy";
 import { FakeSupabase } from "@/lib/test/fake-supabase";
 
 // Survey v2, written profiles, group engagement and reply vetting, end to
@@ -214,7 +215,8 @@ describe("the survey accepts anything", () => {
     seed({ state: "surveying", maya: { survey_state: "ab_discover_iconic", survey_json: { ab_food_outdoors: v("a") } } });
     await say("maya", "wait, go back", DM.maya);
     expect(person("maya").survey_state).toBe("ab_food_outdoors");
-    expect(lastIn(DM.maya)).toMatch(/^sure\. insane local food spot/);
+    expect(lastIn(DM.maya)).toMatch(/^sure\./);
+    expect(lastIn(DM.maya)).toMatch(/food spot/);
   });
 
   it("finishing writes weights and a written profile, starts the trip, and asks about sidequests", async () => {
@@ -231,8 +233,11 @@ describe("the survey accepts anything", () => {
     // Finishing starts the trip; Maya's reply is the close, her board, then
     // the sidequest question. Sam, already done, gets the same in one DM.
     expect(trip().state).toBe("active");
-    expect(lastIn(DM.maya)).toMatch(/^done\. you're less mysterious than you think\.\n\nDay 1[\s\S]+\n\nbtw i'm turning on sidequests\. how unhinged am i allowed to get\?/);
-    expect(lastIn(DM.sam)).toMatch(/^Day 1[\s\S]+\n\nbtw i'm turning on sidequests/);
+    expect(lastIn(DM.maya)).toContain(SURVEY_DONE_DM);
+    expect(lastIn(DM.maya)).toContain("Day 1");
+    expect(lastIn(DM.maya)).toMatch(/btw i'm turning on sidequests\. how unhinged am i allowed to get\?/);
+    expect(lastIn(DM.sam)).toContain("Day 1");
+    expect(lastIn(DM.sam)).toMatch(/btw i'm turning on sidequests/);
     // The group profile unions constraints and names nobody.
     expect(trip().group_profile_md).toContain("shellfish allergy (cross-contamination matters)");
     expect(trip().group_profile_md).toContain("no heights");

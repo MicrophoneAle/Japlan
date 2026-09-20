@@ -1,3 +1,6 @@
+import { fetchWithTimeout } from "@/lib/timeout";
+const WEATHER_TIMEOUT_MS = 6_000;
+
 export type DayWeather = {
   temperatureC: number | null;
   precipitationChance: number | null;
@@ -38,7 +41,9 @@ export async function fetchDayWeather(opts: {
   url.searchParams.set("start_date", opts.date);
   url.searchParams.set("end_date", opts.date);
 
-  const res = await fetch(url);
+  // Open-Meteo is on the board-generation path. Unbounded, a slow answer
+  // stalls the whole board rather than the board simply having no weather.
+  const res = await fetchWithTimeout(url, WEATHER_TIMEOUT_MS, "open-meteo");
   if (!res.ok) {
     throw new Error(`weather HTTP ${res.status}`);
   }

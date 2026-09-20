@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SURVEY_DONE_DM } from "@/lib/game/copy";
 import { FakeSupabase } from "@/lib/test/fake-supabase";
 
 // Finishing the survey when the board cannot be made: the old line, never
@@ -148,8 +149,12 @@ describe("finishing the survey when the board cannot be made", () => {
   it("falls back to the old line, with the sidequest question, in one message", async () => {
     seed();
     await finish("mike");
-    expect(to(DM.mike)).toEqual([
-      expect.stringMatching(/^done\. you're less mysterious than you think\. your first board drops in the morning\.\n\nbtw i'm turning on sidequests/),
-    ]);
+    // No board to show, so the close says when one comes instead, and the
+    // sidequest question still rides along. Still one message.
+    expect(to(DM.mike)).toHaveLength(1);
+    expect(to(DM.mike)[0]).toContain(SURVEY_DONE_DM);
+    expect(to(DM.mike)[0]).toMatch(/boards drop in the morning/);
+    expect(to(DM.mike)[0]).not.toContain("Day 1");
+    expect(to(DM.mike)[0]).toMatch(/btw i'm turning on sidequests/);
   });
 });

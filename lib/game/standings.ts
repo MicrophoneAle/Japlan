@@ -4,6 +4,8 @@
 // participants.score stays authoritative and per-person either way (see
 // docs/PLAN.md "Who holds the score"); this only decides what a row reads.
 
+import { personLabel } from "@/lib/handle";
+
 export type ScoredPerson = { id: string; display_name: string; score: number };
 export type ScoringTeam = { name: string; memberIds: string[] };
 
@@ -23,7 +25,9 @@ export function buildStandingsRows(
   }
   for (const person of people) {
     if (teamed.has(person.id)) continue;
-    rows.push({ display_name: person.display_name, score: person.score });
+    // A leaderboard is the most public thing we post, so never a raw handle
+    // in one: someone who has not given a name yet reads as "someone".
+    rows.push({ display_name: personLabel(person.display_name, "someone"), score: person.score });
   }
   return rows;
 }

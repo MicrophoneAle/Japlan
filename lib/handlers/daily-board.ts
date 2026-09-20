@@ -454,8 +454,44 @@ function personAssignee(person: ParticipantRow): Assignee {
   };
 }
 
+// A day's teams turned into who gets planned for, with anyone the split did
+// not place planned for on their own.
+function teamAssignees(teams: DayTeam[], people: ParticipantRow[]): Assignee[] {
+  const assigned = new Set<string>();
+  const assignees: Assignee[] = teams.map((team) => {
+    const members = people.filter((person) => team.memberIds.includes(person.id));
+    members.forEach((person) => assigned.add(person.id));
+    return {
+      kind: "team",
+      id: `team:${team.id}`,
+      teamId: team.id,
+      people: members,
+      label: team.name,
+      startAt: team.startsAt,
+      endAt: team.rejoinAt,
+      startNear: team.area,
+      endNear: team.rejoinPlace,
+    };
+  });
+  assignees.push(...people.filter((person) => !assigned.has(person.id)).map(personAssignee));
+  return assignees;
+}
+
 export async function loadAssignees(trip: TripRow, people: ParticipantRow[], day: number): Promise<Assignee[]> {
   if (people.length === 0) return [];
+
+  // Teams already exist for this day, so use them whatever the trip's default
+  // shape is. A conversational split is someone saying the group is not doing
+  // the same thing today, and that outranks the default.
+  //
+  // These rows used to be read only in `teams` mode, so "me and jess are
+  // doing shimokita" created the teams, re-planned the day, and then handed
+  // all four people the identical plan with team_id null. The full_group and
+  // preference-team paths below already reuse an existing row for the day, so
+  // reading it here first changes nothing for them.
+  const existingTeams = await dayTeams(trip.id, day);
+  if (existingTeams.length > 0) return teamAssignees(existingTeams, people);
+
   if (trip.play_mode === "full_group") {
     const team = await createFullGroupTeamForDay(trip.id, day, people);
     return [{

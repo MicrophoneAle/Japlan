@@ -34,7 +34,10 @@ export const SETUP_QUESTIONS = {
   stake: "real talk, what's the loser doing at the end of this 💀",
 } as const;
 
-const SETUP_REQUIRED = new Set(["destination", "dates"]);
+// The questions a skip will not get past. One list: lib/handlers/setup.ts had
+// its own, which included play_mode while this one did not, so the play mode
+// question offered "(skip is fine)" and then refused the skip.
+export const SETUP_REQUIRED = new Set(["destination", "dates", "play_mode"]);
 
 export function setupPrompt(
   id: keyof typeof SETUP_QUESTIONS,
@@ -95,18 +98,9 @@ export function setupFinishedLine(missing: ("destination" | "dates")[]): string 
   return `setup's paused rq.\nstill need ${what} before the game can start, i'll ask again next time you text.`;
 }
 
-// Linq gives a phone number when it has no display name, and a participant
-// keeps it until they answer the name question. Printing "+19057580877 is
-// setting the shared city" is worse than saying nothing specific, so a
-// phone-shaped name reads as "the organizer".
-export function personLabel(name: string | null | undefined): string {
-  const value = (name ?? "").trim();
-  if (!value) return "the organizer";
-  // +19057580877, 09057580877, (905) 758-0877: digits and punctuation only.
-  const digits = value.replace(/[^0-9]/g, "");
-  const looksLikePhone = digits.length >= 7 && /^[+()\-.\s0-9]+$/.test(value);
-  return looksLikePhone ? "the organizer" : value;
-}
+// Re-exported so the copy layer's existing callers keep one import. The guard
+// itself lives in lib/handle.ts, shared with the transport adapter.
+export { personLabel } from "@/lib/handle";
 
 // The answer did not look like a place, so nothing was written. Re-asks
 // rather than confirming: "got it: X" only ever appears when X came from
@@ -382,6 +376,16 @@ function eventWhen(startsAt: string): string | null {
   return `${day} ${clock}`;
 }
 
+
+// A safety constraint was stored. Names it back, because an allergy told to
+// a bot that replies "saved" gives you no way to know it actually landed
+// somewhere that gates anything.
+export function constraintNotedLine(stored: string, boardToday: boolean): string {
+  const what = stored.trim().replace(/[.!]+$/, "");
+  return boardToday
+    ? `noted, ${what} - keeping it off your board. want me to redo today's?`
+    : `noted, ${what} - i'll keep it off your board.`;
+}
 
 // A link someone dropped resolved into a real place. ONE line, and only ever
 // on a hit: a link that resolves to nothing says nothing at all, because

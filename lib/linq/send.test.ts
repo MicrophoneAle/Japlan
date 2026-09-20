@@ -12,6 +12,7 @@ vi.mock("./client", () => ({
   }),
 }));
 
+import { LINQ_OP_TIMEOUT_MS } from "./budget";
 import { sendText, shareContactCardSafely } from "./send";
 
 describe("sendText effects", () => {
@@ -79,5 +80,40 @@ describe("shareContactCardSafely", () => {
   it("swallows a failure instead of throwing", async () => {
     h.shareContactCard.mockRejectedValue(new Error("not configured yet"));
     await expect(shareContactCardSafely("c1")).resolves.toBeUndefined();
+  });
+});
+
+// Four outages have had the same shape: a call on the webhook path never came
+// back, so the person got nothing and the log simply stopped. A bounded
+// failure is recoverable. Silence is not.
+describe("a hung Linq call gives up instead of hanging the dispatch", () => {
+  beforeEach(() => {
+    h.send.mockReset();
+    h.shareContactCard.mockReset();
+    vi.useFakeTimers();
+  });
+
+  it("times out rather than waiting forever", async () => {
+    h.send.mockImplementation(() => new Promise(() => {}));
+    const pending = sendText("c1", "hey");
+    const settled = expect(pending).rejects.toThrow(/timed out/);
+    await vi.advanceTimersByTimeAsync(LINQ_OP_TIMEOUT_MS + 10);
+    await settled;
+    vi.useRealTimers();
+  });
+
+  it("does not spend the budget twice retrying an effect after a timeout", async () => {
+    h.send.mockImplementation(() => new Promise(() => {}));
+    const pending = sendText("c1", "nice", { effect: { type: "screen", name: "fireworks" } });
+    const settled = expect(pending).rejects.toThrow(/timed out/);
+    await vi.advanceTimersByTimeAsync(LINQ_OP_TIMEOUT_MS + 10);
+    await settled;
+    // One attempt. A timeout means Linq stalled, not that it refused the effect.
+    expect(h.send).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it("keeps the whole ceiling inside the function's maxDuration", () => {
+    expect(LINQ_OP_TIMEOUT_MS).toBeLessThan(30_000);
   });
 });

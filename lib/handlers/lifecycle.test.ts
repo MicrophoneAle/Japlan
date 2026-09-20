@@ -139,6 +139,18 @@ async function bootstrapGroup() {
   await send(MIKE, GROUP, "we're doing this");
 }
 
+// Shared trip settings are decided in the shared chat, with the keyword.
+// GROUP_INTRO says so out loud: "first, we set the city, dates, and play
+// style in this chat. then i'll DM each person a short private preference
+// survey." Only the personal survey is a DM.
+const setupAnswer = (text: string) => send(MIKE, GROUP, `japlan ${text}`);
+
+// destination, dates, play mode, difficulty, stake.
+const SETUP_ANSWERS = ["tokyo", "oct 17-20", "1", "normal", "buys ramen"];
+async function finishSetup(answers: string[] = SETUP_ANSWERS) {
+  for (const answer of answers) await setupAnswer(answer);
+}
+
 async function finishSurvey(phone: string, dm: string) {
   // Jump to the last question, then answer it for real.
   const p = person(phone)!;
@@ -148,104 +160,116 @@ async function finishSurvey(phone: string, dm: string) {
 }
 
 describe("organizer setup", () => {
-  it("asks the first group messager the four setup questions, then their survey", async () => {
+  it("asks the organizer the setup questions in the group, then dms everyone the survey", async () => {
     await bootstrapGroup();
     const trip = openTrip()!;
     expect(trip.organizer_participant_id).toBe(person(MIKE)!.id);
     expect(trip.setup_state).toBe("destination");
-    expect(lastTo(MIKE_DM)).toBe(
-      "trip setup, 4 quick ones. ok where we headed? a city is plenty. (skip and i'll ask again later)",
-    );
-    expect(lastTo(SAM_DM)).toMatch(/^quick personality test.*what should i call you\?$/); // Sam gets the personal survey
-    // Every chat that just got its first message: the group intro, and each
-    // person's own DM, gets the Name & Photo pushed too.
+    // The shared settings are asked where everyone can see them being set.
+    const opening = lastTo(GROUP)!;
+    expect(opening).toContain("Mike is the organizer");
+    expect(opening).toContain("ok where we headed?");
+    expect(opening).toContain("Reply here with");
+    // Nobody's DM opens until there is a trip to survey them about.
+    expect(lastTo(MIKE_DM)).toBeUndefined();
+    expect(lastTo(SAM_DM)).toBeUndefined();
     expect(h.shareContactCard).toHaveBeenCalledWith(GROUP);
-    expect(h.shareContactCard).toHaveBeenCalledWith(MIKE_DM);
-    expect(h.shareContactCard).toHaveBeenCalledWith(SAM_DM);
 
-    await send(MIKE, MIKE_DM, "tokyo");
+    await setupAnswer("tokyo");
     expect(openTrip()!.destination).toBe("tokyo, japan");
     expect(openTrip()!.timezone).toBe("Asia/Tokyo");
     expect(h.near).toHaveBeenCalledWith("tokyo");
-    expect(lastTo(MIKE_DM)).toMatch(/^got it: tokyo, japan\. when's this happening\?/);
+    expect(lastTo(GROUP)).toMatch(/^got it: tokyo, japan\. when's this happening\?/);
 
-    await send(MIKE, MIKE_DM, "oct 17-20");
+    await setupAnswer("oct 17-20");
     expect(openTrip()!.start_date).toBe("2026-10-17");
     expect(openTrip()!.end_date).toBe("2026-10-20");
-    expect(lastTo(MIKE_DM)).toMatch(/^locked in: oct 17 to oct 20\. how unhinged/);
+    expect(lastTo(GROUP)).toMatch(/^locked in: oct 17 to oct 20\. how should we play\?/);
 
-    await send(MIKE, MIKE_DM, "unhinged");
+    await setupAnswer("1");
+    expect(openTrip()!.play_mode).toBe("individual");
+    expect(lastTo(GROUP)).toMatch(/how unhinged should the tasks be\?/);
+
+    await setupAnswer("unhinged");
     expect(openTrip()!.difficulty).toBe("unhinged");
 
-    await send(MIKE, MIKE_DM, "karaoke solo in shinjuku");
+    await setupAnswer("karaoke solo in shinjuku");
     expect(openTrip()!.stake_text).toBe("karaoke solo in shinjuku");
     expect(openTrip()!.setup_state).toBe("done");
-    expect(lastTo(MIKE_DM)).toBe(
-      `say less, noted. setup's done, we're so back. quick personality test, because asking "what do you like" is useless. pick whatever you'd rather be doing, don't overthink it. say skip whenever. a few quick ones so the tasks fit you. skip any of them by saying skip. what should i call you?`,
-    );
+
+    // Now, and only now, the private survey goes out, to everyone at once.
+    expect(lastTo(MIKE_DM)).toContain("what should i call you?");
+    expect(lastTo(SAM_DM)).toContain("what should i call you?");
     expect(person(MIKE)!.survey_state).toBe("first_name");
+    expect(person(SAM)!.survey_state).toBe("first_name");
+    // The group hears who was asked, never a word of what they answer.
+    expect(lastTo(GROUP)).toContain("sent to: Mike, Sam");
+    expect(lastTo(GROUP)).not.toMatch(/what should i call you/);
+    // Each chat that just got its first message gets the Name & Photo too.
+    expect(h.shareContactCard).toHaveBeenCalledWith(MIKE_DM);
+    expect(h.shareContactCard).toHaveBeenCalledWith(SAM_DM);
   });
 
-  it("does not go active until destination and dates are set, then does", async () => {
+  it("will not hand out the surveys until there is a destination", async () => {
     await bootstrapGroup();
-    await send(MIKE, MIKE_DM, "skip");
-    await send(MIKE, MIKE_DM, "skip");
-    await send(MIKE, MIKE_DM, "chill");
-    await send(MIKE, MIKE_DM, "skip");
-    expect(openTrip()!.setup_state).toBe("deferred");
-    expect(lastTo(MIKE_DM)).toMatch(/setup's paused rq\. still need where and when/);
-
-    await finishSurvey(SAM, SAM_DM);
-    // Nobody else holds Sam up; only the missing destination and dates do.
-    expect(lastTo(SAM_DM)).toContain("waiting on the trip setup");
-    await finishSurvey(MIKE, MIKE_DM);
-    expect(openTrip()!.state).toBe("surveying"); // surveys done, setup still blocks
-    // Asked again on his next message, in the same reply as the survey end.
-    expect(lastTo(MIKE_DM)).toMatch(/ok where we headed\?/);
+    // A skip is honoured on every other question. Not this one: a survey
+    // shapes tasks around a place, so there is nothing to ask about yet. It
+    // re-asks rather than deferring into a trip nobody can play.
+    for (let i = 0; i < 3; i += 1) await setupAnswer("skip");
     expect(openTrip()!.setup_state).toBe("destination");
+    expect(openTrip()!.state).toBe("setup");
+    expect(lastTo(GROUP)).toMatch(/need to set the destination before i can send/);
+    expect(lastTo(MIKE_DM)).toBeUndefined();
+    expect(lastTo(SAM_DM)).toBeUndefined();
 
-    await send(MIKE, MIKE_DM, "tokyo");
-    await send(MIKE, MIKE_DM, "oct 17-20");
-    await send(MIKE, MIKE_DM, "skip");
-    await send(MIKE, MIKE_DM, "skip");
+    // Destination, dates and play mode are the three the trip cannot run
+    // without. Everything after them is skippable, and setup still lands.
+    await finishSetup(["tokyo", "oct 17-20", "1", "skip", "skip"]);
+    expect(openTrip()!.setup_state).toBe("done");
+    expect(openTrip()!.state).toBe("surveying");
+    expect(lastTo(MIKE_DM)).toContain("what should i call you?");
+    expect(lastTo(SAM_DM)).toContain("what should i call you?");
+  });
+
+  it("goes live on the first finished survey, not on everyone's", async () => {
+    await bootstrapGroup();
+    await finishSetup();
+    await finishSurvey(SAM, SAM_DM);
     expect(openTrip()!.state).toBe("active");
     // Trip runs oct 17-20; boards start on its first morning, not before.
-    expect(lastTo(GROUP)).toBe(
-      "we're live 🔥 every morning your tasks land in your dms, and a code like A1 claims one. first board drops oct 17 at 8am.",
-    );
-    // Both were ready and waiting on setup: each gets day 1 now, marked as
-    // provisional, with the sidequest question, in ONE message each. Mike's
-    // rides in his setup reply.
-    for (const dm of [SAM_DM, MIKE_DM]) {
-      expect(lastTo(dm)).toMatch(/Day 1, might still change/);
-      expect(lastTo(dm)).toMatch(/btw i'm turning on sidequests/);
-    }
-    expect(allTo(MIKE_DM).filter((t) => /Day 1/.test(t))).toHaveLength(1);
+    expect(allTo(GROUP).some((t) => /we're live/.test(t))).toBe(true);
+    // Sam is ready, so Sam gets day 1 now, marked provisional, with the
+    // sidequest question, in ONE message.
+    expect(lastTo(SAM_DM)).toMatch(/btw i'm turning on sidequests/);
     expect(allTo(SAM_DM).filter((t) => /Day 1/.test(t))).toHaveLength(1);
+    // Mike has not finished his, and hears nothing about Sam's.
+    expect(allTo(MIKE_DM).filter((t) => /Day 1/.test(t))).toHaveLength(0);
   });
 
-  it("asks again on the organizer's next message, not on a timer", async () => {
+  it("re-asks on the organizer's next answer, not on a timer", async () => {
     await bootstrapGroup();
-    for (const answer of ["skip", "skip", "skip", "skip"]) await send(MIKE, MIKE_DM, answer);
-    person(MIKE)!.survey_state = "done";
+    await setupAnswer("skip");
     const before = h.sent.length;
     vi.setSystemTime(new Date("2026-09-20T03:00:00Z")); // a day passes: nothing sent
     expect(h.sent.length).toBe(before);
-    await send(MIKE, MIKE_DM, "hey");
-    expect(lastTo(MIKE_DM)).toBe("ok where we headed? a city is plenty. (skip and i'll ask again later)");
+    // An unaddressed line is not an answer and does not restart anything.
+    await send(MIKE, GROUP, "lol");
+    expect(h.sent.length).toBe(before);
+    await setupAnswer("tokyo");
+    expect(openTrip()!.destination).toBe("tokyo, japan");
   });
 
   it("stores the raw string when the places layer cannot resolve it", async () => {
     h.near.mockResolvedValue(null);
     h.tz.mockResolvedValue({ display: "somewhere", timezone: "JST" });
     await bootstrapGroup();
-    await send(MIKE, MIKE_DM, "that island my cousin went to");
+    await setupAnswer("that island my cousin went to");
     expect(openTrip()!.destination).toBe("that island my cousin went to");
     expect(openTrip()!.timezone ?? null).toBeNull(); // "JST" is not an IANA zone
-    expect(lastTo(MIKE_DM)).toMatch(/couldn't pin it on a map though, so times run on utc/);
+    expect(lastTo(GROUP)).toMatch(/couldn't pin it on a map though, so times run on utc/);
   });
 
-  it("sets the live DM's dates and Tokyo timezone with Gemini down", async () => {
+  it("sets dates and the Tokyo timezone with Gemini down", async () => {
     // Reproduces the live failure: Foursquare out of credits, every Gemini
     // call erroring. Neither answer should need a model.
     h.near.mockResolvedValue(null);
@@ -253,17 +277,17 @@ describe("organizer setup", () => {
     h.dates.mockRejectedValue(new Error('{"error":{"code":400,"status":"INVALID_ARGUMENT"}}'));
     await bootstrapGroup();
 
-    await send(MIKE, MIKE_DM, "Tokyo");
+    await setupAnswer("Tokyo");
     expect(openTrip()!.destination).toBe("Tokyo");
     expect(openTrip()!.timezone).toBe("Asia/Tokyo");
-    expect(lastTo(MIKE_DM)).toMatch(/^got it: Tokyo\. when's this happening\?/);
-    expect(lastTo(MIKE_DM)).not.toMatch(/utc/);
+    expect(lastTo(GROUP)).toMatch(/^got it: Tokyo\. when's this happening\?/);
+    expect(lastTo(GROUP)).not.toMatch(/utc/);
     expect(h.tz).not.toHaveBeenCalled();
 
-    await send(MIKE, MIKE_DM, "Oct 20-26");
+    await setupAnswer("Oct 20-26");
     expect(openTrip()!.start_date).toBe("2026-10-20");
     expect(openTrip()!.end_date).toBe("2026-10-26");
-    expect(lastTo(MIKE_DM)).toMatch(/^locked in: oct 20 to oct 26\./);
+    expect(lastTo(GROUP)).toMatch(/^locked in: oct 20 to oct 26\./);
     expect(h.dates).not.toHaveBeenCalled();
   });
 
@@ -271,7 +295,7 @@ describe("organizer setup", () => {
     h.near.mockResolvedValue(null);
     h.tz.mockResolvedValue({ display: "koh phangan", timezone: "Asia/Bangkok" });
     await bootstrapGroup();
-    await send(MIKE, MIKE_DM, "koh phangan");
+    await setupAnswer("koh phangan");
     expect(h.tz).toHaveBeenCalledOnce();
     expect(openTrip()!.timezone).toBe("Asia/Bangkok");
     expect(openTrip()!.destination).toBe("koh phangan"); // unresolved: raw text
@@ -279,16 +303,18 @@ describe("organizer setup", () => {
 
   it("re-asks unreadable dates and difficulty instead of storing them", async () => {
     await bootstrapGroup();
-    await send(MIKE, MIKE_DM, "tokyo");
+    await setupAnswer("tokyo");
     h.dates.mockResolvedValue(null);
-    await send(MIKE, MIKE_DM, "sometime soon");
-    expect(lastTo(MIKE_DM)).toBe(`couldn't read those dates. try something like "oct 17-20".`);
-    await send(MIKE, MIKE_DM, "2026-10-20 to 2026-10-17");
-    expect(lastTo(MIKE_DM)).toMatch(/ends before it starts/);
+    await setupAnswer("sometime soon");
+    expect(lastTo(GROUP)).toBe(`couldn't read those dates. try something like "oct 17-20".`);
+    await setupAnswer("2026-10-20 to 2026-10-17");
+    expect(lastTo(GROUP)).toMatch(/ends before it starts/);
     expect(openTrip()!.setup_state).toBe("dates");
-    await send(MIKE, MIKE_DM, "2026-10-17 to 2026-10-20");
-    await send(MIKE, MIKE_DM, "medium-ish");
-    expect(lastTo(MIKE_DM)).toBe("didn't catch that lol. reply chill / normal / unhinged, or skip.");
+
+    await setupAnswer("2026-10-17 to 2026-10-20");
+    await setupAnswer("1");
+    await setupAnswer("medium-ish");
+    expect(lastTo(GROUP)).toBe("didn't catch that lol. reply chill / normal / unhinged, or skip.");
     expect(openTrip()!.setup_state).toBe("difficulty");
   });
 });
@@ -296,9 +322,7 @@ describe("organizer setup", () => {
 describe("japlan setup mid-trip", () => {
   async function activeTrip() {
     await bootstrapGroup();
-    for (const answer of ["tokyo", "oct 17-20", "normal", "buys ramen"]) {
-      await send(MIKE, MIKE_DM, answer);
-    }
+    await finishSetup();
     await finishSurvey(MIKE, MIKE_DM);
     await finishSurvey(SAM, SAM_DM);
     expect(openTrip()!.state).toBe("active");
@@ -308,27 +332,27 @@ describe("japlan setup mid-trip", () => {
   it("lets the organizer change the destination and refreshes the profile", async () => {
     await activeTrip();
     await send(MIKE, GROUP, "japlan setup");
-    expect(lastTo(GROUP)).toBe("setup questions are in your dms 📩");
-    expect(lastTo(MIKE_DM)).toContain("(rn: tokyo, japan. skip keeps it)");
+    // Re-run, same place as the first run: the shared chat.
+    expect(lastTo(GROUP)).toContain("(rn: tokyo, japan. skip keeps it)");
 
     h.tz.mockResolvedValue({ display: "osaka, japan", timezone: "Asia/Tokyo" });
-    await send(MIKE, MIKE_DM, "osaka");
+    await setupAnswer("osaka");
     const trip = openTrip()!;
     expect(trip.destination).toBe("osaka, japan");
     expect((trip.destination_profile_json as { partial?: boolean }).partial).toBe(true);
     expect((trip.destination_profile_json as { destination: string }).destination).toBe("osaka, japan");
 
-    for (const answer of ["skip", "skip", "skip"]) await send(MIKE, MIKE_DM, answer);
+    // A re-run keeps the existing value on a skip, so these are answerable.
+    for (const answer of ["skip", "skip", "skip", "skip"]) await setupAnswer(answer);
     expect(openTrip()!.setup_state).toBe("done");
     expect(openTrip()!.state).toBe("active");
     expect(openTrip()!.start_date).toBe("2026-10-17"); // skip kept it
-    expect(lastTo(MIKE_DM)).toBe("setup's done, we're so back.");
   });
 
   it("keeps the profile when the destination is unchanged", async () => {
     await activeTrip();
-    await send(MIKE, MIKE_DM, "japlan setup");
-    await send(MIKE, MIKE_DM, "tokyo");
+    await send(MIKE, GROUP, "japlan setup");
+    await setupAnswer("tokyo");
     expect((openTrip()!.destination_profile_json as { partial?: boolean }).partial).toBeUndefined();
   });
 
@@ -342,9 +366,7 @@ describe("japlan setup mid-trip", () => {
 describe("end trip and new trip", () => {
   async function activeTripWithScores() {
     await bootstrapGroup();
-    for (const answer of ["tokyo", "oct 17-20", "normal", "karaoke solo"]) {
-      await send(MIKE, MIKE_DM, answer);
-    }
+    await finishSetup(["tokyo", "oct 17-20", "1", "normal", "karaoke solo"]);
     await finishSurvey(MIKE, MIKE_DM);
     await finishSurvey(SAM, SAM_DM);
     person(MIKE)!.score = 120;
@@ -356,9 +378,9 @@ describe("end trip and new trip", () => {
     await send(SAM, GROUP, "japlan end trip");
     expect(lastTo(GROUP)).toBe("only Mike can end the trip, that's the rule lol.");
     await send(MIKE, GROUP, "japlan end trip");
-    expect(lastTo(GROUP)).toBe(
-      "this ends the trip and the scores are final. send 'japlan end trip confirm' if you mean it.",
-    );
+    // The decision is that one "end trip" is not enough, not how it is worded.
+    expect(lastTo(GROUP)).toMatch(/scores are final/);
+    expect(lastTo(GROUP)).toMatch(/japlan end trip confirm/);
     expect(openTrip()?.state).toBe("active");
 
     await send(MIKE, GROUP, "japlan end trip confirm");
@@ -398,10 +420,12 @@ describe("end trip and new trip", () => {
     await send(SAM, GROUP, "japlan new trip");
     expect(trips()).toHaveLength(2);
     const second = openTrip()!;
-    expect(second.state).toBe("surveying");
+    // A fresh trip starts at setup: no survey goes out before there is a city.
+    expect(second.state).toBe("setup");
     expect(second.organizer_participant_id).toBe(person(SAM)!.id); // whoever asked
-    expect(lastTo(SAM_DM)).toMatch(/^trip setup, 4 quick ones\./);
-    expect(allTo(GROUP).filter((t) => /^heyyyy i'm japlan/.test(t))).toHaveLength(2);
+    // The second trip is set up the same way the first was: in the group.
+    expect(lastTo(GROUP)).toContain("ok where we headed?");
+    expect(allTo(GROUP).filter((t) => /i'm japlan\./.test(t))).toHaveLength(2);
 
     await send(MIKE, GROUP, "japlan new trip");
     expect(lastTo(GROUP)).toBe(`there's already a trip running lol. "japlan end trip" first.`);

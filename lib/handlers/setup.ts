@@ -14,6 +14,7 @@ import {
   setupFinishedLine,
   setupNowAboutYouLine,
   setupPrompt,
+  SETUP_REQUIRED,
   STAKE_SET_LINE,
   groupSetupCompleteLine,
   organizerOnlySetupLine,
@@ -419,6 +420,18 @@ export async function applyTripSetting(
   return { ok: true, line: change.said };
 }
 
+// A skip on a required question is only refused when it would actually leave
+// the value unset. On a re-run the prompt says "skip keeps it" and it has to
+// mean it: a mid-trip "japlan setup" that will not let you past the questions
+// you already answered cannot be finished at all.
+function skipWouldLeaveItUnset(trip: TripRow, id: SetupQuestionId): boolean {
+  if (!SETUP_REQUIRED.has(id)) return false;
+  if (id === "destination") return !trip.destination?.trim();
+  if (id === "dates") return !trip.start_date || !trip.end_date;
+  if (id === "play_mode") return !trip.play_mode;
+  return false;
+}
+
 // One setup answer in, one DM out.
 export async function answerSetup(opts: {
   trip: TripRow;
@@ -448,7 +461,7 @@ export async function answerSetup(opts: {
     return setupAsideLine(asideReply(trip, id, intent, text), setupPromptFor(trip, id));
   }
 
-  if (isSetupSkip(text) && (id === "destination" || id === "dates" || id === "play_mode")) {
+  if (isSetupSkip(text) && skipWouldLeaveItUnset(trip, id)) {
     const reason = id === "play_mode" ? "choose how the trip should run" : `set the ${id}`;
     return `we need to ${reason} before i can send everyone's private survey.\n${setupPromptFor(trip, id)}`;
   }
