@@ -14,6 +14,7 @@ const h = vi.hoisted(() => ({
   turns: [] as { contents: ToolContent[]; toolMode: string }[],
   script: [] as unknown[],
   modelCalls: 0,
+  shareContactCard: vi.fn(async () => {}),
 }));
 
 // No network in tests: board generation asks for the day's weather.
@@ -35,6 +36,7 @@ vi.mock("@/lib/linq/send", () => ({
   markRead: vi.fn(async () => {}),
   sendTyping: vi.fn(async () => {}),
   react: vi.fn(async () => {}),
+  shareContactCardSafely: h.shareContactCard,
 }));
 vi.mock("@browserbasehq/stagehand", () => ({
   browserbase: { search: vi.fn(async () => ({ results: [] })) },
@@ -114,6 +116,7 @@ beforeEach(() => {
   h.turns.length = 0;
   h.script.length = 0;
   h.modelCalls = 0;
+  h.shareContactCard.mockReset();
 });
 
 afterEach(() => {
@@ -131,6 +134,7 @@ describe("solo setup and survey", () => {
   it("asks three setup questions, no stake, and no group questions", async () => {
     await say("japlan solo");
     expect(last()).toMatch(/^trip setup, 3 quick ones\. ok where we headed\?/);
+    expect(h.shareContactCard).toHaveBeenCalledWith(DM);
     await say("Tokyo");
     await say("Oct 17-20");
     await say("chill");

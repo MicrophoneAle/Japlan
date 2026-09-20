@@ -29,6 +29,7 @@ vi.mock("@/lib/linq/send", () => ({
   markRead: vi.fn(async () => {}),
   sendTyping: vi.fn(async () => {}),
   react: vi.fn(async () => {}),
+  shareContactCardSafely: vi.fn(async () => {}),
 }));
 vi.mock("@/lib/llm/gemini", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/llm/gemini")>();
