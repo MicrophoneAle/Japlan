@@ -192,6 +192,31 @@ describe("native group decision polls", () => {
     expect(h.db.table("group_decision_votes")).toHaveLength(0);
   });
 
+  it("refreshes missed votes from Linq before reporting or closing the poll", async () => {
+    await createDecision();
+    h.pollRetrieve
+      .mockResolvedValueOnce(pollSnapshot(["poll-option-1"]))
+      .mockResolvedValueOnce(pollSnapshot(["poll-option-1"]));
+
+    await handleGroupDecisionMessage({
+      chatId: CHAT,
+      isDm: false,
+      phone: PHONE,
+      text: "japlan vote status",
+    });
+    expect(h.sent.at(-1)?.text).toContain("1. Tsukiji food crawl · 1");
+    expect(h.sent.at(-1)?.text).toContain("2. TeamLab · 0");
+
+    await handleGroupDecisionMessage({
+      chatId: CHAT,
+      isDm: false,
+      phone: PHONE,
+      text: "japlan close poll",
+    });
+    expect(h.db.table("group_decisions")[0].status).toBe("closed");
+    expect(h.sent.at(-1)?.text).toContain("✅ vote closed: Tsukiji food crawl");
+  });
+
   it("falls back to one-choice reaction voting when Linq rejects polls for the chat", async () => {
     h.pollCreate.mockRejectedValueOnce({ code: 4005, message: "RecipientUnsupportedMessageType" });
     await createDecision();

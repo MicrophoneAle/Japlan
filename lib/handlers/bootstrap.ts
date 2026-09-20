@@ -3,7 +3,7 @@ import type { ParticipantRow, TripRow } from "@/lib/db/types";
 import { FIRST_QUESTION_ID, QUESTIONS, SURVEY_V2_ORDER, type QuestionId } from "@/lib/game/survey-questions";
 import {
   answerValue,
-  buildIntroGroupPost,
+  buildIntroGroupMessages,
   displayNameFromFirstName,
   isSidequestQuestion,
   startSidequestOnboarding,
@@ -28,7 +28,6 @@ import {
   type SetupFields,
 } from "@/lib/game/setup";
 import { setupCompleteLine, setupPrompt, surveyLaunchGroupLine } from "@/lib/game/copy";
-import { describeBoardTime, nextBoardAt } from "@/lib/game/board-schedule";
 import { formTeamsForTrip, teamsAnnouncement } from "@/lib/handlers/teams";
 
 import { TRIP_COLS } from "@/lib/db/columns";
@@ -448,11 +447,8 @@ export async function maybeActivateTrip(
     return null;
   }
 
-  // Group-safe fields only (DM stays in DM); the line names when the first
-  // board really lands, from the same schedule the cron follows.
-  const now = new Date();
-  const next = nextBoardAt(trip, now, { todayBoardExists: false });
-  let line = setupCompleteLine(next ? describeBoardTime(next.at, now, trip.timezone) : null, trip.play_mode);
+  // Group-safe fields only (private preferences and board details stay in DMs).
+  let line = setupCompleteLine(trip.play_mode);
 
   // Teams are decided once, here, from the survey (team_preference,
   // social_with): a no-op for a solo trip or a group where nobody opted in.
@@ -462,16 +458,23 @@ export async function maybeActivateTrip(
     if (announcement) line = `${line}\n\n${announcement}`;
   }
 
-  if (opts.announce !== false) await sendText(trip.linq_chat_id, line);
-  const { error } = await getServiceClient()
+  // Claim the transition before sending anything. Concurrent final survey
+  // replies can both reach this function; only one may announce activation
+  // or fan out the ready DMs.
+  const { data: activated, error } = await getServiceClient()
     .from("trips")
     .update({ state: "active" })
     .eq("id", trip.id)
-    .neq("state", "active");
+    .in("state", ["bootstrapping", "setup", "surveying"])
+    .select("id");
   if (error) throw error;
-  // Trip start: everyone else who is already ready gets their board and the
-  // sidequest question, in one DM. People still answering get theirs when
-  // they finish (the survey handler); quietFor is replying already.
+  if (!activated || activated.length === 0) {
+    logStep("activate.skip", { tripId: trip.id, reason: "another request activated first" });
+    return null;
+  }
+  if (opts.announce !== false) await sendText(trip.linq_chat_id, line);
+  // Trip start: ready people get a short board-request instruction and the
+  // sidequest question, in one DM. Nobody receives a board until they ask.
   const { boardForNewlyReady } = await import("./board-request");
   const live = (await getTripById(trip.id)) ?? { ...trip, state: "active" };
   for (const person of ready) {
@@ -638,8 +641,8 @@ export async function bootstrapGroupIfNeeded(
       state: trip.state,
       organizerName: personLabel(organizer.display_name),
     };
-    const setup = setupPrompt(setupState, null, { first: true });
-    const firstPost = `${buildIntroGroupPost(publicTrip)}\n\n${setup}\nReply here with “japlan” + your answer.`;
+    const setup = setupPrompt(setupState, null, { first: true, inGroup: true });
+    const introPosts = [...buildIntroGroupMessages(publicTrip), setup];
     // At most once per chat, whatever state the trip is stuck in: claim the
     // intro atomically, and release the claim only if the send itself failed.
     const introClaim = await getServiceClient()
@@ -653,8 +656,8 @@ export async function bootstrapGroupIfNeeded(
       logStep("intro.skip", { chatId, reason: "already_sent" });
     } else {
       try {
-        await sendText(trip.linq_chat_id, firstPost);
-        logStep("intro.send", { chatId, ok: true });
+        for (const post of introPosts) await sendText(trip.linq_chat_id, post);
+        logStep("intro.send", { chatId, ok: true, messages: introPosts.length });
         await shareContactCardSafely(trip.linq_chat_id);
       } catch (err) {
         logError("intro.send", err, { chatId, ok: false });

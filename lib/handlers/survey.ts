@@ -11,7 +11,11 @@ import {
 import { defaultWakeKeyword, findTaskCode, stripWakeKeyword } from "@/lib/game/addressing";
 import { isStandingsRequest } from "@/lib/game/commands";
 import { isBoardRequest } from "@/lib/game/board-schedule";
-import { interpretSurveyReply } from "@/lib/llm/gemini";
+import {
+  extractPreferredName,
+  fallbackPreferredName,
+  interpretSurveyReply,
+} from "@/lib/llm/gemini";
 import { checkReply } from "@/lib/game/reply-check";
 import { saveSurveyResult } from "./profiles";
 import { QUESTIONS, type QuestionId } from "@/lib/game/survey-questions";
@@ -238,6 +242,43 @@ export async function handleSurveyDm(opts: {
     }
   }
 
+  if (state === "first_name" && !step.unclear) {
+    const rawAnswer = step.state.answers.first_name?.value;
+    const rawName = rawAnswer ? stripWakeKeyword(rawAnswer, defaultWakeKeyword()).trim() : undefined;
+    if (rawAnswer && !rawName) {
+      await sendText(opts.chatId, "i couldn't pick out a name there. what should i call you? just the name is fine, or say skip.");
+      return;
+    }
+    if (rawName) {
+      let preferredName: string | null = null;
+      try {
+        preferredName = await extractPreferredName({ provider: opts.provider, text: rawName });
+      } catch (err) {
+        console.warn("[japlan.survey] preferred-name extraction failed", {
+          participantId: participant.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      preferredName ??= fallbackPreferredName(rawName);
+      if (!preferredName) {
+        await sendText(opts.chatId, "i couldn't pick out a name there. what should i call you? just the name is fine, or say skip.");
+        return;
+      }
+      const answer = step.state.answers.first_name;
+      if (!answer) throw new Error("preferred-name answer missing from survey state");
+      step = {
+        ...step,
+        state: {
+          ...step.state,
+          answers: {
+            ...step.state.answers,
+            first_name: { ...answer, value: preferredName },
+          },
+        },
+      };
+    }
+  }
+
   await persistSurveyProgress({
     participantId: participant.id,
     awaiting: step.state.awaiting,
@@ -298,10 +339,8 @@ export async function handleSurveyDm(opts: {
       return;
     }
     // Ready. The trip goes live on the first finished survey (announced in
-    // the group; a solo trip's chat is this DM, so it joins this reply), and
-    // this person's board is made now, for them alone, and folded into this
-    // one message with the sidequest question: the close, the board, the
-    // question. No board (generation failed): the old line, never nothing.
+    // the group; a solo trip's chat is this DM, so it joins this reply). The
+    // person gets instructions to request a board plus the sidequest question.
     const live = await maybeActivateTrip(trip, { announce: !trip.is_solo, quietFor: participant.id });
     const fresh = (await getTripById(trip.id)) ?? trip;
     const active = fresh.state === "active";
@@ -333,7 +372,10 @@ function surveyStep(step: string, fields: Record<string, unknown>): void {
 // cannot: people naturally use it when replying to Japlan's question.
 function isGameMessage(text: string): boolean {
   const code = findTaskCode(text);
-  return Boolean(code?.strict) || isBoardRequest(text) || isStandingsRequest(text);
+  const reportsCompletion =
+    /\b(?:i|we)\s+(?:just\s+)?(?:did|finished|completed|claimed|got|nailed|managed)\b/i.test(text) ||
+    /\b(?:done|finished|completed)\s+(?:with\s+)?(?:the\s+)?(?:task\s+)?[a-z]\d{1,2}\b/i.test(text);
+  return Boolean(code?.strict || (code && reportsCompletion)) || isBoardRequest(text) || isStandingsRequest(text);
 }
 
 function isSimpleAcknowledgement(text: string): boolean {

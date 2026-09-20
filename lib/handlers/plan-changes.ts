@@ -3,7 +3,7 @@ import { cityFor, todayFor, zoneNow } from "@/lib/game/legs";
 import { geocodePlace } from "@/lib/geo/geocode";
 import { getServiceClient } from "@/lib/db/client";
 import type { ParticipantRow, PlaceRow, TripRow } from "@/lib/db/types";
-import { parseBoardDay } from "@/lib/game/board-schedule";
+import { boardPeriodForDate, parseBoardDay } from "@/lib/game/board-schedule";
 import {
   avoidNotedLine,
   BOARD_MAKE_FAILED_LINE,
@@ -635,8 +635,10 @@ export async function requestTasks(
     got: result.board.length,
     added: result.added.length,
   });
+  const period = boardPeriodForDate(ctx.trip, date, ctx.now);
   const board = formatPersonalBoard({
     day,
+    slot: period,
     tasks: result.board.map((t) => ({
       code: t.code,
       title: t.title,
@@ -646,7 +648,7 @@ export async function requestTasks(
     })),
     anchors: await dayAnchorsForBoard(ctx.trip, day),
   });
-  return tasksRequestedLine({ want, got: result.board.length, minutesLeft: result.minutesLeft, board });
+  return tasksRequestedLine({ want, got: result.board.length, minutesLeft: result.minutesLeft, period, board });
 }
 
 // "yes, redo it": their own board, from their answers as they are now. The
@@ -692,8 +694,10 @@ export async function redoToday(ctx: Ctx, args: { everyone?: boolean; day?: stri
     direction: -1,
     why: "asked for a different board",
   }).catch((err) => console.error("[japlan.profile] learn failed", err));
+  const period = boardPeriodForDate(ctx.trip, date, ctx.now);
   const board = formatPersonalBoard({
     day,
+    slot: period,
     tasks: (await tasksForDay(ctx.trip.id, day))
       .filter((t) => t.participant_id === ctx.sender.id)
       .map((t) => ({ code: t.code, title: t.title, base_points: t.base_points, slot: t.slot ?? null, neighborhood: t.neighborhood })),

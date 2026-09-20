@@ -1,8 +1,8 @@
 -- Run AFTER 2026-09-21-trip-lifecycle-and-setup.sql.
---   1. trips.board_time: local time the daily board posts (default 08:00).
+--   1. trips.board_time: local start of the trip day (default 08:00).
 --   2. boards: one row per trip-day. Existence, provisional flag, delivery,
 --      and a lock: the row is inserted before generating, so two requests
---      (or a request and the cron) can never generate the same day twice.
+--      cannot generate the same day twice.
 --   3. board_requests: the abuse guard, one on-demand generation per person
 --      per trip-local day, enforced by a unique index.
 
@@ -20,10 +20,10 @@ create table if not exists boards (
   local_date date not null,
   -- generating while the pipeline runs; ready once its tasks are written.
   status text not null default 'generating',
-  -- Made ahead of its day: regenerated on its morning unless claimed.
+  -- Made ahead of its day: refreshed the first time someone requests it that day.
   provisional boolean not null default false,
   requested_by uuid references participants (id) on delete set null,
-  -- When the scheduled delivery to everyone happened.
+  -- Last time a board was generated or deliberately delivered.
   delivered_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
@@ -41,8 +41,7 @@ create table if not exists board_requests (
   unique (trip_id, participant_id, requested_on)
 );
 
--- Days that already have tasks become ready, delivered boards, so neither the
--- cron nor an on-demand request regenerates them.
+-- Days that already have tasks become ready boards, so a request reuses them.
 insert into boards (trip_id, day, local_date, status, delivered_at)
 select
   k.trip_id,

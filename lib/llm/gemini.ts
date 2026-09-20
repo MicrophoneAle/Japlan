@@ -435,6 +435,59 @@ function parseJsonObject(raw: string): Record<string, unknown> | null {
   }
 }
 
+export const PREFERRED_NAME_SCHEMA = {
+  type: "object",
+  properties: { preferred_name: { type: "string" } },
+  required: ["preferred_name"],
+};
+
+const PREFERRED_NAME_TIMEOUT_MS = 6_000;
+
+function cleanPreferredName(value: string): string | null {
+  const name = value.trim().replace(/^["'“”‘’]+|["'“”‘’.,!?]+$/g, "").replace(/\s+/g, " ");
+  if (!name || name.length > 48) return null;
+  if (/^(?:no|none|nothing|not|n\/a|idk|maybe|whatever|anything|the|i|me|skip|don't|dont)$/i.test(name.split(/\s+/, 1)[0])) return null;
+  return /^(?:[\p{L}\p{M}][\p{L}\p{M}'’.-]*)(?:\s+[\p{L}\p{M}][\p{L}\p{M}'’.-]*){0,3}$/u.test(name)
+    ? name
+    : null;
+}
+
+// Local fallback for a model timeout or an answer shaped like "call me Elrich".
+// Unknown sentences return null so the survey can ask again instead of saving
+// a filler word as someone's name.
+export function fallbackPreferredName(text: string): string | null {
+  let value = text.trim().replace(/[.!?]+$/, "").trim();
+  const lead = value.match(/^(?:you can call me|please call me|call me|my name(?: is|'s|’s)|this is|i am|i['’]m|im|i go by|go by|name is|it's|it’s|its)\s+(.+)$/i);
+  if (lead) value = lead[1].trim();
+  else if (/\s/.test(value)) return null;
+  return cleanPreferredName(value);
+}
+
+// Called only for the survey's name answer, once. The model returns only the
+// name explicitly supplied; callers use the local parser if this fails.
+export async function extractPreferredName(opts: {
+  provider?: LLMProvider;
+  text: string;
+}): Promise<string | null> {
+  const provider = opts.provider ?? new GeminiProvider();
+  const raw = await withTimeout(
+    provider.complete({
+      system: "Extract the preferred name the person wants to be called from one survey answer. Return only that name in JSON as preferred_name. Understand answers such as 'call me Elrich', 'I'm Elrich', 'Elrich', and 'my name is Elrich Chen'. Do not include leading phrases, explanations, titles, or other words. If no name is clearly stated, return an empty string. Do not invent or correct a name.",
+      messages: [{ role: "user", content: opts.text.slice(0, 240) }],
+      schema: PREFERRED_NAME_SCHEMA,
+      tier: "fast",
+      thinkingBudget: 0,
+      temperature: 0,
+    }),
+    PREFERRED_NAME_TIMEOUT_MS,
+    "gemini.preferred_name",
+  );
+  const parsed = parseJsonObject(raw);
+  return typeof parsed?.preferred_name === "string"
+    ? cleanPreferredName(parsed.preferred_name)
+    : null;
+}
+
 export const TRIP_DATES_SCHEMA = {
   type: "object",
   properties: {

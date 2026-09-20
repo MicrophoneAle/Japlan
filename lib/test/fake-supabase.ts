@@ -55,6 +55,7 @@ const UNIQUE: [string, string[], ((row: Row) => boolean)?][] = [
   ["group_decision_options", ["message_id"], (row) => row.message_id != null],
   ["group_decision_options", ["poll_option_id"], (row) => row.poll_option_id != null],
   ["group_decision_votes", ["decision_id", "participant_id", "option_index"]],
+  ["sidequests", ["trip_id"], (row) => row.status === "open"],
   ["sidequest_offers", ["participant_id"], (row) => row.status === "live"],
   ["sidequest_offers", ["participant_id"], (row) => row.status === "queued"],
   ["sidequest_offers", ["sidequest_id"], (row) => row.status === "won"],

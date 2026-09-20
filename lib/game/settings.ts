@@ -6,7 +6,11 @@ import {
   answerValue,
   type SurveyAnswers,
 } from "./survey";
+import { parseConstraints } from "./constraints";
+import { effectiveWeight, PREF_DIMS, prefsOf, v2View, type PrefDim } from "./prefs";
 import { QUESTIONS, type QuestionId } from "./survey-questions";
+
+export type SettingsOverviewSection = { title: string; lines: string[] };
 
 // Everyone's own survey answers are theirs to change, any time, in plain
 // words: "my pace is too slow", "change my budget to 150", "actually i do
@@ -285,4 +289,140 @@ export function settingsSummary(answers: SurveyAnswers): string[] {
   return (Object.keys(SETTING_LABELS) as QuestionId[]).map(
     (id) => `${SETTING_LABELS[id]}: ${showSetting(id, answers)}`,
   );
+}
+
+function answerLine(
+  answers: SurveyAnswers,
+  id: QuestionId,
+  label: string,
+  format: (value: string) => string = (value) => value,
+  missing = "not answered yet",
+): string {
+  const entry = answers[id];
+  if (entry?.skipped) return `${label}: skipped (no answer saved)`;
+  if (!entry?.value) return `${label}: ${missing}`;
+  return `${label}: ${format(entry.value)}`;
+}
+
+function eitherOr(value: string, a: string, b: string): string {
+  if (value === "a") return a;
+  if (value === "b") return b;
+  if (value === "both") return `both sound good (${a}; ${b})`;
+  if (value === "none") return "neither is a strong preference";
+  return "no clear preference yet";
+}
+
+function budgetLabel(value: string): string {
+  const label = QUESTIONS.budget_band.choices?.find((choice) => choice.id === value)?.label;
+  if (value === "no_limit") return "no fixed daily cap";
+  return label ? `${label} per day` : value;
+}
+
+function constraintsLabel(value: string): string {
+  const parsed = parseConstraints(value);
+  if (parsed.none) return "none reported";
+  if (parsed.vague) return `needs details: ${value}`;
+  return value;
+}
+
+function sidequestLabel(value: string): string {
+  return ({ "1": "gentle", "2": "social", "3": "wild", "4": "off" } as Record<string, string>)[value] ?? value;
+}
+
+// The settings command uses the current survey's actual fields. v2View also
+// translates older answers, so returning players still see what they saved.
+export function settingsOverview(
+  rawAnswers: SurveyAnswers,
+  opts: { displayName?: string; sidequestsMuted?: boolean; prefsJson?: unknown } = {},
+): SettingsOverviewSection[] {
+  const answers = v2View(rawAnswers);
+  const firstName = answerValue(answers, "first_name");
+  const name = firstName
+    ? displayNameFromFirstName(firstName, opts.displayName ?? firstName)
+    : opts.displayName
+      ? `${opts.displayName} (using your chat name)`
+      : "not set";
+
+  const personal: SettingsOverviewSection[] = [
+    {
+      title: "about you",
+      lines: [
+        `name on your board: ${name}`,
+        `tasks per day: ${answerValue(answers, "tasks_per_day") ?? "automatic, based on your pace"}`,
+      ],
+    },
+    {
+      title: "what you enjoy",
+      lines: [
+        answerLine(answers, "ab_food_outdoors", "food or outdoors", (value) => eitherOr(value, "local food", "outdoors and kayaking"), "no clear preference saved yet"),
+        answerLine(answers, "ab_discover_iconic", "exploring style", (value) => eitherOr(value, "wandering neighborhoods", "famous sights"), "no clear preference saved yet"),
+        answerLine(answers, "ab_culture_nightlife", "day or night out", (value) => eitherOr(value, "museums, cafes, and dinner", "activities and a late night"), "no clear preference saved yet"),
+        answerLine(answers, "ab_pace", "day pace", (value) => eitherOr(value, "packed and active", "one great thing, then free time"), "no clear preference saved yet"),
+        `learned preferences: ${learnedPreferenceLine(rawAnswers, opts.prefsJson)}`,
+      ],
+    },
+    {
+      title: "budget and boundaries",
+      lines: [
+        answerLine(answers, "budget_band", "daily spending", budgetLabel, "no personal budget saved"),
+        answerLine(answers, "hard_constraints", "allergies, access needs, and hard no's", constraintsLabel, "not provided yet"),
+        answerLine(answers, "must_have", "your must-do", (value) => value, "not answered yet"),
+        answerLine(answers, "splitting", "splitting up", (value) => value === "yes" ? "you're okay with it" : value === "no" ? "you prefer staying together" : value === "depends" ? "depends on the situation" : value, "not answered yet"),
+      ],
+    },
+  ];
+
+  const sidequestLevel = answerValue(answers, "sidequest_level");
+  const sidequestLines = [
+    answerLine(answers, "sidequest_level", "challenge intensity", sidequestLabel, "not answered yet"),
+  ];
+  if (sidequestLevel === "2" || sidequestLevel === "3" || answers.sidequest_red_lines) {
+    sidequestLines.push(answerLine(answers, "sidequest_red_lines", "challenge boundaries", (value) => value, "none listed"));
+  }
+  if (opts.sidequestsMuted !== undefined) {
+    const status = opts.sidequestsMuted
+      ? "paused by you"
+      : sidequestLevel === "4"
+        ? "off (you chose none)"
+        : "on for you";
+    sidequestLines.push(`bonus challenges: ${status}`);
+  }
+  personal.push({ title: "optional bonus challenges", lines: sidequestLines });
+
+  const extraFields: [QuestionId, string][] = [
+    ["blackout", "times to avoid"],
+    ["food_adventure", "food adventure"],
+    ["drinking", "alcohol"],
+    ["attractions", "places you asked for"],
+  ];
+  const extras = extraFields
+    .filter(([id]) => rawAnswers[id] !== undefined)
+    .map(([id, label]) => answerLine(rawAnswers, id, label, (value) => value, "not answered yet"));
+  if (extras.length > 0) personal.push({ title: "other saved details", lines: extras });
+
+  return personal;
+}
+
+function learnedPreferenceLine(answers: SurveyAnswers, prefsJson: unknown): string {
+  const labels: Record<PrefDim, string> = {
+    food: "local food",
+    outdoors: "outdoors",
+    adventure: "adventure",
+    local_discovery: "neighborhood exploring",
+    iconic: "famous sights",
+    culture: "museums and culture",
+    chill: "slower days",
+    activity: "active outings",
+    nightlife: "nightlife",
+  };
+  const prefs = prefsOf(prefsJson, answers);
+  const leans = PREF_DIMS.flatMap((dim) => {
+    const weight = effectiveWeight(prefs.weights[dim]);
+    if (weight >= 0.62) return [`more ${labels[dim]}`];
+    if (weight <= 0.38) return [`less ${labels[dim]}`];
+    return [];
+  });
+  return leans.length > 0
+    ? leans.join(", ")
+    : "no clear pattern yet; tell me what you'd like more or less of";
 }

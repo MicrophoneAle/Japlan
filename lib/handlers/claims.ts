@@ -2,6 +2,7 @@ import { getServiceClient } from "@/lib/db/client";
 import { todayFor, zoneNow } from "@/lib/game/legs";
 import type { ClaimRow, ParticipantRow, TaskRow, TripRow } from "@/lib/db/types";
 import { formatMorningStandings } from "@/lib/game/board";
+import { pickCelebrationGif } from "@/lib/game/celebrations";
 import { buildStandingsRows } from "@/lib/game/standings";
 import { teamsWithMembers } from "@/lib/handlers/teams";
 import {
@@ -19,7 +20,6 @@ import {
   pickLatePhotoTarget,
   splitTeamsByClaimWindow,
   tasksClaimableBy,
-  verificationRequiresPeer,
   type ClaimDecision,
   type TeamMembership,
 } from "@/lib/game/claims";
@@ -103,6 +103,7 @@ import {
   chatIdFromData,
   isDirectChat,
   photoPartsFrom,
+  sameHandle,
   senderFromData,
   textFromParts,
 } from "@/lib/linq/payload";
@@ -110,12 +111,20 @@ import { react, sendText, type MessageEffect } from "@/lib/linq/send";
 
 // A claim that scores something: react on the claiming message itself,
 // alongside the text confirmation, instead of only ever replying with words.
-const CLAIM_REACTION_EMOJI = "🔥";
+function claimReactionEmoji(task: TaskRow, photoBonus: number): string {
+  if (photoBonus > 0) return "📸";
+  if (task.tier.toLowerCase() === "challenging") return "🏆";
+  if (task.base_points >= 20) return "💪";
+  return "✅";
+}
 
-async function reactToClaim(messageId: string | null | undefined): Promise<void> {
+async function reactToClaim(
+  messageId: string | null | undefined,
+  emoji: string,
+): Promise<void> {
   if (!messageId) return;
   try {
-    await react(messageId, { emoji: CLAIM_REACTION_EMOJI });
+    await react(messageId, { emoji });
   } catch (err) {
     // A tapback is flavor, never load-bearing: losing it must not touch the
     // claim, the score, or the text confirmation already sent.
@@ -199,15 +208,45 @@ async function claimAwait<T>(
 type SendFn = (
   chatId: string,
   text: string,
-  opts?: { effect?: MessageEffect },
+  opts?: { effect?: MessageEffect; mediaUrl?: string },
 ) => Promise<{ messageId: string }>;
+
+function canUseGroupValidation(
+  trip: TripRow,
+  people: ParticipantRow[],
+  claimantId: string,
+): boolean {
+  return (
+    !trip.is_solo &&
+    people.some((person) => person.id !== claimantId)
+  );
+}
+
+function photoRequiredLine(code: string): string {
+  return `📸 ${code} needs a matching photo to score on a solo trip. send a clear photo that fits the task.`;
+}
+
+function photoMismatchLine(code: string): string {
+  return `📸 that photo doesn't match ${code}, so it didn't score. try a clearer photo that fits the task.`;
+}
+
+function photoOrPeerLine(code: string): string {
+  return `📸 that photo didn't match ${code}. no points yet. send a clearer photo, or another trip member can 👍 the validation message in the group.`;
+}
+
+function peerPromptWithPhotoAlternative(line: string, claimantName: string, photoBonusMax: number): string {
+  const bonus = photoBonusMax > 0
+    ? ` A matching photo can also add up to ${photoBonusMax} photo bonus points.`
+    : "";
+  return `${line}\nChoose one proof: another trip member taps 👍 on this message, or ${claimantName} sends a matching photo. Either one earns the task points.${bonus}`;
+}
 
 export type ClaimHandlerDeps = {
   send?: SendFn;
   provider?: LLMProvider;
   now?: number;
-  // Dispatch found an awarded claim still inside the photo bonus window, so a
-  // bare photo from this sender is addressed.
+  // Dispatch found a pending proof claim or an awarded claim still inside the
+  // photo bonus window, so a bare photo from this sender is addressed.
   photoBonusOpen?: boolean;
   // A DM from someone on a group trip: which trip chat the claim belongs to.
   // Replies go to the DM; the claim confirmation also goes to the group.
@@ -472,7 +511,7 @@ type LoadedPhoto = {
 
 // fetch -> sniff -> fingerprint -> EXIF, each step logged .before/.after.
 // Undecodable images (HEIC) get an exact hash and a raw-bytes EXIF read
-// rather than throwing, so a photo can never sink the claim it rides on.
+// rather than throwing, so group claims can fall back to a participant check.
 async function loadPhoto(
   photo: { url: string; mime: string },
   reason: string,
@@ -518,7 +557,8 @@ type VisionResult =
   | { status: "scored"; showsTask: boolean; fidelity: number }
   | { status: "failed"; error: string };
 
-// A vision failure or timeout costs the bonus, never the claim.
+// A vision failure cannot prove the claim; group trips can fall back to a
+// different participant's validation.
 async function scoreVision(opts: {
   provider?: LLMProvider;
   title: string;
@@ -535,7 +575,9 @@ async function scoreVision(opts: {
         scorePhotoFidelity({
           provider: opts.provider,
           title: opts.title,
-          photoBonusMax: opts.photoBonusMax,
+          // Vision also decides whether a photo is valid proof. Give the
+          // model a legal minimum score even when the task has no bonus.
+          photoBonusMax: Math.max(1, opts.photoBonusMax),
           image: opts.photo.vision,
         }),
     );
@@ -864,6 +906,9 @@ async function applyAwards(opts: {
       ? { type: "screen", name: "fireworks" }
       : undefined;
   const confirmTo = [confirmChatId, ...(opts.alsoConfirmTo && opts.alsoConfirmTo !== confirmChatId ? [opts.alsoConfirmTo] : [])];
+  const celebrationGif = !claimantCapped && claimantAwardedPoints > 0
+    ? pickCelebrationGif()
+    : undefined;
   const groupUpdate = opts.trip.play_mode === "individual" &&
     opts.alsoConfirmTo && opts.alsoConfirmTo !== confirmChatId
     ? await individualClaimGroupUpdate({
@@ -878,7 +923,7 @@ async function applyAwards(opts: {
   for (const target of confirmTo) {
     const text = target === confirmChatId && groupUpdate
       ? groupUpdate
-      : claimConfirmedLine({
+          : claimConfirmedLine({
           code: opts.task.code,
           name,
           base: awardBase,
@@ -887,15 +932,18 @@ async function applyAwards(opts: {
           capped: claimantCapped,
           multiplier:
             boost && !claimantCapped ? `${multiplierLabel(boost.value)} ${boost.label}` : null,
-          invitePhoto:
-            !claimantCapped &&
-            !opts.photoClaimedAt &&
-            photoBonusMaxFor(opts.task) > 0,
           boardCleared:
             personalBoardTask && !claimantCapped && remainingOpenPersonal === 0,
         });
     await claimAwait("outbound.confirm", { chatId: target, code: opts.task.code }, () =>
-      opts.send(target, text, { effect }),
+      opts.send(target, text, {
+        ...(effect ? { effect } : {}),
+        // A personal claim gets its celebration in the claimant's chat; the
+        // separate group leaderboard update stays compact.
+        ...(target === confirmChatId && celebrationGif
+          ? { mediaUrl: celebrationGif }
+          : {}),
+      }),
     );
   }
   console.info("[japlan.claim]", {
@@ -908,7 +956,12 @@ async function applyAwards(opts: {
     at: new Date().toISOString(),
   });
   resetOffTopicOnClaim(confirmChatId);
-  if (!claimantCapped) await reactToClaim(opts.sourceMessageId);
+  if (!claimantCapped) {
+    await reactToClaim(
+      opts.sourceMessageId,
+      claimReactionEmoji(opts.task, opts.photoBonus),
+    );
+  }
 
   if (personalBoardTask) {
     // The claim is already confirmed; a refill failure must not surface as a
@@ -931,6 +984,22 @@ async function applyAwards(opts: {
         err,
       });
     }
+  }
+
+  try {
+    const { onMainTaskResolved } = await import("./sidequests");
+    await onMainTaskResolved({
+      tripId: opts.trip.id,
+      participantId: opts.claimant.id,
+      challenging: opts.task.tier.toLowerCase() === "challenging",
+    });
+  } catch (err) {
+    // Sidequest delivery is optional and must never undo a confirmed task.
+    console.error("[japlan.sidequest] post-claim hook failed", {
+      tripId: opts.trip.id,
+      participantId: opts.claimant.id,
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 
@@ -998,8 +1067,15 @@ async function resolveKnownTask(opts: {
   }
 
   const existing = await existingClaimsForTask(opts.task.id);
+  const pendingForClaimant = existing.find(
+    (c) =>
+      c.participant_id === opts.claimant.id && c.status === "pending_peer",
+  );
   const blocking = existing.filter(
-    (c) => c.status === "awarded" || c.status === "pending_peer",
+    (c) =>
+      c.status === "awarded" ||
+      (c.status === "pending_peer" &&
+        (c.participant_id !== opts.claimant.id || !opts.withPhoto)),
   );
   if (blocking.length > 0) {
     claimStep("already_claimed.hit", { code: opts.task.code });
@@ -1027,27 +1103,18 @@ async function resolveKnownTask(opts: {
     if (lapsedErr) throw lapsedErr;
   }
 
-  const codeDecision = opts.decision.type === "code";
-  if (codeDecision && !opts.withPhoto) {
-    claimStep("gemini.skip", {
-      reason: "ladder_code_no_photo",
-      code: opts.task.code,
-      verification: opts.task.verification,
-    });
-  }
-
   let imageHash: string | null = null;
   let photoBonus = 0;
   let evidenceUrl: string | null = null;
   let loaded: LoadedPhoto | null = null;
   let photoClaimedAt: string | null = null;
+  let proofVision: VisionResult | null = null;
+  let photoAccepted = false;
 
   if (opts.withPhoto && opts.photo) {
     try {
       loaded = await loadPhoto(opts.photo, "code_with_photo");
     } catch (err) {
-      // The code alone is a valid claim; a photo we cannot fetch only costs
-      // the bonus.
       claimStep("photo.load_failed", {
         code: opts.task.code,
         error: err instanceof Error ? err.message : String(err),
@@ -1066,8 +1133,70 @@ async function resolveKnownTask(opts: {
     }
   }
 
-  if (verificationRequiresPeer(opts.task.verification)) {
-    // Take the task first so a lost race never posts a tapback prompt.
+  if (loaded) {
+    proofVision =
+      opts.photoBonusOverride !== undefined
+        ? {
+            status: "scored",
+            showsTask: true,
+            fidelity: opts.photoBonusOverride,
+          }
+        : await scoreVision({
+            provider: opts.provider,
+            title: opts.task.title,
+            photoBonusMax: photoBonusMaxFor(opts.task),
+            photo: loaded,
+            code: opts.task.code,
+            reason: "code_with_photo",
+          });
+    photoAccepted = proofVision.status === "scored" && proofVision.showsTask;
+    if (proofVision.status === "scored" && proofVision.showsTask) {
+      const dateCheck = applyPhotoBonusRules({
+        fidelity: proofVision.fidelity,
+        hasExif: Boolean(loaded.takenAt),
+        takenAt: loaded.takenAt,
+        tripStart: opts.trip.start_date,
+        tripEnd: opts.trip.end_date,
+        photoBonusMax: photoBonusMaxFor(opts.task),
+        taskCreatedOn: taskCreatedOn(opts.task, opts.trip),
+      });
+      if (dateCheck.reject) {
+        claimStep("photo.proof.reject", { code: opts.task.code, reason: "outside_trip" });
+        photoAccepted = false;
+      }
+    }
+  }
+
+  const hasGroupValidator = canUseGroupValidation(
+    opts.trip,
+    opts.people,
+    opts.claimant.id,
+  );
+
+  if (!photoAccepted) {
+    evidenceUrl = null;
+    imageHash = null;
+    if (!hasGroupValidator) {
+      await claimAwait("outbound.send", { reason: "photo_required" }, () =>
+        opts.send(
+          opts.chatId,
+          loaded ? photoMismatchLine(opts.task.code) : photoRequiredLine(opts.task.code),
+        ),
+      );
+      return;
+    }
+
+    if (pendingForClaimant) {
+      await claimAwait("outbound.send", { reason: "pending_peer_photo_not_matched" }, () =>
+        opts.send(
+          opts.chatId,
+          loaded ? photoOrPeerLine(opts.task.code) : `${opts.task.code} is still waiting for another trip member's 👍 in the group.`,
+        ),
+      );
+      return;
+    }
+
+    // Reserve the task first so a lost race never posts a validation prompt.
     let pendingId: string;
     try {
       pendingId = await insertClaim({
@@ -1078,7 +1207,10 @@ async function resolveKnownTask(opts: {
         status: "pending_peer",
         awarded_points: null,
         resolved_by: "peer",
-        resolution_json: {},
+        resolution_json: {
+          photo_attempted: opts.withPhoto,
+          claim_chat_id: opts.chatId,
+        },
         expires_at: endOfLocalDayContaining(new Date(), zoneNow(opts.trip, new Date())).toISOString(),
       });
     } catch (err) {
@@ -1093,11 +1225,15 @@ async function resolveKnownTask(opts: {
       sent = await claimAwait("outbound.send", { reason: "peer_confirm" }, () =>
         opts.send(
           opts.trip.linq_chat_id,
-          peerConfirmLine({
-            name: opts.claimant.display_name,
-            code: opts.task.code,
-            title: opts.task.title,
-          }),
+          peerPromptWithPhotoAlternative(
+            peerConfirmLine({
+              name: opts.claimant.display_name,
+              code: opts.task.code,
+              title: opts.task.title,
+            }),
+            opts.claimant.display_name,
+            photoBonusMaxFor(opts.task),
+          ),
         ),
       );
     } catch (err) {
@@ -1111,14 +1247,58 @@ async function resolveKnownTask(opts: {
       async () =>
         await getServiceClient()
           .from("claims")
-          .update({ resolution_json: { peer_message_id: sent.messageId } })
+          .update({
+            resolution_json: {
+              peer_message_id: sent.messageId,
+              photo_attempted: opts.withPhoto,
+              claim_chat_id: opts.chatId,
+            },
+          })
           .eq("id", pendingId),
     );
     if (peerErr) throw peerErr;
+    if (opts.chatId !== opts.trip.linq_chat_id) {
+      await claimAwait("outbound.peer_status", { code: opts.task.code, chatId: opts.chatId }, () =>
+        opts.send(
+          opts.chatId,
+          loaded
+            ? photoOrPeerLine(opts.task.code)
+            : `${opts.task.code} is waiting for another trip member's 👍 in the group. no points until then; a matching photo also works.`,
+        ),
+      );
+    }
     return;
   }
 
-  if (loaded && photoBonusMaxFor(opts.task) > 0) {
+  if (!loaded || proofVision?.status !== "scored") {
+    throw new Error(`photo proof state invalid for ${opts.task.code}`);
+  }
+  evidenceUrl = opts.photo?.url ?? null;
+  imageHash = loaded.hash;
+  photoClaimedAt = new Date().toISOString();
+
+  if (pendingForClaimant) {
+    const { data: removed, error: removeErr } = await claimAwait(
+      "claim.photo_resolves_peer",
+      { code: opts.task.code, claimId: pendingForClaimant.id },
+      async () =>
+        await getServiceClient()
+          .from("claims")
+          .delete()
+          .eq("id", pendingForClaimant.id)
+          .eq("status", "pending_peer")
+          .select("id"),
+    );
+    if (removeErr) throw removeErr;
+    if (!removed || removed.length === 0) {
+      await claimAwait("outbound.send", { reason: "photo_peer_race" }, () =>
+        opts.send(opts.chatId, alreadyClaimedLine(opts.task.code, opts.nextStep)),
+      );
+      return;
+    }
+  }
+
+  if (photoBonusMaxFor(opts.task) > 0) {
     const priorReject = existing.find(
       (c) =>
         c.participant_id === opts.claimant.id &&
@@ -1128,47 +1308,23 @@ async function resolveKnownTask(opts: {
     if (priorReject) {
       claimStep("photo_bonus.skip", { code: opts.task.code, reason: "prior_vision_reject" });
     } else {
-      let scoredFidelity = opts.photoBonusOverride;
-      if (scoredFidelity === undefined) {
-        const vision = await scoreVision({
-          provider: opts.provider,
-          title: opts.task.title,
-          photoBonusMax: photoBonusMaxFor(opts.task),
-          photo: loaded,
-          code: opts.task.code,
-          reason: "code_with_photo",
-        });
-        if (vision.status === "scored" && vision.showsTask) {
-          scoredFidelity = vision.fidelity;
-        }
-      }
-      if (scoredFidelity !== undefined) {
-        const bonus = applyPhotoBonusRules({
-          fidelity: scoredFidelity,
-          hasExif: Boolean(loaded.takenAt),
-          takenAt: loaded.takenAt,
-          tripStart: opts.trip.start_date,
-          tripEnd: opts.trip.end_date,
-          photoBonusMax: photoBonusMaxFor(opts.task),
-          taskCreatedOn: taskCreatedOn(opts.task, opts.trip),
-        });
-        claimStep("photo_bonus.rules", {
-          code: opts.task.code,
-          fidelity: scoredFidelity,
-          bonus: bonus.bonus,
-          reject: bonus.reject,
-        });
-        if (!bonus.reject) {
-          photoBonus = bonus.bonus;
-          photoClaimedAt = new Date().toISOString();
-        }
-      }
+      const bonus = applyPhotoBonusRules({
+        fidelity: proofVision.fidelity,
+        hasExif: Boolean(loaded.takenAt),
+        takenAt: loaded.takenAt,
+        tripStart: opts.trip.start_date,
+        tripEnd: opts.trip.end_date,
+        photoBonusMax: photoBonusMaxFor(opts.task),
+        taskCreatedOn: taskCreatedOn(opts.task, opts.trip),
+      });
+      claimStep("photo_bonus.rules", {
+        code: opts.task.code,
+        fidelity: proofVision.fidelity,
+        bonus: bonus.bonus,
+        reject: bonus.reject,
+      });
+      if (!bonus.reject) photoBonus = bonus.bonus;
     }
-  }
-
-  if (!photoClaimedAt) {
-    evidenceUrl = null;
-    imageHash = null;
   }
 
   try {
@@ -1179,13 +1335,8 @@ async function resolveKnownTask(opts: {
       photoBonus,
       evidenceUrl,
       imageHash,
-      resolvedBy:
-        opts.decision.type === "code"
-          ? opts.decision.withPhoto
-            ? "photo_code"
-            : "code"
-          : opts.task.verification,
-      resolution: { ladder: opts.decision },
+      resolvedBy: "photo",
+      resolution: { ladder: opts.decision, proof: "photo" },
       trip: opts.trip,
       send: opts.send,
       photoClaimedAt,
@@ -1211,6 +1362,7 @@ async function resolveKnownTask(opts: {
 
 async function tryHandleFreeform(opts: {
   text: string;
+  claimChatId?: string;
   hasPhoto: boolean;
   photo: { url: string; mime: string } | null;
   claimant: ParticipantRow;
@@ -1223,6 +1375,7 @@ async function tryHandleFreeform(opts: {
   extraction?: FreeformExtraction | null;
   nextStep: string;
 }): Promise<boolean> {
+  const claimantChatId = opts.claimChatId ?? opts.trip.linq_chat_id;
   if (isLikelyUncompletedActivity(opts.text)) {
     claimStep("freeform.not_completed", { participantId: opts.claimant.id });
     return false;
@@ -1274,7 +1427,7 @@ async function tryHandleFreeform(opts: {
     completedTitles: completed,
   });
   if (reason === "unsafe" || reason === "illegal" || reason === "duplicate") {
-    await opts.send(opts.trip.linq_chat_id, freeformRejectedLine(opts.nextStep));
+    await opts.send(claimantChatId, freeformRejectedLine(opts.nextStep));
     return true;
   }
 
@@ -1285,11 +1438,23 @@ async function tryHandleFreeform(opts: {
     "peer",
     Boolean(opts.trip.is_solo),
   );
-  // Photo checks come before the task insert: a reused photo used to leave an
-  // orphaned X-code task on the board that anyone could claim.
+  const hasGroupValidator = canUseGroupValidation(
+    opts.trip,
+    opts.people,
+    opts.claimant.id,
+  );
+  if (!hasGroupValidator && !opts.hasPhoto) {
+    await opts.send(claimantChatId, "📸 solo claims need a matching photo to score. send the photo with the activity so i can check it.");
+    return true;
+  }
+
+  // Photo proof is checked before the task insert, so an unusable solo photo
+  // cannot leave an unclaimable X-code task behind.
   let imageHash: string | null = null;
   let evidenceUrl: string | null = null;
   let photoBonus = 0;
+  let photoClaimedAt: string | null = null;
+  let photoAccepted = false;
   let loaded: LoadedPhoto | null = null;
   if (opts.hasPhoto && opts.photo) {
     try {
@@ -1302,14 +1467,11 @@ async function tryHandleFreeform(opts: {
     }
   }
   if (loaded && opts.photo) {
-    evidenceUrl = opts.photo.url;
-    imageHash = loaded.hash;
     const hashes = await tripHashes(opts.trip.id);
-    if (hashAlreadyUsed(hashes, imageHash)) {
-      await opts.send(opts.trip.linq_chat_id, reusedPhotoLine());
+    if (hashAlreadyUsed(hashes, loaded.hash)) {
+      await opts.send(claimantChatId, reusedPhotoLine());
       return true;
     }
-    const takenAt = loaded.takenAt;
     const vision = await scoreVision({
       provider: opts.provider,
       title: extracted.title,
@@ -1319,18 +1481,31 @@ async function tryHandleFreeform(opts: {
       reason: "freeform",
     });
     if (vision.status === "scored" && vision.showsTask) {
-      const bonus = applyPhotoBonusRules({
+      const dateCheck = applyPhotoBonusRules({
         fidelity: vision.fidelity,
-        hasExif: Boolean(takenAt),
-        takenAt,
+        hasExif: Boolean(loaded.takenAt),
+        takenAt: loaded.takenAt,
         tripStart: opts.trip.start_date,
         tripEnd: opts.trip.end_date,
         taskCreatedOn: todayFor(opts.trip, new Date()),
+        photoBonusMax: freeformBonusMax,
       });
-      if (!bonus.reject) {
-        photoBonus = Math.min(bonus.bonus, freeformBonusMax);
+      photoAccepted = !dateCheck.reject;
+      if (photoAccepted) {
+        evidenceUrl = opts.photo.url;
+        imageHash = loaded.hash;
+        photoClaimedAt = new Date().toISOString();
+        photoBonus = Math.min(dateCheck.bonus, freeformBonusMax);
       }
     }
+  }
+
+  if (!photoAccepted && !hasGroupValidator) {
+    await opts.send(
+      claimantChatId,
+      "📸 that photo doesn't match the activity, so it didn't score. try a clearer photo of what you did.",
+    );
+    return true;
   }
 
   const code = nextFreeformCode(opts.tasks.map((task) => task.code));
@@ -1366,32 +1541,52 @@ async function tryHandleFreeform(opts: {
   // fails before the claim row exists, delete the task.
   let claimWritten = false;
   try {
-    if (verification === "peer") {
+    if (!photoAccepted) {
       const pendingId = await insertClaim({
         task_id: task.id,
         participant_id: opts.claimant.id,
-        evidence_url: evidenceUrl,
-        image_hash: imageHash,
+        evidence_url: null,
+        image_hash: null,
         status: "pending_peer",
         awarded_points: null,
         resolved_by: "peer",
-        resolution_json: { photoBonus },
+        resolution_json: {
+          photoBonus,
+          photo_attempted: opts.hasPhoto,
+          claim_chat_id: opts.claimChatId ?? opts.trip.linq_chat_id,
+        },
         expires_at: endOfLocalDayContaining(new Date(), zoneNow(opts.trip, new Date())).toISOString(),
       });
       claimWritten = true;
       const sent = await opts.send(
         opts.trip.linq_chat_id,
-        freeformPeerLine({
-          name: opts.claimant.display_name,
-          title: extracted.title,
-          code,
-        }),
+        peerPromptWithPhotoAlternative(
+          freeformPeerLine({
+            name: opts.claimant.display_name,
+            title: extracted.title,
+            code,
+          }),
+          opts.claimant.display_name,
+          freeformBonusMax,
+        ),
       );
       const { error: peerErr } = await getServiceClient()
         .from("claims")
-        .update({ resolution_json: { peer_message_id: sent.messageId, photoBonus } })
+        .update({
+          resolution_json: {
+            peer_message_id: sent.messageId,
+            photo_attempted: opts.hasPhoto,
+            claim_chat_id: opts.claimChatId ?? opts.trip.linq_chat_id,
+          },
+        })
         .eq("id", pendingId);
       if (peerErr) throw peerErr;
+      if (claimantChatId !== opts.trip.linq_chat_id) {
+        await opts.send(
+          claimantChatId,
+          `⏳ ${code} is waiting for another trip member's 👍 in the group. no points until then; a matching photo also works.`,
+        );
+      }
     } else {
       await applyAwards({
         task,
@@ -1404,6 +1599,11 @@ async function tryHandleFreeform(opts: {
         resolution: { freeform: true },
         trip: opts.trip,
         send: opts.send,
+        photoClaimedAt,
+        alsoConfirmTo:
+          claimantChatId !== opts.trip.linq_chat_id
+            ? claimantChatId
+            : null,
         onClaimWritten: () => {
           claimWritten = true;
         },
@@ -1441,6 +1641,7 @@ async function rollbackFreeformTask(taskId: string): Promise<void> {
 
 export async function submitFreeformClaim(opts: {
   text: string;
+  claimChatId?: string;
   hasPhoto: boolean;
   photo: { url: string; mime: string } | null;
   claimant: ParticipantRow;
@@ -1462,6 +1663,7 @@ export async function applyLatePhotoBonus(opts: {
   claimant: ParticipantRow;
   trip: TripRow;
   photo: { url: string; mime: string };
+  replyChatId: string;
   send: SendFn;
   provider?: LLMProvider;
   alsoConfirmTo?: string | null;
@@ -1476,7 +1678,7 @@ export async function applyLatePhotoBonus(opts: {
     if (error) throw error;
     await claimAwait("outbound.send", { reason: "photo_capped" }, () =>
       opts.send(
-        opts.trip.linq_chat_id,
+        opts.replyChatId,
         photoBonusLine({
           code: opts.task.code,
           bonus: 0,
@@ -1497,7 +1699,7 @@ export async function applyLatePhotoBonus(opts: {
       error: err instanceof Error ? err.message : String(err),
     });
     await claimAwait("outbound.send", { reason: "photo_unreadable" }, () =>
-      opts.send(opts.trip.linq_chat_id, photoCheckFailedLine(opts.task.code)),
+      opts.send(opts.replyChatId, photoCheckFailedLine(opts.task.code)),
     );
     return;
   }
@@ -1505,7 +1707,7 @@ export async function applyLatePhotoBonus(opts: {
   const hashes = await tripHashes(opts.trip.id);
   if (hashAlreadyUsed(hashes, imageHash)) {
     await claimAwait("outbound.send", { reason: "reused_photo" }, () =>
-      opts.send(opts.trip.linq_chat_id, reusedPhotoLine()),
+      opts.send(opts.replyChatId, reusedPhotoLine()),
     );
     return;
   }
@@ -1520,14 +1722,14 @@ export async function applyLatePhotoBonus(opts: {
   });
   if (vision.status === "failed") {
     await claimAwait("outbound.send", { reason: "vision_failed" }, () =>
-      opts.send(opts.trip.linq_chat_id, photoCheckFailedLine(opts.task.code)),
+      opts.send(opts.replyChatId, photoCheckFailedLine(opts.task.code)),
     );
     return;
   }
   if (!vision.showsTask) {
     claimStep("photo_bonus.no_match", { code: opts.task.code });
     await claimAwait("outbound.send", { reason: "photo_no_match" }, () =>
-      opts.send(opts.trip.linq_chat_id, visionRejectedLine(opts.task.code)),
+      opts.send(opts.replyChatId, visionRejectedLine(opts.task.code)),
     );
     return;
   }
@@ -1543,7 +1745,7 @@ export async function applyLatePhotoBonus(opts: {
   if (bonus.reject) {
     claimStep("photo_bonus.exif_reject", { code: opts.task.code });
     await claimAwait("outbound.send", { reason: "photo_outside_trip" }, () =>
-      opts.send(opts.trip.linq_chat_id, photoOutsideTripLine(opts.task.code)),
+      opts.send(opts.replyChatId, photoOutsideTripLine(opts.task.code)),
     );
     return;
   }
@@ -1633,7 +1835,7 @@ export async function applyLatePhotoBonus(opts: {
   if (incoming === 0 && !claimantCapped) {
     // Matched, but fidelity scored 0: still answer the photo.
     await claimAwait("outbound.send", { reason: "photo_zero" }, () =>
-      opts.send(opts.trip.linq_chat_id, visionRejectedLine(opts.task.code)),
+      opts.send(opts.replyChatId, visionRejectedLine(opts.task.code)),
     );
     return;
   }
@@ -1665,10 +1867,9 @@ export async function applyLatePhotoBonus(opts: {
 }
 
 // Whether a bare photo from this sender should count as addressed: they have
-// an awarded claim, inside the bonus window, on a task that pays a photo
-// bonus, with no photo yet. This replaces the 60s in-memory code binding for
-// the late-photo case; that memory is per isolate and far shorter than the
-// bonus window, so a photo sent minutes later used to be dropped as chat.
+// a pending proof claim or a recent awarded claim eligible for a photo bonus.
+// This replaces the short in-memory code binding, which used to drop photos
+// sent after the claim message as ordinary chat.
 export async function photoBonusOpenFor(
   chatId: string,
   phone: string,
@@ -1682,6 +1883,25 @@ export async function photoBonusOpenFor(
     findParticipantOnTrip(trip.id, phone),
   );
   if (!participant) return false;
+  const { data: pendingRows, error: pendingErr } = await claimAwait(
+    "photo_proof.window.pending",
+    { participantId: participant.id },
+    async () =>
+      await getServiceClient()
+        .from("claims")
+        .select("expires_at")
+        .eq("participant_id", participant.id)
+        .eq("status", "pending_peer"),
+  );
+  if (pendingErr) throw pendingErr;
+  if (
+    (pendingRows ?? []).some((row) => {
+      const expiresAt = (row as { expires_at?: string | null }).expires_at;
+      return !expiresAt || Date.parse(expiresAt) > now;
+    })
+  ) {
+    return true;
+  }
   const since = new Date(now - photoBonusWindowMs()).toISOString();
   const { data: claimRows, error } = await claimAwait(
     "photo_bonus.window.claims",
@@ -1821,6 +2041,14 @@ async function handleGroupClaimInner(
   const claimantTeamIds = teams.active;
   // Codes repeat per owner, so everything below works on the claimant's tasks.
   const claimable = tasksClaimableBy(ctx.tasks, claimant.id, claimantTeamIds);
+  const pendingProofTaskIds = new Set(
+    ctx.claims
+      .filter(
+        (claim) =>
+          claim.participant_id === claimant.id && claim.status === "pending_peer",
+      )
+      .map((claim) => claim.task_id),
+  );
   const nextStep = nextStepClause(
     openCodesFor(ctx.tasks, ctx.claims, claimant.id, claimantTeamIds),
   );
@@ -1845,7 +2073,7 @@ async function handleGroupClaimInner(
     engaged: deps.engaged,
   });
 
-  if (hasPhoto && photo) {
+  if (hasPhoto && photo && pendingProofTaskIds.size === 0) {
     const bind = pickLatePhotoTarget({
       hasPhoto: true,
       code: codeInText ?? recentCode,
@@ -1873,6 +2101,7 @@ async function handleGroupClaimInner(
           claimant,
           trip: ctx.trip,
           photo,
+          replyChatId: chatId,
           send,
           provider: deps.provider,
           alsoConfirmTo: chatId !== ctx.trip.linq_chat_id ? chatId : null,
@@ -1882,7 +2111,11 @@ async function handleGroupClaimInner(
     }
   }
 
-  const openTasks = claimable.filter((task) => isOpenTask(task.id, ctx.claims));
+  const openTasks = claimable.filter(
+    (task) =>
+      isOpenTask(task.id, ctx.claims) ||
+      (hasPhoto && pendingProofTaskIds.has(task.id)),
+  );
 
   const decision = decideClaim({
     text,
@@ -2059,7 +2292,7 @@ async function handleGroupClaimInner(
       return;
     }
     const scored: { code: string; fidelity: number }[] = [];
-    for (const task of openTasks.filter((t) => photoBonusMaxFor(t) > 0)) {
+    for (const task of openTasks) {
       const result = await scoreVision({
         provider: deps.provider,
         title: task.title,
@@ -2157,9 +2390,20 @@ export async function handlePeerReaction(
 
   const ctx = await loadTripContext(chatId);
   if (!ctx) return;
+  if (ctx.trip.is_solo) {
+    peerLog("solo_trip_has_no_group_validator", { claimId: pending.id });
+    return;
+  }
+  const validator = fromHandle
+    ? ctx.people.find((person) => sameHandle(person.phone, fromHandle))
+    : undefined;
+  if (!validator) {
+    peerLog("validator_not_on_trip", { claimId: pending.id });
+    return;
+  }
   const claimant = ctx.people.find((p) => p.id === pending.participant_id);
   if (!claimant) return;
-  if (isClaimantTapback(fromHandle ?? null, claimant.phone)) {
+  if (validator.id === claimant.id || isClaimantTapback(fromHandle ?? null, claimant.phone)) {
     peerLog("self_tapback_ignored", { claimId: pending.id });
     return;
   }
@@ -2182,6 +2426,7 @@ export async function handlePeerReaction(
   const pendingJson = pending.resolution_json as {
     peer_message_id?: string;
     photoBonus?: number;
+    claim_chat_id?: string;
   } | null;
   await applyAwards({
     task,
@@ -2194,5 +2439,10 @@ export async function handlePeerReaction(
     resolution: { peer_message_id: messageId },
     trip: ctx.trip,
     send,
+    alsoConfirmTo:
+      pendingJson?.claim_chat_id &&
+      pendingJson.claim_chat_id !== ctx.trip.linq_chat_id
+        ? pendingJson.claim_chat_id
+        : null,
   });
 }

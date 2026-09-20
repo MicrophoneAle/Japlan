@@ -29,7 +29,7 @@ export const demo: WrappedStory = {
   trip: {
     name: "The long weekend that got competitive",
     destination: "Montréal",
-    dates: "May 16 — 19, 2026",
+    dates: "May 16 to 19, 2026",
     days: 4,
   },
   stats: [

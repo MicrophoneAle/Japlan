@@ -340,10 +340,12 @@ describe("settings and task counts are requests, handled by tools", () => {
   it("'japlan settings' shows your own values in your dm; 'japlan resurvey' starts again", async () => {
     seed({ mike: { pace: { value: "steady" } } });
     await say("mike", "japlan settings");
-    // The group is told where the answer went, never what is in it.
+    // The group is told where the answer went, never what is in it. Compared
+    // against the constant so a copy pass moves the test with it; the second
+    // assertion is the decision, and it holds whatever the wording becomes.
     expect(lastIn(GROUP)).toBe(SETTINGS_IN_DM_LINE);
     expect(lastIn(GROUP)).not.toMatch(/pace|between/);
-    expect(h.sent.at(-2)!.text).toMatch(/^your settings:\n· pace: somewhere in between/);
+    expect(h.sent.at(-2)!.text).toMatch(/^🔒 your private trip profile[\s\S]*day pace:/);
     await say("mike", "japlan resurvey", dm("mike"));
     expect(lastIn(dm("mike"))).toMatch(/^starting over, one question at a time\. skip keeps what you said before\./);
     // Skip keeps the old answer.

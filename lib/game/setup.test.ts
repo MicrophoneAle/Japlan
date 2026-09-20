@@ -189,12 +189,17 @@ describe("setup prompts", () => {
     // The count in the lead has to match the questions actually asked, or the
     // group is told four and gets five.
     expect(setupPrompt("destination", null, { first: true })).toBe(
-      `trip setup, ${setupOrderFor().length} quick ones. ok where we headed? a city is plenty. (skip and i'll ask again later)`,
+      `🧭 let's set up this group trip (${setupOrderFor().length} quick questions).\nWhere are you going? Send the city and country, for example “Kyoto, Japan.” I need the place to find local activities.\nI need this answer before I can start the trip.`,
     );
-    expect(setupPrompt("destination", "tokyo, japan")).toContain("(rn: tokyo, japan. skip keeps it)");
-    expect(setupPrompt("stake", null)).toContain("(skip is fine)");
+    // Solo drops the play-style and stake questions, and the count follows.
+    expect(setupPrompt("destination", null, { first: true, isSolo: true })).toContain(
+      `(${setupOrderFor({ isSolo: true }).length} quick questions)`,
+    );
+    expect(setupPrompt("destination", "tokyo, japan")).toContain("Saved: tokyo, japan. Say “skip” to keep it.");
+    expect(setupPrompt("stake", null)).toContain("Say “skip” if you want to leave this unset.");
     for (const id of ["destination", "dates", "difficulty", "stake"] as const) {
-      expect(setupPrompt(id, null)).not.toMatch(/timezone|time zone|!/i);
+      expect(setupPrompt(id, null)).not.toMatch(/timezone|time zone/i);
+      expect(setupPrompt(id, null)).not.toContain("Reply here with");
     }
   });
 });

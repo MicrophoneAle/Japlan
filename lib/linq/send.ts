@@ -94,6 +94,13 @@ function fromNumber(): string {
   return from;
 }
 
+// A stalled Linq, as opposed to a refused message. Every degrade-and-retry
+// cascade in this file checks it before spending another LINQ_OP_TIMEOUT_MS:
+// there is nothing to degrade to when the far end is not answering.
+function isTimeout(err: unknown): boolean {
+  return err instanceof Error && err.name === "TimeoutError";
+}
+
 async function outbound<T>(
   entry: Omit<OutboundLog, "at" | "ok">,
   fn: () => Promise<T>,
@@ -122,13 +129,19 @@ async function outbound<T>(
 export async function sendText(
   chatId: string,
   text: string,
-  opts?: { effect?: MessageEffect },
+  opts?: { effect?: MessageEffect; mediaUrl?: string },
 ): Promise<SentText> {
   await typeBeforeSending(chatId, text);
-  const attempt = (effect?: MessageEffect) =>
+  const attempt = (effect?: MessageEffect, mediaUrl?: string) =>
     outbound({ op: "sendText", chatId, text }, async () => {
       const res = await getLinqClient().chats.messages.send(chatId, {
-        message: { ...textParts(text), ...(effect ? { effect } : {}) },
+        message: {
+          parts: [
+            { type: "text", value: text },
+            ...(mediaUrl ? [{ type: "media" as const, url: mediaUrl, sticker: true }] : []),
+          ],
+          ...(effect ? { effect } : {}),
+        },
       });
       return { chatId: res.chat_id, messageId: res.message.id };
     });
@@ -136,14 +149,53 @@ export async function sendText(
   // separate call to fail independently. If the effect-carrying send throws,
   // retry once, plain, so a decoration never costs the confirmation itself.
   let sent: SentText;
-  if (opts?.effect) {
+  if (opts?.mediaUrl) {
+    try {
+      sent = await attempt(opts.effect, opts.mediaUrl);
+    } catch (err) {
+      // Same rule as the effect branch below, and it matters more here: this
+      // cascade can make four sequential attempts, each bounded by
+      // LINQ_OP_TIMEOUT_MS, which against maxDuration=60 is the whole request
+      // budget. A timeout means Linq is stalled, not that it refused the GIF,
+      // so there is nothing to degrade to. Give up and let the caller fail
+      // fast rather than retrying into the wall.
+      if (isTimeout(err)) throw err;
+      console.error("[linq.outbound] media send failed, retrying without media", {
+        chatId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+      // If Linq rejected the combination of media and an iMessage effect,
+      // preserve the GIF and drop only the optional effect.
+      try {
+        sent = await attempt(undefined, opts.mediaUrl);
+      } catch (mediaErr) {
+        if (isTimeout(mediaErr)) throw mediaErr;
+        console.error("[linq.outbound] media-only send failed, retrying with text", {
+          chatId,
+          err: mediaErr instanceof Error ? mediaErr.message : String(mediaErr),
+        });
+        if (!opts.effect) throw mediaErr;
+        try {
+          sent = await attempt(opts.effect);
+        } catch (effectErr) {
+          if (isTimeout(effectErr)) throw effectErr;
+          console.error("[linq.outbound] effect failed, retrying without", {
+            chatId,
+            effect: opts.effect,
+            err: effectErr instanceof Error ? effectErr.message : String(effectErr),
+          });
+          sent = await attempt(undefined);
+        }
+      }
+    }
+  } else if (opts?.effect) {
     try {
       sent = await attempt(opts.effect);
     } catch (err) {
       // A timeout says Linq is stalled, not that it refused the effect, so a
       // plain retry would just spend the budget twice over. Anything else is
       // worth one more go without the decoration.
-      if (err instanceof Error && err.name === "TimeoutError") throw err;
+      if (isTimeout(err)) throw err;
       console.error("[linq.outbound] effect failed, retrying without", {
         chatId,
         effect: opts.effect,

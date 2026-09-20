@@ -102,7 +102,7 @@ export async function loadLiveTrip(tripId: string): Promise<LiveTripData | null>
 
 // Mirrors lib/wrapped/load.ts's wrappedPhotoRedirect: never expose the
 // storage bucket or a raw signed-URL flow to the client. Gated on the trip
-// still being active — a completed trip's photos are Wrapped's to serve.
+// still being active: a completed trip's photos are Wrapped's to serve.
 export async function liveTripPhotoRedirect(claimId: string): Promise<string | null> {
   const db = getServiceClient();
   const claimResult = await db.from("claims").select("*").eq("id", claimId).maybeSingle();

@@ -431,9 +431,11 @@ describe("board and confirmation copy", () => {
       ],
     });
     expect(text).toContain("Day 1");
-    // Code and title on one line, tier and points indented under it.
-    expect(text).toContain("A1 · first\n   light · 7 pts");
-    expect(text).toContain("A2 · second\n   light · 10 pts");
+    // A slot heading that counts what is under it, then a category, points
+    // and tier per task, with the code and title indented beneath.
+    expect(text).toContain("✨ ANYTIME · 2 tasks");
+    expect(text).toContain("✨ CHALLENGE · 7 pts · LIGHT\n   A1 · Wild Card: first");
+    expect(text).toContain("✨ CHALLENGE · 10 pts · LIGHT\n   A2 · Wild Card: second");
     // Standings are ranked, highest first, whatever order they arrived in.
     expect(text).toContain("1. Michael · 20 pts");
     expect(text).toContain("2. Sarah · 10 pts");
@@ -463,20 +465,15 @@ describe("board and confirmation copy", () => {
         { code: "A4", title: "fourth", base_points: 34 },
       ],
     });
-    // Tier from the points beside it, one line per task. Older tasks have no
-    // time of day, and show without one.
-    expect(text.split("\n").slice(2)).toEqual([
-      "✨ anytime",
-      "A1 · first",
-      "   light · 15 pts",
-      "A2 · second",
-      "   medium · 16 pts",
-      "A3 · third",
-      "   challenging · 25 pts",
-      "A4 · fourth",
-      "   challenging · 34 pts",
-    ]);
+    // Older tasks have no time of day, so they all land under one heading
+    // rather than being dropped, and the tier comes from the points.
+    expect(text).toContain("✨ ANYTIME · 4 tasks");
+    expect(text).toContain("✨ CHALLENGE · 15 pts · LIGHT\n   A1 · Wild Card: first");
+    expect(text).toContain("✨ CHALLENGE · 16 pts · MEDIUM\n   A2 · Wild Card: second");
+    expect(text).toContain("✨ CHALLENGE · 25 pts · CHALLENGING\n   A3 · Wild Card: third");
+    expect(text).toContain("✨ CHALLENGE · 34 pts · CHALLENGING\n   A4 · Wild Card: fourth");
     // A personal board is one person's: no standings, nobody else's name.
+    expect(text).not.toContain("🏆");
     expect(text).not.toContain("Michael");
   });
 
@@ -493,22 +490,22 @@ describe("board and confirmation copy", () => {
       [
         "Day 3 · Asakusa → Ueno",
         "",
-        "🌅 morning",
-        "A1 · ask a stranger for their best rec",
-        "   medium · 18 pts",
+        "🌅 MORNING · 1 task",
+        "🤝 PEOPLE · 18 pts · MEDIUM",
+        "   A1 · Local Intel: ask a stranger for their best rec",
         "",
-        "☀️ afternoon",
-        "A2 · get to ueno without a train",
-        "   challenging · 26 pts",
+        "☀️ AFTERNOON · 1 task",
+        "🗺️ EXPLORE · 26 pts · CHALLENGING",
+        "   A2 · City Scout: get to ueno without a train",
         "",
-        "🌙 evening",
-        "A3 · order something you can't read",
-        "   light · 11 pts",
+        "🌙 EVENING · 1 task",
+        "🍜 FOOD · 11 pts · LIGHT",
+        "   A3 · Menu Roulette: order something you can't read",
       ].join("\n"),
     );
   });
 
-  it("formats the one-line confirmation", () => {
+  it("formats task points, photo bonus, and total as separate values", () => {
     expect(
       claimConfirmedLine({
         code: "C2",
@@ -517,7 +514,7 @@ describe("board and confirmation copy", () => {
         photoBonus: 0,
         total: 160,
       }),
-    ).toBe("✅ C2 · Michael +20 · 160");
+    ).toBe("✅ C2 · Michael\n+20 task pts\n🏆 Total score: 160 pts");
     expect(
       claimConfirmedLine({
         code: "C2",
@@ -526,7 +523,7 @@ describe("board and confirmation copy", () => {
         photoBonus: 2,
         total: 162,
       }),
-    ).toBe("✅ C2 · Michael +20 +2 photo · 162");
+    ).toBe("✅ C2 · Michael\n+20 task pts +2 photo bonus = +22 pts\n🏆 Total score: 162 pts");
     expect(
       claimConfirmedLine({
         code: "C2",
@@ -536,9 +533,7 @@ describe("board and confirmation copy", () => {
         total: 160,
         capped: true,
       }),
-    ).toBe(
-      "✅ C2 · Michael · 160 · that's your cap for today bestie, but it still counts for the recap 📈",
-    );
+    ).toBe("✅ C2 · Michael\nNo points added; today's cap is reached. Current score: 160 pts.");
     expect(
       claimConfirmedLine({
         code: "A1",
@@ -546,15 +541,14 @@ describe("board and confirmation copy", () => {
         base: 12,
         photoBonus: 0,
         total: 12,
-        invitePhoto: true,
       }),
-    ).toBe("✅ A1 · Michael +12 · 12\nphoto for bonus points? 👀");
+    ).toBe("✅ A1 · Michael\n+12 task pts\n🏆 Total score: 12 pts");
     expect(
       photoBonusLine({ code: "A1", bonus: 3, total: 15 }),
-    ).toBe("📸 A1 · +3 bonus · 15");
+    ).toBe("📸 A1 photo bonus · +3 pts\n🏆 New total score: 15 pts");
     expect(
       photoBonusLine({ code: "A1", bonus: 0, total: 120, capped: true }),
-    ).toBe("📸 A1 · 120 · that's your cap for today bestie, but it still counts for the recap 📈");
+    ).toBe("📸 A1 photo checked · +0 bonus pts (daily cap reached)\n🏆 Total score: 120 pts");
   });
 
   it("offers a next step only when the claim clears the board", () => {
@@ -565,8 +559,7 @@ describe("board and confirmation copy", () => {
       photoBonus: 0,
       total: 30,
     });
-    expect(routine).toBe("✅ A2 · Michael +12 · 30");
-    expect(routine.split("\n")).toHaveLength(1);
+    expect(routine).toBe("✅ A2 · Michael\n+12 task pts\n🏆 Total score: 30 pts");
     expect(
       claimConfirmedLine({
         code: "A3",
@@ -574,16 +567,15 @@ describe("board and confirmation copy", () => {
         base: 12,
         photoBonus: 0,
         total: 42,
-        invitePhoto: true,
         boardCleared: true,
       }),
-    ).toBe("✅ A3 · Michael +12 · 42 · that's your whole board cleared 🔥 new tasks coming by dm.");
+    ).toBe("✅ A3 · Michael\n+12 task pts\n🏆 Total score: 42 pts\nThat's your whole board cleared 🔥");
   });
 
   it("names open codes in refusals, never generic encouragement", () => {
     expect(nextStepClause(["A2"])).toBe("A2 is still open btw.");
     expect(nextStepClause(["A2", "A3"])).toBe("still open: A2, A3.");
-    expect(nextStepClause([])).toBe("next board lands in the morning, hang tight.");
+    expect(nextStepClause([])).toBe("say “japlan show” whenever you want another round.");
     expect(notYourTaskLine("A5", nextStepClause(["A1", "A3"]))).toBe(
       "A5 isn't on your board bestie. still open: A1, A3.",
     );
@@ -613,17 +605,14 @@ describe("late photo bonus window", () => {
     created_at: "2026-09-19T11:00:00Z",
   };
 
-  it("awards base points and invites a photo on a bonus task", () => {
-    expect(
-      claimConfirmedLine({
-        code: "A1",
-        name: "Michael",
-        base: 12,
-        photoBonus: 0,
-        total: 12,
-        invitePhoto: true,
-      }),
-    ).toContain("photo for bonus points? 👀");
+  it("keeps the award confirmation focused on points without a follow-up photo prompt", () => {
+    expect(claimConfirmedLine({
+      code: "A1",
+      name: "Michael",
+      base: 12,
+      photoBonus: 0,
+      total: 12,
+    })).not.toContain("photo for bonus points?");
     expect(clampPhotoBonus(5, 3)).toBe(3);
   });
 

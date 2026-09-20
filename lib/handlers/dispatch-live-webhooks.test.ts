@@ -56,7 +56,7 @@ describe("dispatch live webhook events", () => {
 
     await dispatchLinqEvent({ event_id: eventId, event_type: "poll.vote.added", data });
 
-    expect(h.pollVote).toHaveBeenCalledWith("added", data);
+    expect(h.pollVote).toHaveBeenCalledWith("poll.vote.added", data);
     expect(h.db.table("events")[0].processed_at).toEqual(expect.any(String));
   });
 
