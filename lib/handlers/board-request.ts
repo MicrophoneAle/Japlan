@@ -3,7 +3,6 @@ import { cityFor, isMultiCity, isTravelDate, todayFor } from "@/lib/game/legs";
 import type { TaskRow, TripRow } from "@/lib/db/types";
 import { formatPersonalBoard } from "@/lib/game/board";
 import {
-  boardDueNow,
   dateForTripDay,
   currentBoardPeriod,
   nextBoardPeriod,

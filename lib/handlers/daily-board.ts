@@ -86,18 +86,13 @@ import { randomFireTimes } from "@/lib/game/sidequests";
 import { TRIP_COLS } from "@/lib/db/columns";
 import { missingRequiredSetup, type SetupFields } from "@/lib/game/setup";
 import { recordTasksChanged } from "./stats";
-import { boardDueNow, dateForTripDay, tripDayForDate } from "@/lib/game/board-schedule";
+import { boardDueNow, boardPeriodForDate, dateForTripDay, tripDayForDate, type BoardPeriod } from "@/lib/game/board-schedule";
 import { cityFor, isMultiCity, isTravelDate, legForDate, todayFor, zoneFor, zoneNow } from "@/lib/game/legs";
 import { dayMultiplierFor, loadMultiplierDays, refreshTripMultipliers } from "@/lib/handlers/holidays";
 import { resolveQueuedLinks } from "@/lib/handlers/social-links";
 import { suggestShowOnce } from "@/lib/handlers/show-suggestion";
 import { multiplierHeaderPart, multiplierDayAnnouncement } from "@/lib/game/copy";
 import { multiplierLabel, taskMultiplierFor, type TaskMultiplier } from "@/lib/game/multipliers";
-import {
-  boardPeriodForDate,
-  type BoardPeriod,
-  tripDayForDate,
-} from "@/lib/game/board-schedule";
 import { remindOpenGroupDecisions } from "@/lib/handlers/group-decisions";
 
 // When a travel day's board starts: late afternoon, once they have arrived and
