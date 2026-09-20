@@ -51,6 +51,7 @@ import { teamsWithMembers } from "@/lib/handlers/teams";
 import { lookupOwnProfile } from "@/lib/handlers/profiles";
 import { otherPersonAskedAbout } from "@/lib/game/profile";
 import { searchTheWeb } from "@/lib/handlers/web-search";
+import { getOnDemandLocationContext } from "@/lib/handlers/live-location";
 import type { LLMProvider, ToolContent, ToolTurn } from "@/lib/llm";
 import { GeminiProvider } from "@/lib/llm/gemini";
 import { react, sendDM, sendText } from "@/lib/linq/send";
@@ -80,6 +81,12 @@ export const CONVERSATION_TOOL_DEFS = [
     name: "get_open_tasks",
     description:
       "List existing open tasks. Never invent a task that is not in this list.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "get_live_nearby_options",
+    description:
+      "Use only when the group explicitly asks what to do right now, where everyone is, or for nearby options. Fetches fresh locations only from participants who consented, then returns names with approximate areas and nearby places. Never use for a general itinerary or in a private DM.",
     parameters: { type: "object", properties: {}, additionalProperties: false },
   },
   {
@@ -633,6 +640,30 @@ async function executeConversationTool(
     // lands instead of guessing.
     const board = boardInfo(miss, miss.now ?? Date.now());
     return { result: { tasks, board }, sent: false };
+  }
+  if (name === "get_live_nearby_options") {
+    if (miss.isDm) {
+      return {
+        result: {
+          status: "group_only",
+          note: "Ask for live nearby options in the trip group so Japlan can respect each person's consent.",
+        },
+        sent: false,
+      };
+    }
+    if (!/\b(?:what (?:should|can|could) we do (?:right now|now|nearby)|what(?:'s| is) (?:nearby|near us|near here|the move)|where (?:are we|is everyone|are people)|anything (?:good )?nearby|nearby (?:options|ideas|places)|live location|japlan nearby)\b/i.test(miss.text)) {
+      return {
+        result: { status: "not_requested", note: "Only read live locations after an explicit right-now or nearby request in the trip group." },
+        sent: false,
+      };
+    }
+    return {
+      result: await getOnDemandLocationContext({
+        trip: miss.trip,
+        now: new Date(miss.now ?? Date.now()),
+      }),
+      sent: false,
+    };
   }
   if (name === "no_action") {
     return { result: { ok: true }, sent: false };

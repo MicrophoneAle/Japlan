@@ -62,9 +62,10 @@ export const SCHEMA_CONTRACT: TableColumns = {
   ],
   sidequests: ["id", "trip_id", "day", "local_date", "template_id", "title", "points", "photo_bonus_max", "trigger", "status", "won_by", "won_at", "created_at"],
   sidequest_offers: ["id", "sidequest_id", "trip_id", "participant_id", "status", "queued_at", "fired_at", "expires_at", "resolved_at", "awarded_points", "photo_bonus", "created_at"],
-  group_decisions: ["id", "trip_id", "prompt", "status", "created_by", "selected_option", "created_at", "closed_at", "last_reminded_at"],
-  group_decision_options: ["id", "decision_id", "option_index", "label", "message_id"],
+  group_decisions: ["id", "trip_id", "prompt", "status", "created_by", "selected_option", "poll_message_id", "voting_mode", "created_at", "closed_at", "last_reminded_at"],
+  group_decision_options: ["id", "decision_id", "option_index", "label", "message_id", "poll_option_id"],
   group_decision_votes: ["id", "decision_id", "participant_id", "option_index", "created_at", "updated_at"],
+  trip_location_shares: ["trip_id", "participant_id", "direct_chat_id", "share_status", "expires_at"],
   multiplier_days: ["id", "trip_id", "local_date", "multiplier", "label", "source", "leg_id", "created_at"],
   social_links: [
     "id", "trip_id", "participant_id", "chat_id", "url", "kind", "status", "attempts",

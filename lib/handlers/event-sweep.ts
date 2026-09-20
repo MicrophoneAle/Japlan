@@ -1,10 +1,9 @@
 import { getServiceClient } from "@/lib/db/client";
 import { dispatchLinqEvent } from "./dispatch";
 
-// Inbound messages whose dispatch never finished (the isolate was killed: a
-// deploy, a timeout, the known Supabase hang) sit in events with no
-// processed_at, and nothing looked at them again: two addressed messages on
-// 2026-09-19 were simply never answered. Now:
+// Retryable webhook events whose dispatch never finished (the isolate was
+// killed: a deploy, a timeout, or a provider/database outage) sit in events
+// with no processed_at. Now:
 //  - 2 to 30 minutes old: dispatched again, once.
 //  - older: logged as dropped, once. A reply hours late is worse than none,
 //    but the drop is visible in the logs.
@@ -16,6 +15,13 @@ export const RETRY_AFTER_MS = 2 * 60 * 1000;
 export const RETRY_WITHIN_MS = 30 * 60 * 1000;
 const SWEEP_EVERY_MS = 60 * 1000;
 let lastSweepAt = 0;
+const RETRYABLE_EVENT_TYPES = [
+  "message.received",
+  "poll.vote.added",
+  "poll.vote.removed",
+  "location.sharing.started",
+  "location.sharing.stopped",
+];
 
 type Stalled = { id: string; linq_event_id: string; created_at: string; payload: Record<string, unknown> };
 
@@ -26,7 +32,7 @@ export async function sweepStalledEvents(opts: { now?: number; force?: boolean }
   const { data, error } = await getServiceClient()
     .from("events")
     .select("id, linq_event_id, created_at, payload")
-    .eq("type", "message.received")
+    .in("type", RETRYABLE_EVENT_TYPES)
     .is("processed_at", null)
     .is("retried_at", null)
     .lt("created_at", new Date(now - RETRY_AFTER_MS).toISOString())
