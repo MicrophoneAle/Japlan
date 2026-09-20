@@ -9,10 +9,35 @@ export const CandidateActivitySchema = z.object({
 });
 export type CandidateActivity = z.infer<typeof CandidateActivitySchema>;
 
-export const ResearchActionSchema = z.object({ at: z.string(), type: z.enum(["search", "visit", "extract", "error"]), detail: z.string(), url: z.string().url().nullable() });
+export const ResearchActionSchema = z.object({
+  at: z.string(),
+  type: z.enum(["search", "visit", "extract", "error", "tool"]),
+  detail: z.string(),
+  url: z.string().url().nullable(),
+  // Agent-loop fields (optional so legacy mock/deep logs still parse).
+  iteration: z.number().int().nonnegative().optional(),
+  tool: z.string().optional(),
+  args: z.record(z.string(), z.unknown()).optional(),
+  durationMs: z.number().nonnegative().optional(),
+  candidateCount: z.number().int().nonnegative().optional(),
+  cached: z.boolean().optional(),
+  browserbaseInvoked: z.boolean().optional(),
+});
 export type ResearchAction = z.infer<typeof ResearchActionSchema>;
 
-export const ResearchSnapshotSchema = z.object({ mode: z.enum(["real", "mock"]), status: z.enum(["researching", "researched", "failed"]), sessionId: z.string().nullable(), dashboardUrl: z.string().url().nullable(), visitedUrls: z.array(z.string().url()), actions: z.array(ResearchActionSchema), candidates: z.array(CandidateActivitySchema), error: z.string().nullable() });
+export const ResearchSnapshotSchema = z.object({
+  mode: z.enum(["real", "mock"]),
+  status: z.enum(["researching", "researched", "failed"]),
+  sessionId: z.string().nullable(),
+  dashboardUrl: z.string().url().nullable(),
+  visitedUrls: z.array(z.string().url()),
+  actions: z.array(ResearchActionSchema),
+  candidates: z.array(CandidateActivitySchema),
+  error: z.string().nullable(),
+  browserbaseInvoked: z.boolean().optional(),
+  selectedCandidateIds: z.array(z.string()).optional(),
+  agentSummary: z.string().nullable().optional(),
+});
 export type ResearchSnapshot = z.infer<typeof ResearchSnapshotSchema>;
 
 export const ItinerarySelectionSchema = z.object({ candidateActivityId: z.string(), startTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/), endTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/), notes: z.string().max(500) });

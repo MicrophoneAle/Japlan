@@ -24,6 +24,18 @@ export function setupCompleteLine(mode?: string | null): string {
   return intro;
 }
 
+// A link to the live trip dashboard (/live/[tripId]): standings, active
+// quests and proof, updating as the trip happens. Same "the recap: ..."
+// pattern as finalStandingsLine's Wrapped link.
+export function liveDashboardLine(url: string): string {
+  return `watch it live: ${url}`;
+}
+
+// liveUrlFor has no APP_URL / Vercel production URL to build from (local dev,
+// or a misconfigured deploy). Real, not a refusal: the dashboard exists, the
+// link just cannot be built right now.
+export const DASHBOARD_UNAVAILABLE_LINE = "no live link for this yet, my bad.";
+
 export const SURVEY_DONE_DM = "saved 🔒 your private preference survey is complete.";
 
 export function surveyReaskLine(options: string[]): string {

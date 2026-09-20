@@ -27,8 +27,9 @@ import {
   setupReadyToActivate,
   type SetupFields,
 } from "@/lib/game/setup";
-import { setupCompleteLine, setupPrompt, surveyLaunchGroupLine } from "@/lib/game/copy";
+import { setupCompleteLine, setupPrompt, surveyLaunchGroupLine, liveDashboardLine } from "@/lib/game/copy";
 import { formTeamsForTrip, teamsAnnouncement } from "@/lib/handlers/teams";
+import { liveUrlFor } from "@/lib/urls";
 
 import { TRIP_COLS } from "@/lib/db/columns";
 import { LEG_COLS } from "./legs";
@@ -457,6 +458,9 @@ export async function maybeActivateTrip(
     const announcement = teamsAnnouncement(teams);
     if (announcement) line = `${line}\n\n${announcement}`;
   }
+
+  const liveUrl = liveUrlFor(trip.id);
+  if (liveUrl) line = `${line}\n\n${liveDashboardLine(liveUrl)}`;
 
   // Claim the transition before sending anything. Concurrent final survey
   // replies can both reach this function; only one may announce activation

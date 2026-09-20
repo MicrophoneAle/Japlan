@@ -108,6 +108,25 @@ export function isStandingsRequest(
   return STANDINGS_RE.test(body);
 }
 
+// "dashboard", "live board", "the live link", with the same filler prefixes
+// as isStandingsRequest. A bare-command match: "live" alone counts, but
+// "live it up tonight" must not.
+const DASHBOARD_WORDS = "(?:dashboard|live\\s*board|live\\s*link|live\\s*dashboard|live)";
+const DASHBOARD_RE = new RegExp(
+  `^(?:(?:what'?s|whats|show me|send|give me|check|see|open|pull up)\\s+)*(?:the\\s+)?${DASHBOARD_WORDS}[?.!]*$`,
+  "i",
+);
+
+export function isDashboardRequest(
+  text: string,
+  keyword: string = defaultWakeKeyword(),
+): boolean {
+  const body = stripWakeKeyword(text, keyword)
+    .replace(/^[,:\-\s]+/, "")
+    .trim();
+  return DASHBOARD_RE.test(body);
+}
+
 // Lifecycle commands always need the keyword, in groups and DMs alike, so
 // "end trip" in ordinary chat or a survey answer can never end a trip.
 export function detectTripCommand(
