@@ -20,6 +20,8 @@ type GroupDecision = {
   created_at: string;
   closed_at: string | null;
   last_reminded_at: string | null;
+  poll_message_id?: string | null;
+  voting_mode?: "reactions" | "native_poll";
 };
 
 type DecisionOption = {
@@ -58,7 +60,7 @@ function parseDecisionCommand(text: string): DecisionCommand | null {
 
   if (/^vote\s+\d+$/i.test(body)) return { kind: "text_vote" };
   if (/^vote\s+(?:status|results?|tally)$/i.test(body)) return { kind: "status" };
-  const close = body.match(/^close\s+vote(?:\s+(\d+))?$/i);
+  const close = body.match(/^close\s+(?:vote|poll)(?:\s+(\d+))?$/i);
   if (close) return { kind: "close", option: close[1] ? Number(close[1]) : null };
   if (/^(?:remind|remind people|remind everyone)\s+vote$/i.test(body)) return { kind: "remind" };
   return null;
@@ -73,7 +75,11 @@ function tallyLine(counts: number[], options: DecisionOption[]): string {
 }
 
 function sameVoterHandle(a: string, b: string): boolean {
-  const normalized = (value: string) => value.replace(/\D/g, "") || value.trim().toLowerCase();
+  const normalized = (value: string) => {
+    const trimmed = value.trim();
+    if (trimmed.includes("@")) return trimmed.toLowerCase();
+    return trimmed.replace(/\D/g, "") || trimmed.toLowerCase();
+  };
   return normalized(a) === normalized(b);
 }
 
@@ -97,7 +103,7 @@ function votesFromRoster(people: ParticipantRow[], votes: DecisionVote[]): Decis
 async function openDecision(tripId: string): Promise<GroupDecision | null> {
   const { data, error } = await getServiceClient()
     .from("group_decisions")
-    .select("id, trip_id, prompt, status, created_by, selected_option, created_at, closed_at, last_reminded_at")
+    .select("id, trip_id, prompt, status, created_by, selected_option, created_at, closed_at, last_reminded_at, poll_message_id, voting_mode")
     .eq("trip_id", tripId)
     .eq("status", "open")
     .maybeSingle();
@@ -108,7 +114,7 @@ async function openDecision(tripId: string): Promise<GroupDecision | null> {
 async function optionsFor(decisionId: string): Promise<DecisionOption[]> {
   const { data, error } = await getServiceClient()
     .from("group_decision_options")
-    .select("id, decision_id, option_index, label, message_id")
+    .select("id, decision_id, option_index, label, message_id, poll_option_id")
     .eq("decision_id", decisionId)
     .order("option_index");
   if (error) throw error;
@@ -192,8 +198,75 @@ function commandHelpLine(): string {
   return [
     "try: japlan decide dinner | ramen | sushi",
     "on iMessage, select every poll option you’d be happy with. if polls aren’t supported, tap ❤️ or 👍 on an option message; reaction votes are one choice. silence abstains.",
-    "the organizer can send “japlan remind vote” or “japlan close vote 2”. without a number, close picks a clear leader and leaves ties open.",
+    "the organizer can send “japlan remind vote” or “japlan close poll 2” (also “close vote 2”). without a number, close picks a clear leader and leaves ties open.",
   ].join("\n");
+}
+
+async function currentDecisionVotes(
+  decision: GroupDecision,
+  people: ParticipantRow[],
+  options: DecisionOption[],
+): Promise<DecisionVote[] | null> {
+  if (decision.voting_mode !== "native_poll" || !decision.poll_message_id) {
+    return votesFromRoster(people, await votesFor(decision.id));
+  }
+
+  try {
+    // Webhooks keep the local tally fresh, while this snapshot repairs missed or
+    // delayed deliveries before we show results or make the final call.
+    const snapshot = await getLinqClient().messages.poll.retrieve(decision.poll_message_id);
+    const optionByPollId = new Map(
+      options.filter((option) => option.poll_option_id).map((option) => [option.poll_option_id!, option]),
+    );
+    const expected = new Map<string, DecisionVote>();
+    for (const pollOption of snapshot.poll.options) {
+      const option = optionByPollId.get(pollOption.option_id);
+      if (!option) continue;
+      for (const voter of pollOption.voters) {
+        const person = people.find((candidate) => sameVoterHandle(candidate.phone, voter.handle));
+        if (!person) continue;
+        expected.set(`${person.id}:${option.option_index}`, {
+          participant_id: person.id,
+          option_index: option.option_index,
+        });
+      }
+    }
+
+    const existing = votesFromRoster(people, await votesFor(decision.id));
+    const expectedVotes = [...expected.values()];
+    const existingKeys = new Set(existing.map((vote) => `${vote.participant_id}:${vote.option_index}`));
+    const expectedKeys = new Set(expected.keys());
+    const missing = expectedVotes.filter((vote) => !existingKeys.has(`${vote.participant_id}:${vote.option_index}`));
+    if (missing.length > 0) {
+      const { error } = await getServiceClient().from("group_decision_votes").upsert(
+        missing.map((vote) => ({
+          decision_id: decision.id,
+          participant_id: vote.participant_id,
+          option_index: vote.option_index,
+          updated_at: new Date().toISOString(),
+        })),
+        { onConflict: "decision_id,participant_id,option_index" },
+      );
+      if (error) throw error;
+    }
+    for (const vote of existing) {
+      if (expectedKeys.has(`${vote.participant_id}:${vote.option_index}`)) continue;
+      const { error } = await getServiceClient()
+        .from("group_decision_votes")
+        .delete()
+        .eq("decision_id", decision.id)
+        .eq("participant_id", vote.participant_id)
+        .eq("option_index", vote.option_index);
+      if (error) throw error;
+    }
+    return expectedVotes;
+  } catch (error) {
+    console.error("[japlan.group_decision] poll_refresh_failed", {
+      decisionId: decision.id,
+      error,
+    });
+    return null;
+  }
 }
 
 async function createDecision(opts: {
@@ -367,8 +440,12 @@ async function sendVoteStatus(opts: {
   decision: GroupDecision;
   chatId: string;
 }): Promise<void> {
-  const [options, rawVotes] = await Promise.all([optionsFor(opts.decision.id), votesFor(opts.decision.id)]);
-  const votes = votesFromRoster(opts.people, rawVotes);
+  const options = await optionsFor(opts.decision.id);
+  const votes = await currentDecisionVotes(opts.decision, opts.people, options);
+  if (!votes) {
+    await sendText(opts.chatId, "i couldn't refresh the iMessage poll results just now. try “japlan vote status” again in a moment.");
+    return;
+  }
   const waiting = pendingNames(opts.people, votes);
   const lines = [`🗳️ ${opts.decision.prompt}`, tallyLine(tally(votes, options), options)];
   lines.push(waiting.length > 0 ? `⏳ not voted yet: ${waiting.join(", ")}` : "✅ everyone has voted");
@@ -381,11 +458,15 @@ async function remindDecision(opts: {
   decision: GroupDecision;
   chatId: string;
 }): Promise<void> {
-  const rawVotes = await votesFor(opts.decision.id);
-  const votes = votesFromRoster(opts.people, rawVotes);
+  const options = await optionsFor(opts.decision.id);
+  const votes = await currentDecisionVotes(opts.decision, opts.people, options);
+  if (!votes) {
+    await sendText(opts.chatId, "i couldn't refresh the iMessage poll results just now. try again in a moment.");
+    return;
+  }
   const waiting = pendingNames(opts.people, votes);
   if (waiting.length === 0) {
-    await sendText(opts.chatId, `✅ everyone's weighed in on “${opts.decision.prompt}”. organizer can close it with “japlan close vote”.`);
+    await sendText(opts.chatId, `✅ everyone's weighed in on “${opts.decision.prompt}”. organizer can close it with “japlan close poll”.`);
     return;
   }
   await sendText(opts.chatId, `⏳ quick nudge on “${opts.decision.prompt}”: not voted yet: ${waiting.join(", ")}. vote in the poll (or tap ❤️/👍 on an option if polls aren’t supported); silence counts as abstaining.`);
@@ -410,8 +491,12 @@ async function closeDecision(opts: {
     await sendText(opts.chatId, refusal);
     return;
   }
-  const [options, rawVotes] = await Promise.all([optionsFor(opts.decision.id), votesFor(opts.decision.id)]);
-  const votes = votesFromRoster(opts.people, rawVotes);
+  const options = await optionsFor(opts.decision.id);
+  const votes = await currentDecisionVotes(opts.decision, opts.people, options);
+  if (!votes) {
+    await sendText(opts.chatId, "i couldn't refresh the iMessage poll results, so i left the vote open. try “japlan close poll” again in a moment.");
+    return;
+  }
   let selected: number;
   if (opts.requestedOption !== null) {
     if (!options.some((option) => option.option_index === opts.requestedOption)) {
@@ -424,7 +509,7 @@ async function closeDecision(opts: {
     const high = Math.max(0, ...counts);
     const leaders = options.filter((_, index) => counts[index] === high);
     if (high === 0 || leaders.length !== 1) {
-      await sendText(opts.chatId, `this one's tied (or nobody voted):\n${tallyLine(counts, options)}\n👑 as organizer, pick the final call with “japlan close vote 1”.`);
+      await sendText(opts.chatId, `this one's tied (or nobody voted):\n${tallyLine(counts, options)}\n👑 as organizer, pick the final call with “japlan close poll 1”.`);
       return;
     }
     selected = leaders[0].option_index;
@@ -592,7 +677,7 @@ export async function handleGroupDecisionReaction(
 export async function remindOpenGroupDecisions(trip: TripRow, now: Date): Promise<void> {
   const { data, error } = await getServiceClient()
     .from("group_decisions")
-    .select("id, trip_id, prompt, status, created_by, selected_option, created_at, closed_at, last_reminded_at")
+    .select("id, trip_id, prompt, status, created_by, selected_option, created_at, closed_at, last_reminded_at, poll_message_id, voting_mode")
     .eq("trip_id", trip.id)
     .eq("status", "open");
   if (error) throw error;
@@ -602,7 +687,9 @@ export async function remindOpenGroupDecisions(trip: TripRow, now: Date): Promis
     const remindedAt = decision.last_reminded_at ? Date.parse(decision.last_reminded_at) : null;
     if (!Number.isFinite(createdAt) || now.getTime() - createdAt < 12 * 60 * 60 * 1000) continue;
     if (remindedAt !== null && now.getTime() - remindedAt < 24 * 60 * 60 * 1000) continue;
-    const votes = votesFromRoster(people, await votesFor(decision.id));
+    const options = await optionsFor(decision.id);
+    const votes = await currentDecisionVotes(decision, people, options);
+    if (!votes) continue;
     const waiting = pendingNames(people, votes);
     if (waiting.length === 0) continue;
     await sendText(trip.linq_chat_id, `⏳ quick nudge on “${decision.prompt}”: not voted yet: ${waiting.join(", ")}. vote in the poll (or tap ❤️/👍 on an option if polls aren’t supported); silence counts as abstaining.`);

@@ -546,9 +546,8 @@ export async function dispatchLinqEvent(envelope: LinqEnvelope): Promise<void> {
       if (!isRecord(envelope.data)) {
         dispatchIdle("poll_vote_not_a_record");
       } else {
-        const action = envelope.event_type === "poll.vote.added" ? "added" : "removed";
         await dispatchAwait("group_decision_poll_vote", { eventType: envelope.event_type }, () =>
-          handleGroupDecisionPollVote(action, envelope.data as Record<string, unknown>),
+          handleGroupDecisionPollVote(envelope.event_type!, envelope.data as Record<string, unknown>),
         );
       }
     } else if (

@@ -548,7 +548,7 @@ export const HELP_TEXT = {
 · individual / teams: your board lands in your dm; full-group boards appear here. send the code where it landed; add a photo or ask for 👍 validation.
 🗳️ group choices
 · organizer: “japlan decide dinner | ramen | sushi” opens an iMessage poll. select every option you'd accept; organizer makes the final call.
-· “japlan vote status” shows the tally; organizer can “japlan remind vote” or “japlan close vote 2”. unsupported chats use reactions.
+· “japlan vote status” refreshes the tally; organizer can “japlan remind vote” or “japlan close poll 2” (“close vote” also works). unsupported chats use reactions.
 📍 organizer: “japlan share locations” sends optional private apple prompts. ask “what should we do right now?” for nearby ideas; the group sees approximate areas only.
 🧭 trip and preferences
 · organizer: “japlan setup” changes shared settings. “japlan survey status” shows who has finished; answers stay private.
