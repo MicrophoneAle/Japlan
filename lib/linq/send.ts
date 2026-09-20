@@ -1,7 +1,7 @@
 import { recordMessage } from "@/lib/chat/transcript";
 import { getLinqClient } from "./client";
 
-export type OutboundOp = "sendText" | "sendTyping" | "markRead" | "sendDM" | "react";
+export type OutboundOp = "sendText" | "sendTyping" | "markRead" | "sendDM" | "react" | "shareContactCard";
 
 // The 6 standard iMessage tapbacks (Shared.ReactionType minus "custom"/"sticker").
 export type Tapback = "love" | "like" | "dislike" | "laugh" | "emphasize" | "question";
@@ -135,6 +135,24 @@ export async function sendDM(phone: string, text: string): Promise<SentText> {
   });
   await recordMessage({ chatId: sent.chatId, role: "bot", text });
   return sent;
+}
+
+// Push the Name & Photo registered for LINQ_FROM_NUMBER (one-time setup:
+// scripts/setup-contact-card.ts) into a chat, so it shows "Japlan" and the
+// logo instead of a bare number. Fire-and-forget by design, same reasoning as
+// react(): a share failing must never block or fail the message it rides
+// along after, so callers do not need their own try/catch.
+export async function shareContactCardSafely(chatId: string): Promise<void> {
+  try {
+    await outbound({ op: "shareContactCard", chatId }, () =>
+      getLinqClient().chats.shareContactCard(chatId),
+    );
+  } catch (err) {
+    console.error("[linq.outbound] shareContactCard failed", {
+      chatId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 // Tapback a message with a standard iMessage reaction (love/like/dislike/

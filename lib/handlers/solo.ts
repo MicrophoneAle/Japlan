@@ -5,7 +5,7 @@ import {
   soloParticipantCount,
 } from "@/lib/game/solo";
 import { startSurvey } from "@/lib/game/survey";
-import { sendText } from "@/lib/linq/send";
+import { sendText, shareContactCardSafely } from "@/lib/linq/send";
 import {
   findParticipantOnTrip,
   getTripByChatId,
@@ -163,6 +163,11 @@ export async function bootstrapSoloIfNeeded(opts: {
   });
 
   if (trip.state === "active") return trip;
+
+  // Still bootstrapping: this chat is early enough that it's worth pushing
+  // the Name & Photo again (safe to call more than once, per the Contact
+  // Card API's own guidance).
+  await shareContactCardSafely(opts.chatId);
 
   // The solo participant is the organizer: trip setup first, survey after.
   const organized = await ensureSoloOrganizer(trip, participant);

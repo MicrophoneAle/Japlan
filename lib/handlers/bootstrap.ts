@@ -20,7 +20,7 @@ import {
   membersFromChatJson,
   type HandleLike,
 } from "@/lib/linq/payload";
-import { sendDM, sendText } from "@/lib/linq/send";
+import { sendDM, sendText, shareContactCardSafely } from "@/lib/linq/send";
 import {
   isSetupQuestion,
   missingRequiredSetup,
@@ -257,8 +257,9 @@ async function startSurveyDm(participant: ParticipantRow): Promise<boolean> {
   }
 
   try {
-    await sendDM(participant.phone, prompt);
+    const dm = await sendDM(participant.phone, prompt);
     logStep("sendDM", { phone: participant.phone, ok: true });
+    await shareContactCardSafely(dm.chatId);
   } catch (err) {
     logError("sendDM", err, { phone: participant.phone, ok: false });
     return false;
@@ -285,8 +286,9 @@ async function startSetupDm(
   const first = trip.setup_state === "destination" && !trip.destination;
   const prompt = setupPrompt(trip.setup_state, null, { first });
   try {
-    await sendDM(organizer.phone, prompt);
+    const dm = await sendDM(organizer.phone, prompt);
     logStep("sendDM.setup", { phone: organizer.phone, ok: true, question: trip.setup_state });
+    await shareContactCardSafely(dm.chatId);
     return true;
   } catch (err) {
     logError("sendDM.setup", err, { phone: organizer.phone, ok: false });
@@ -568,6 +570,7 @@ export async function bootstrapGroupIfNeeded(
       try {
         await sendText(trip.linq_chat_id, buildIntroGroupPost(publicTrip));
         logStep("intro.send", { chatId, ok: true });
+        await shareContactCardSafely(trip.linq_chat_id);
       } catch (err) {
         logError("intro.send", err, { chatId, ok: false });
         const { error: releaseErr } = await getServiceClient()

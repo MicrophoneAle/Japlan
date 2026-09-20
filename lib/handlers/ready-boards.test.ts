@@ -32,6 +32,7 @@ vi.mock("@/lib/linq/send", () => ({
   markRead: vi.fn(async () => {}),
   sendTyping: vi.fn(async () => {}),
   react: vi.fn(async () => {}),
+  shareContactCardSafely: vi.fn(async () => {}),
 }));
 vi.mock("@/lib/places/foursquare", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/places/foursquare")>()),
