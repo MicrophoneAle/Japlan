@@ -87,6 +87,9 @@ export function formatDailyBoard(opts: {
   tasks: BoardTask[];
   standings: BoardStanding[];
   weatherLine?: string | null;
+  // "⚡ golden week, everything's 2x": rides in the header next to the
+  // weather, so it changes what people do and not only what they score.
+  multiplierPart?: string | null;
 }): string {
   const tasks = boardOrder(opts.tasks);
   const standings = [...opts.standings].sort((a, b) => {
@@ -95,7 +98,7 @@ export function formatDailyBoard(opts: {
   });
 
   const lines = [
-    dailyBoardHeader(opts.day, opts.weatherLine, routeOf(tasks)),
+    dailyBoardHeader(opts.day, opts.weatherLine, routeOf(tasks), opts.multiplierPart),
     "",
     ...taskSections(tasks),
     "",
@@ -112,11 +115,12 @@ export function formatPersonalBoard(opts: {
   weatherLine?: string | null;
   // Places the group asked for, on this day's route.
   anchors?: BoardAnchorItem[];
+  multiplierPart?: string | null;
 }): string {
   const tasks = boardOrder(opts.tasks);
   // Anchors sit in their time of day, after that slot's tasks.
   return [
-    dailyBoardHeader(opts.day, opts.weatherLine, routeOf(tasks)),
+    dailyBoardHeader(opts.day, opts.weatherLine, routeOf(tasks), opts.multiplierPart),
     "",
     ...taskSections(tasks, opts.anchors),
   ].join("\n");
@@ -126,12 +130,15 @@ export function formatMorningStandings(opts: {
   day: number;
   standings: BoardStanding[];
   weatherLine?: string | null;
+  multiplierPart?: string | null;
 }): string {
   const standings = [...opts.standings].sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
     return a.display_name.localeCompare(b.display_name);
   });
-  return [dailyBoardHeader(opts.day, opts.weatherLine), "", standingsLine(standings)].join(
-    "\n",
-  );
+  return [
+    dailyBoardHeader(opts.day, opts.weatherLine, null, opts.multiplierPart),
+    "",
+    standingsLine(standings),
+  ].join("\n");
 }

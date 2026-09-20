@@ -2,6 +2,7 @@ import { after } from "next/server";
 import { getServiceClient } from "@/lib/db/client";
 import { dispatchLinqEvent } from "@/lib/handlers/dispatch";
 import { sweepStalledEvents } from "@/lib/handlers/event-sweep";
+import { verifySchemaOnce } from "@/lib/db/schema-check";
 import { captureInboundWebhook } from "@/lib/linq/capture";
 import { inspectLinqSignature } from "@/lib/linq/verify";
 
@@ -132,6 +133,9 @@ export async function POST(request: Request): Promise<Response> {
       // After this event is handled: re-dispatch any recent message whose
       // dispatch never finished, and log older ones as dropped. At most once
       // a minute per instance.
+      // First request after a deploy: does the live database have the columns
+      // this build selects? Logs loudly if not; never blocks the 200.
+      .then(() => verifySchemaOnce())
       .then(() => sweepStalledEvents())
       .catch((err: unknown) => console.error("[japlan.webhook] sweep failed", err));
   });

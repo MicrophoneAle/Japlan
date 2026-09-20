@@ -472,6 +472,79 @@ export async function extractTripDates(opts: {
   return start && end ? { start, end } : null;
 }
 
+export const FESTIVALS_SCHEMA = {
+  type: "object",
+  properties: {
+    days: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          date: { type: "string" },
+          name: { type: "string" },
+        },
+        required: ["date", "name"],
+      },
+    },
+  },
+  required: ["days"],
+};
+
+export type ExtractedFestival = { date: string; name: string };
+
+// Local festivals and city events off a fetched page: a neighbourhood matsuri,
+// a street festival, a parade. National holidays do NOT come from here, they
+// come from Nager.Date (lib/holidays/nager.ts); this is only the tier no
+// holiday API carries. The page comes from Browserbase (lib/handlers/
+// holidays.ts); this only reads it. Everything here is a proposal:
+// validSpecialDays in lib/game/multipliers.ts drops anything that does not
+// parse or falls outside the trip, so a bad page cannot award 40x.
+export async function extractLocalFestivals(opts: {
+  provider?: LLMProvider;
+  pageText: string;
+  destination: string;
+  start: string;
+  end: string;
+}): Promise<ExtractedFestival[]> {
+  const provider = opts.provider ?? new GeminiProvider();
+  const raw = await withTimeout(
+    provider.complete({
+      system: [
+        "Read the page and list local festivals and city events for the given destination that fall inside the date range.",
+        "Wanted: neighbourhood festivals, matsuri, street fairs, parades, fireworks nights, big one-off city events.",
+        "Not wanted: national public holidays, anything that is only a shop sale, and anything with no date.",
+        "For an event running several days, list one entry per date it covers, each with the same name.",
+        "date is ISO YYYY-MM-DD. Only dates inside the range. If the page shows none, days is an empty array.",
+        "Do not invent events that are not on the page. JSON only.",
+      ].join(" "),
+      messages: [
+        {
+          role: "user",
+          content: `destination: ${opts.destination}
+range: ${opts.start} to ${opts.end}
+page:
+${opts.pageText}`,
+        },
+      ],
+      schema: FESTIVALS_SCHEMA,
+      tier: "fast",
+      thinkingBudget: 0,
+    }),
+    SETUP_LLM_TIMEOUT_MS,
+    "gemini.festivals",
+  );
+  const parsed = raw ? parseJsonObject(raw) : null;
+  const days = parsed?.days;
+  if (!Array.isArray(days)) return [];
+  return days.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    const row = entry as Record<string, unknown>;
+    const date = typeof row.date === "string" ? row.date.trim() : "";
+    const name = typeof row.name === "string" ? row.name.trim() : "";
+    return date && name ? [{ date, name }] : [];
+  });
+}
+
 export const PLACE_TIMEZONE_SCHEMA = {
   type: "object",
   properties: {

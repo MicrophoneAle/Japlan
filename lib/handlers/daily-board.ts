@@ -85,7 +85,10 @@ import { pairBySharedInterests } from "@/lib/game/teams";
 import { TRIP_COLS } from "@/lib/db/columns";
 import { missingRequiredSetup, type SetupFields } from "@/lib/game/setup";
 import { recordTasksChanged } from "./stats";
-import { boardDueNow, tripDayForDate } from "@/lib/game/board-schedule";
+import { boardDueNow, dateForTripDay, tripDayForDate } from "@/lib/game/board-schedule";
+import { dayMultiplierFor, loadMultiplierDays, refreshTripMultipliers } from "@/lib/handlers/holidays";
+import { multiplierHeaderPart, multiplierDayAnnouncement } from "@/lib/game/copy";
+import { multiplierLabel, taskMultiplierFor, type TaskMultiplier } from "@/lib/game/multipliers";
 import { remindOpenGroupDecisions } from "@/lib/handlers/group-decisions";
 
 // Matches tasks_owner_code_key: codes are unique per owner per day, not per trip.
@@ -556,6 +559,9 @@ async function planForAssignee(opts: {
   avoid: Record<string, number>;
   suggestions: Suggestion[];
   anchors?: Candidate[];
+  // A holiday or festival changes what is worth doing, not only what it
+  // scores: generation leans into it and is warned about what will be shut.
+  specialDay?: TaskMultiplier | null;
   // "7 attractions": this many tasks, whatever the pace default.
   targetCount?: number | null;
   // Titles already on their board today, so an extension adds new ones.
@@ -647,6 +653,9 @@ async function planForAssignee(opts: {
         interests,
         suggestions: opts.suggestions.map((sg) => ({ name: sg.name, by: sg.by })),
         avoid: avoidList,
+        specialDay: opts.specialDay
+          ? { label: opts.specialDay.label, source: opts.specialDay.source }
+          : null,
       });
     } catch (err) {
       console.error("[japlan.generate] llm failed", { round, assignee: assignee.label, err });
@@ -713,11 +722,22 @@ export function persistableTask(opts: {
   teamId: string | null;
   expiresAt: Date;
   isSolo?: boolean;
+  // What the board promises on a special day. Stored on the row, never folded
+  // into base_points: base_points is the number the board prints and the
+  // number tierForPoints reads, so doubling it would make a medium task read
+  // as challenging. On the row, a claim awards what people were shown even if
+  // the local day rolls over between the board landing and the claim.
+  multiplier?: TaskMultiplier | null;
 }): { row: Omit<TaskRow, "id"> } {
-  const { points, tier } = pointsForBoard(opts.task.axes, {
-    day: opts.day,
-    tripDays: opts.tripDays,
-  });
+  // A special day REPLACES the day-of-trip scaling rather than compounding
+  // with it (lib/game/multipliers.ts takes the higher of the two, never the
+  // product). So on a multiplier day the printed points are the task's own
+  // unscaled worth and the multiplier applies to them, which is what makes
+  // "everything's 2x" true of the number people can actually see.
+  const { points, tier } = pointsForBoard(
+    opts.task.axes,
+    opts.multiplier ? { day: 1, tripDays: null } : { day: opts.day, tripDays: opts.tripDays },
+  );
   const [task] = applySoloVerification([opts.task], Boolean(opts.isSolo));
   const rowTask = task ?? opts.task;
   // Code, not the prompt, bounds the photo bonus. Every clamp is logged with
@@ -754,6 +774,8 @@ export function persistableTask(opts: {
       source: rowTask.source ?? "generated",
       slot: opts.task.slot ?? null,
       duration_minutes: opts.task.minutes ?? null,
+      day_multiplier: opts.multiplier?.value ?? null,
+      multiplier_reason: opts.multiplier?.label ?? null,
     },
   };
 }
@@ -769,6 +791,8 @@ export async function generateValidatedBoard(opts: {
   date?: string;
   // Codes already taken today by tasks that must survive (claimed ones).
   reservedCodes?: ExistingDayCode[];
+  // What this trip-day is worth, if it is a special one.
+  specialDay?: TaskMultiplier | null;
 }): Promise<{
   tasks: ProposedTask[];
   usedFallback: boolean;
@@ -826,6 +850,7 @@ export async function generateValidatedBoard(opts: {
       boardTitles,
       avoid,
       suggestions,
+      specialDay: opts.specialDay,
       anchors: assignee === anchorOwner ? anchorCandidates : [],
     });
     usedFallback ||= planned.usedFallback;
@@ -969,6 +994,9 @@ export type BuiltBoard = {
   weatherLine: string | null;
   usedFallback: boolean;
   people: ParticipantRow[];
+  // What the day is worth, already worked out: callers render the header from
+  // this rather than reading the special days back.
+  specialDay: TaskMultiplier | null;
 };
 
 // THE board pipeline: profile, weather for that date, generation, the
@@ -1004,6 +1032,27 @@ export async function buildBoardForDate(
     });
   }
 
+  const tripDays = tripLengthDays(trip.start_date, trip.end_date);
+  // One lookup for the whole board: what this day is worth, as a factor on the
+  // points each line prints. Weekends need nothing stored, so this answers
+  // even on a trip whose holidays were never looked up.
+  const specialDay = taskMultiplierFor({
+    localDate: opts.date,
+    day,
+    tripDays,
+    days: await loadMultiplierDays(trip.id),
+  });
+  if (specialDay) {
+    console.info("[japlan.generate] special day", {
+      tripId: trip.id,
+      day,
+      date: opts.date,
+      label: specialDay.label,
+      source: specialDay.source,
+      multiplier: specialDay.value,
+    });
+  }
+
   const { tasks, usedFallback, anchors } = await generateValidatedBoard({
     trip,
     people: eligible,
@@ -1012,9 +1061,9 @@ export async function buildBoardForDate(
     now,
     date: opts.date,
     reservedCodes: claimedOnDay,
+    specialDay,
   });
 
-  const tripDays = tripLengthDays(trip.start_date, trip.end_date);
   const expiresAt = endOfLocalDay(opts.date, timezone);
   const generated = tasks.map(
     (task) =>
@@ -1027,6 +1076,7 @@ export async function buildBoardForDate(
         teamId: task.teamId ?? null,
         expiresAt,
         isSolo: Boolean(trip.is_solo),
+        multiplier: specialDay,
       }).row,
   );
   const rows = withoutClaimedCollisions(generated, claimedOnDay, trip.id);
@@ -1055,7 +1105,15 @@ export async function buildBoardForDate(
     count: rows.length,
     usedFallback,
   });
-  return { day, date: opts.date, rows, weatherLine: formatWeatherLine(weather), usedFallback, people };
+  return {
+    day,
+    date: opts.date,
+    rows,
+    weatherLine: formatWeatherLine(weather),
+    usedFallback,
+    people,
+    specialDay,
+  };
 }
 
 // Build today's board and deliver it to everyone. The force=1 path.
@@ -1081,6 +1139,7 @@ export async function runDailyBoardForTrip(
     rows: built.rows,
     day: built.day,
     weatherLine: built.weatherLine,
+    specialDay: built.specialDay,
     lapsed,
   });
   await upsertBoardRow(trip.id, built.day, date, {
@@ -1369,6 +1428,7 @@ async function generateAndDeliver(trip: TripRow, board: BoardRow, date: string, 
       }),
       day: built.day,
       weatherLine: built.weatherLine,
+      specialDay: built.specialDay,
       lapsed,
     });
     await updateBoard(board.id, {
@@ -1496,14 +1556,31 @@ async function deliverMorningBoards(opts: {
   lapsed?: Map<string, string[]>;
   // false: a re-plan mid-day (a split), not a morning: no standings post.
   standings?: boolean;
+  // What the day is worth. Omitted (not null) means look it up.
+  specialDay?: TaskMultiplier | null;
 }): Promise<void> {
   const anchors = await dayAnchorsForBoard(opts.trip, opts.day);
+  // A holiday, a festival, a weekend: it rides in the board
+  // header so it changes the plan and not only the score.
+  const specialDay =
+    opts.specialDay !== undefined
+      ? opts.specialDay
+      : opts.trip.start_date
+        ? await dayMultiplierFor(opts.trip, opts.day, dateForTripDay(opts.trip.start_date, opts.day))
+        : null;
+  const multiplierPart = specialDay
+    ? multiplierHeaderPart({
+        label: specialDay.label,
+        multiplier: multiplierLabel(specialDay.value),
+      })
+    : null;
   if (opts.trip.play_mode === "full_group" && !opts.trip.is_solo) {
     const people = opts.allPeople ?? opts.people;
     const sharedTasks = opts.rows.filter((row) => !row.participant_id);
     const board = formatDailyBoard({
       day: opts.day,
       weatherLine: opts.weatherLine,
+      multiplierPart,
       tasks: sharedTasks.map((row) => ({
         code: row.code,
         title: row.title,
@@ -1590,6 +1667,7 @@ async function deliverMorningBoards(opts: {
         formatPersonalBoard({
           day: opts.day,
           weatherLine: opts.weatherLine,
+          multiplierPart,
           anchors,
           tasks: tasks.map((row) => ({
             code: row.code,
@@ -1616,9 +1694,24 @@ async function deliverMorningBoards(opts: {
   // one-person standings post would be a second message saying nothing.
   if (opts.trip.is_solo || opts.standings === false) return;
   const teams = await teamsWithMembers(opts.trip.id);
+  // One group message on a multiplier day, in the morning, never one per
+  // claim: the multiplier is collective, so it is news rather than a receipt.
+  // Solo trips skip it, the same way they skip the standings post: their
+  // board header already said it in the DM they just got.
+  if (specialDay && !opts.trip.is_solo) {
+    await sendText(
+      opts.trip.linq_chat_id,
+      multiplierDayAnnouncement({
+        label: specialDay.label,
+        multiplier: multiplierLabel(specialDay.value),
+        source: specialDay.source,
+      }),
+    );
+  }
   const standings = formatMorningStandings({
     day: opts.day,
     weatherLine: opts.weatherLine,
+    multiplierPart,
     standings: buildStandingsRows(opts.allPeople ?? opts.people, teams),
   });
   await sendText(opts.trip.linq_chat_id, standings);
@@ -1692,6 +1785,14 @@ export async function refillPersonalTasksIfNeeded(opts: {
   const boardTitles = await tripBoardTitles(opts.trip.id);
   const avoid = await tripAvoidWeights(opts.trip, people);
   const suggestions = await tripSuggestions(opts.trip.id, people);
+  // A redo lands on the same day, so it is worth the same: the replacement
+  // tasks carry the multiplier the morning board already promised.
+  const specialDay = taskMultiplierFor({
+    localDate: today,
+    day,
+    tripDays: tripLengthDays(opts.trip.start_date, opts.trip.end_date),
+    days: await loadMultiplierDays(opts.trip.id),
+  });
   const assignee: Assignee = {
     kind: "group",
     id: opts.claimant.id,
@@ -1717,6 +1818,7 @@ export async function refillPersonalTasksIfNeeded(opts: {
     boardTitles,
     avoid,
     suggestions,
+    specialDay,
     targetCount: opts.targetCount,
     avoidTitles: (opts.keep ?? []).map((t) => t.title),
     rejectedTitles: opts.rejectTitles,
@@ -1781,6 +1883,7 @@ export async function refillPersonalTasksIfNeeded(opts: {
       teamId: null,
       expiresAt,
       isSolo: Boolean(opts.trip.is_solo),
+      multiplier: specialDay,
     }).row,
   );
   if (rows.length === 0) return [];
@@ -1879,6 +1982,17 @@ export async function runDailyBoards(opts: {
       skipped.push(trip.id);
       continue;
     }
+    // Which days this trip's destination treats as special. Rate limited to
+    // once a week inside, and never fatal: a trip with no holiday data still
+    // gets its weekend multipliers.
+    try {
+      await refreshTripMultipliers(trip, { now });
+    } catch (err) {
+      console.error("[japlan.multipliers] refresh failed", {
+        tripId: trip.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
     if (opts.force) {
       // Manual run (testing): today's board now, whatever the time or dates.
       await runDailyBoardForTrip(trip, { now });
@@ -1928,6 +2042,7 @@ export async function replanDay(trip: TripRow, date: string, now: Date): Promise
     rows: built.rows,
     day,
     weatherLine: built.weatherLine,
+    specialDay: built.specialDay,
     standings: false,
   });
   console.info("[japlan.split] replanned", { tripId: trip.id, day, rows: built.rows.length });

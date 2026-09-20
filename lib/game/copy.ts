@@ -246,13 +246,43 @@ export function finalStandingsLine(opts: {
   return lines.join("\n");
 }
 
-// "Day 3 · Asakusa → Ueno · 22° clear": the route and the weather when known.
+// "Day 3 · Asakusa → Ueno · 22° clear · ⚡ golden week, everything's 2x": the
+// route, the weather when known, and what the day is worth. The multiplier
+// goes last and in the header, not on its own line, because it is a fact about
+// the day like the weather is, and people read the header.
 export function dailyBoardHeader(
   day: number,
   weatherLine?: string | null,
   route?: string | null,
+  multiplierPart?: string | null,
 ): string {
-  return [`Day ${day}`, route, weatherLine].filter(Boolean).join(" · ");
+  return [`Day ${day}`, route, weatherLine, multiplierPart].filter(Boolean).join(" · ");
+}
+
+// The tail of the board header on a day worth more: "⚡ golden week,
+// everything's 2x". True of the points printed on the board right below it,
+// which is the only reading a player can check.
+export function multiplierHeaderPart(opts: { label: string; multiplier: string }): string {
+  return `⚡ ${opts.label}, everything's ${opts.multiplier}`;
+}
+
+// One group message in the morning on a day worth more, never one per claim:
+// the multiplier is collective, so it is news, not a receipt. A national
+// holiday also gets the warning that comes with it, because a 3x board full of
+// shut museums is worse than an ordinary day.
+export function multiplierDayAnnouncement(opts: {
+  label: string;
+  multiplier: string;
+  source: string;
+}): string {
+  const worth = `everything on the board is worth ${opts.multiplier} today, for everyone`;
+  if (opts.source === "holiday") {
+    return `⚡ heads up it's ${opts.label} today sooo ${worth} 🔥 loads of museums and shops will be shut and the trains are gonna be packed, the streets are the move fr`;
+  }
+  if (opts.source === "festival") {
+    return `⚡ ${opts.label} is on rn 😭 ${worth} 🔥 go be in it`;
+  }
+  return `⚡ it's ${opts.label} 👀 ${worth} 🔥`;
 }
 
 // A place someone in the group asked for, on the day's route. Credit is the
@@ -319,14 +349,18 @@ export function claimConfirmedLine(opts: {
   invitePhoto?: boolean;
   // The claimant's last open personal task; a refill is on its way by DM.
   boardCleared?: boolean;
+  // "2x golden week" when the day is worth more. The points already include
+  // it; this says why they are bigger than the board line.
+  multiplier?: string | null;
 }): string {
   if (opts.capped) {
     return `✅ ${opts.code} · ${opts.name} · ${opts.total} · ${DAILY_CAP_CLAUSE}`;
   }
+  const boost = opts.multiplier ? ` 🔥 ${opts.multiplier}` : "";
   const first =
     opts.photoBonus > 0
-      ? `✅ ${opts.code} · ${opts.name} +${opts.base} +${opts.photoBonus} photo · ${opts.total}`
-      : `✅ ${opts.code} · ${opts.name} +${opts.base} · ${opts.total}`;
+      ? `✅ ${opts.code} · ${opts.name} +${opts.base} +${opts.photoBonus} photo${boost} · ${opts.total}`
+      : `✅ ${opts.code} · ${opts.name} +${opts.base}${boost} · ${opts.total}`;
   if (opts.boardCleared) {
     return `${first} · that's your whole board cleared 🔥 new tasks coming by dm.`;
   }
