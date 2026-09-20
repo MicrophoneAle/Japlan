@@ -255,8 +255,21 @@ export function dailyBoardHeader(
   weatherLine?: string | null,
   route?: string | null,
   multiplierPart?: string | null,
+  // Multi-city only: which city this day is in, and whether it is the day they
+  // travel to it. Null on a single-city trip, so its header is unchanged.
+  place?: { city?: string | null; travelDay?: boolean } | null,
 ): string {
-  return [`Day ${day}`, route, weatherLine, multiplierPart].filter(Boolean).join(" · ");
+  const city = place?.city?.trim() || null;
+  return [
+    `Day ${day}`,
+    city,
+    place?.travelDay ? "travel day" : null,
+    route,
+    weatherLine,
+    multiplierPart,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 // The tail of the board header on a day worth more: "⚡ golden week,
@@ -270,6 +283,10 @@ export function multiplierHeaderPart(opts: { label: string; multiplier: string }
 // the multiplier is collective, so it is news, not a receipt. A national
 // holiday also gets the warning that comes with it, because a 3x board full of
 // shut museums is worse than an ordinary day.
+//
+// Deterministic copy, so it follows that house style rather than the
+// conversation one: lowercase and direct, no piled-on slang, and the only
+// emoji is the ⚡ that marks a multiplier day everywhere else it appears.
 export function multiplierDayAnnouncement(opts: {
   label: string;
   multiplier: string;
@@ -277,12 +294,12 @@ export function multiplierDayAnnouncement(opts: {
 }): string {
   const worth = `everything on the board is worth ${opts.multiplier} today, for everyone`;
   if (opts.source === "holiday") {
-    return `⚡ heads up it's ${opts.label} today sooo ${worth} 🔥 loads of museums and shops will be shut and the trains are gonna be packed, the streets are the move fr`;
+    return `⚡ it's ${opts.label}, so ${worth}. a lot of museums and shops will be shut and the trains will be packed, so the streets are the better bet.`;
   }
   if (opts.source === "festival") {
-    return `⚡ ${opts.label} is on rn 😭 ${worth} 🔥 go be in it`;
+    return `⚡ ${opts.label} is on, so ${worth}. go be in it.`;
   }
-  return `⚡ it's ${opts.label} 👀 ${worth} 🔥`;
+  return `⚡ it's ${opts.label}, so ${worth}.`;
 }
 
 // A place someone in the group asked for, on the day's route. Credit is the

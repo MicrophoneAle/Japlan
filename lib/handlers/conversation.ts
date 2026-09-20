@@ -1,4 +1,5 @@
 import type { ClaimRow, TaskRow } from "@/lib/db/types";
+import { zoneNow } from "@/lib/game/legs";
 import { evaluateAddress } from "@/lib/game/addressing";
 import {
   CONVERSATION_MAX_TOOL_ITERS,
@@ -416,7 +417,7 @@ export async function handleConversation(
           people: miss.people.map((person) => person.display_name),
           destination: miss.trip.destination,
           day,
-          timeOfDay: timeOfDayLabel(localHour(new Date(now), miss.trip.timezone)),
+          timeOfDay: timeOfDayLabel(localHour(new Date(now), zoneNow(miss.trip, new Date(now)))),
           history,
         }),
       },

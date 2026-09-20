@@ -1,4 +1,5 @@
 import type { ClaimRow, ParticipantRow, TaskRow, TripRow } from "@/lib/db/types";
+import { legCities, legsLabel } from "@/lib/game/legs";
 import type { WrappedData } from "@/app/wrapped/data";
 
 export type WrappedPhoto = { src: string; alt: string; claimId: string };
@@ -30,7 +31,16 @@ function dateRange(trip: TripRow): string {
 }
 
 function scorePhoto(claim: ClaimRow, task: TaskRow): number {
-  const bonus = claim.photo_claimed_at ? Math.max(0, (claim.awarded_points ?? 0) - task.base_points) : 0;
+  // The award is the task's points times the day's multiplier, so subtracting
+  // a bare base_points on a special day would count the multiplier itself as
+  // photo bonus (a 20 point task at 3x with a 2 point photo reads as 46).
+  // Scale base_points the same way the award was scaled.
+  const multiplier = Number(task.day_multiplier);
+  const scaledBase =
+    Number.isFinite(multiplier) && multiplier > 1
+      ? Math.round(task.base_points * multiplier)
+      : task.base_points;
+  const bonus = claim.photo_claimed_at ? Math.max(0, (claim.awarded_points ?? 0) - scaledBase) : 0;
   return bonus * 100_000 + (claim.awarded_points ?? 0) * 100 + task.title.length;
 }
 
@@ -92,6 +102,7 @@ export function buildLiveWrapped(opts: {
   }
   const quests = questRows.map((row) => ({ title: row.task.title, points: row.claim.awarded_points ?? 0, winner: row.person.display_name, photo: photoFor(row) }));
   const gallery = photos.slice(0, 18).map(photoFor);
+  const cities = legCities(opts.trip);
   const placesForRecap = opts.itinerary.length ? opts.itinerary : opts.savedPlaces;
   const placeLabel = opts.itinerary.length ? "places on the itinerary" : "places saved";
   const placeNames = [...new Set(placesForRecap.map((row) => row.name).filter((name): name is string => Boolean(name)))].slice(0, 6);
@@ -100,10 +111,13 @@ export function buildLiveWrapped(opts: {
   const names = ranked.map((person) => person.display_name).filter(Boolean);
   const groupName = names.length <= 3 ? names.join(", ") : `${names.slice(0, 3).join(", ")} + ${names.length - 3} more`;
   return {
-    trip: { name: groupName ? `${groupName} got competitive` : (opts.trip.name || "the trip that got competitive"), destination: opts.trip.destination || "somewhere iconic", dates: dateRange(opts.trip), days },
+    trip: { name: groupName ? `${groupName} got competitive` : (opts.trip.name || "the trip that got competitive"), destination: legsLabel(opts.trip) || opts.trip.destination || "somewhere iconic", dates: dateRange(opts.trip), days },
     stats: [
       { value: String(opts.people.length), label: "friends unleashed" },
       { value: String(placesForRecap.length), label: placeLabel },
+      // Only on a multi-city trip: on a one-city trip this would read
+      // "1 cities" and tell nobody anything.
+      ...(cities.length > 1 ? [{ value: String(cities.length), label: "cities" }] : []),
       { value: String(claimedTaskIds.size), label: "quests completed" },
       { value: String(photos.length), label: "camera-roll receipts" },
     ],

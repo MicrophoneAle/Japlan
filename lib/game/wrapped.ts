@@ -58,7 +58,8 @@ export type WrappedSource = "real" | "derived" | "fictional";
 // rows by a rule you should know), "fictional" (placeholder, no source yet).
 export const WRAPPED_SOURCES: Record<string, { source: WrappedSource; from: string }> = {
   "trip.name": { source: "real", from: "trips.name" },
-  "trip.destination": { source: "real", from: "trips.destination" },
+  "trip.destination": { source: "real", from: "legsLabel(trip): every leg's city joined, falling back to trips.destination" },
+  "stats[cities]": { source: "real", from: "trip_legs, distinct cities in order; omitted on a single-city trip" },
   "trip.dates": { source: "real", from: "trips.start_date, trips.end_date" },
   "trip.days": { source: "real", from: "end_date - start_date + 1" },
   "stats[friends]": { source: "real", from: "count of participants" },

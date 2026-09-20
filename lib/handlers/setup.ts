@@ -1,5 +1,7 @@
 import { getServiceClient } from "@/lib/db/client";
 import { refreshTripMultipliers } from "./holidays";
+import { setTripLegsFromCities } from "./legs";
+import { splitDestinationAnswer } from "@/lib/game/legs";
 import type { ParticipantRow, TripRow } from "@/lib/db/types";
 import {
   BOARD_TIME_UNREADABLE_LINE,
@@ -235,12 +237,28 @@ async function setupChange(
   let said = "";
   switch (id) {
     case "destination": {
-      const resolved = await resolveDestinationAnswer(text, deps);
-      patch.destination = resolved.destination;
+      // "Tokyo" is one leg and takes exactly the path it always did. Extra
+      // places only cost anything when someone actually names more than one:
+      // the first is resolved in full (places lookup plus Gemini timezone),
+      // the rest resolve from the offline city table, so a multi-city answer
+      // still costs one Foursquare call, not one per city.
+      const parts = splitDestinationAnswer(text);
+      const resolved = await resolveDestinationAnswer(parts[0] ?? text, deps);
+      const extraCities = parts.slice(1).map((city) => ({
+        city,
+        timezone: lookupCityTimezone(city)?.timezone ?? null,
+      }));
+      if (extraCities.length > 0) {
+        setupStep("destination.legs", {
+          tripId: trip.id,
+          cities: [resolved.destination, ...extraCities.map((c) => c.city)].join(" > "),
+        });
+      }
+      patch.destination = [resolved.destination, ...extraCities.map((c) => c.city)].join(" → ");
       if (resolved.timezone) patch.timezone = resolved.timezone;
       const changed =
         (trip.destination ?? "").trim().toLowerCase() !==
-        resolved.destination.trim().toLowerCase();
+        (patch.destination as string).trim().toLowerCase();
       if (changed) {
         // New destination: the old profile's places and the old timezone
         // belong to the wrong city.
@@ -255,7 +273,7 @@ async function setupChange(
         setupStep("destination.profile_refresh", { tripId: trip.id });
       }
       said = destinationSetLine(
-        resolved.destination,
+        patch.destination as string,
         Boolean(resolved.timezone ?? (changed ? null : trip.timezone)),
       );
       break;
@@ -397,6 +415,15 @@ export async function answerSetup(opts: {
   // trip with no special days is an ordinary trip.
   if (missing.length === 0) {
     const forLookup = (await getTripById(trip.id)) ?? updated;
+    // Legs need the cities AND the dates, so they are written here, once both
+    // are settled. One city writes one leg, which is what every existing trip
+    // already migrated to, so nothing about a single-city trip changes.
+    await syncTripLegs(forLookup).catch((err) => {
+      setupStep("legs.failed", {
+        tripId: trip.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
     await refreshTripMultipliers(forLookup, { festivals: false, force: true }).catch((err) => {
       setupStep("multipliers.failed", {
         tripId: trip.id,
@@ -494,4 +521,28 @@ export async function handleGroupSetupMessage(opts: {
   }
   await sendText(opts.chatId, reply);
   return true;
+}
+
+
+// Rebuild a trip's legs from its stored destination and dates. Idempotent, and
+// a no-op for a trip that has neither yet. The destination string round-trips:
+// "Tokyo, Japan → Osaka" splits back into the same two cities it was built
+// from, so this never needs the original answer.
+export async function syncTripLegs(trip: TripRow): Promise<void> {
+  if (!trip.destination?.trim() || !trip.start_date || !trip.end_date) return;
+  const cities = splitDestinationAnswer(trip.destination).map((city) => ({
+    city,
+    // Leg 1 keeps the timezone setup resolved for it; later legs use the
+    // offline table and fall back to the trip's zone when it does not know
+    // them, which is no worse than the single-timezone behaviour it replaces.
+    timezone: lookupCityTimezone(city)?.timezone ?? trip.timezone ?? null,
+  }));
+  if (cities.length === 0) return;
+  if (cities.length === 1) cities[0].timezone = trip.timezone ?? cities[0].timezone;
+  await setTripLegsFromCities({
+    trip,
+    cities,
+    startDate: trip.start_date,
+    endDate: trip.end_date,
+  });
 }

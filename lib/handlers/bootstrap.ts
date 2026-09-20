@@ -32,6 +32,7 @@ import { describeBoardTime, nextBoardAt } from "@/lib/game/board-schedule";
 import { formTeamsForTrip, teamsAnnouncement } from "@/lib/handlers/teams";
 
 import { TRIP_COLS } from "@/lib/db/columns";
+import { withLegs } from "./legs";
 
 // Until the group chat's own name is known.
 const UNNAMED_TRIP = "unnamed trip";
@@ -41,6 +42,15 @@ const PARTICIPANT_COLS =
 
 function asTrip(row: unknown): TripRow {
   return row as TripRow;
+}
+
+// Every trip that comes out of here carries its legs, so the call sites that
+// used to read trips.timezone / trips.destination can resolve a leg without a
+// query of their own. A trip with no legs (migration not run, setup not
+// finished) resolves to a synthesised single leg in lib/game/legs.ts, which is
+// exactly the old single-city behaviour.
+async function asTripWithLegs(row: unknown): Promise<TripRow> {
+  return withLegs(asTrip(row));
 }
 
 function asParticipants(rows: unknown): ParticipantRow[] {
@@ -105,7 +115,7 @@ export async function getTripByChatId(chatId: string): Promise<TripRow | null> {
     isSolo: data ? Boolean((data as { is_solo?: boolean }).is_solo) : null,
     state: data ? (data as { state?: string }).state ?? null : null,
   });
-  return data ? asTrip(data) : null;
+  return data ? asTripWithLegs(data) : null;
 }
 
 // The most recent trip for a chat in any state, for "this trip is over".
@@ -118,7 +128,7 @@ export async function getLatestTripByChatId(chatId: string): Promise<TripRow | n
     .limit(1)
     .maybeSingle();
   if (error) throw error;
-  return data ? asTrip(data) : null;
+  return data ? asTripWithLegs(data) : null;
 }
 
 export async function getTripById(tripId: string): Promise<TripRow | null> {
@@ -128,7 +138,7 @@ export async function getTripById(tripId: string): Promise<TripRow | null> {
     .eq("id", tripId)
     .maybeSingle();
   if (error) throw error;
-  return data ? asTrip(data) : null;
+  return data ? asTripWithLegs(data) : null;
 }
 
 export async function listParticipants(tripId: string): Promise<ParticipantRow[]> {
@@ -169,7 +179,7 @@ async function insertTrip(
     throw error;
   }
   if (!data) throw new Error("trip insert returned no row");
-  return { trip: asTrip(data), created: true };
+  return { trip: await asTripWithLegs(data), created: true };
 }
 
 async function upsertHumans(

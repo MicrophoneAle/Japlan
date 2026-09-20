@@ -97,3 +97,37 @@ export function countryForTrip(trip: {
   if (!destination) return null;
   return countryForTimezone(lookupCityTimezone(destination)?.timezone);
 }
+
+// Country and region words, so "tokyo, japan" reads as one city while
+// "tokyo, osaka" reads as two. Splitting a destination answer cannot be done
+// on punctuation alone: a comma is both "city, country" and a list separator.
+// Keys match the country aliases in lib/game/city-timezones.ts.
+const COUNTRY_WORDS = new Set([
+  "japan", "south korea", "korea", "china", "taiwan", "hong kong", "macau",
+  "thailand", "vietnam", "indonesia", "philippines", "malaysia", "singapore",
+  "cambodia", "laos", "myanmar", "brunei", "mongolia",
+  "india", "sri lanka", "nepal", "bangladesh", "pakistan", "maldives",
+  "uae", "united arab emirates", "qatar", "kuwait", "saudi arabia", "oman",
+  "bahrain", "israel", "jordan", "lebanon", "turkey", "turkiye", "cyprus",
+  "uk", "united kingdom", "england", "scotland", "wales", "northern ireland",
+  "ireland", "france", "spain", "italy", "germany", "netherlands", "holland",
+  "belgium", "luxembourg", "portugal", "greece", "croatia", "slovenia",
+  "czech republic", "czechia", "slovakia", "austria", "switzerland", "hungary",
+  "poland", "romania", "bulgaria", "serbia", "bosnia", "albania", "macedonia",
+  "denmark", "sweden", "norway", "finland", "iceland", "estonia", "latvia",
+  "lithuania", "malta", "monaco", "andorra", "russia", "ukraine", "belarus",
+  "usa", "us", "u.s.", "u.s.a.", "united states", "america", "canada",
+  "mexico", "guatemala", "belize", "costa rica", "panama", "el salvador",
+  "honduras", "nicaragua", "cuba", "jamaica", "dominican republic",
+  "puerto rico", "trinidad", "barbados", "bahamas",
+  "peru", "colombia", "brazil", "argentina", "chile", "uruguay", "paraguay",
+  "bolivia", "venezuela", "ecuador",
+  "morocco", "egypt", "tunisia", "algeria", "kenya", "tanzania", "uganda",
+  "ethiopia", "nigeria", "ghana", "senegal", "south africa", "namibia",
+  "zimbabwe", "mauritius",
+  "australia", "new zealand", "fiji", "papua new guinea",
+]);
+
+export function isCountryWord(text: string): boolean {
+  return COUNTRY_WORDS.has(text.trim().toLowerCase().replace(/\s+/g, " "));
+}

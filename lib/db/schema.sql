@@ -162,6 +162,9 @@ create table places (
   score numeric,
   -- source 'suggestion': the words used ("a jazz bar in golden gai").
   note text,
+  -- Which city this place is in. Clustering never routes across legs, so a
+  -- Tokyo place can never be the nearest neighbour of an Osaka task.
+  leg_id uuid references trip_legs (id) on delete set null,
   created_at timestamptz not null default now(),
   unique (trip_id, fsq_place_id)
 );
@@ -367,8 +370,36 @@ create table ratings (
   created_at timestamptz not null default now()
 );
 
+-- A trip is a list of legs: a city and the dates you are in it. Legs
+-- partition the trip's dates (no gaps, no overlaps), so every date belongs to
+-- exactly one. A single-city trip is one leg and behaves identically; the
+-- trips.destination / timezone / destination_profile_json columns stay as the
+-- display fallback and as what lib/game/legs.ts synthesises a leg from when
+-- none are loaded.
+create table trip_legs (
+  id uuid primary key default gen_random_uuid(),
+  trip_id uuid not null references trips (id) on delete cascade,
+  -- 1-based and contiguous. "order" is reserved, hence leg_order.
+  leg_order integer not null,
+  city text not null,
+  start_date date not null,
+  end_date date not null,
+  timezone text,
+  -- Fetched when the leg is first needed, not at trip creation: two Foursquare
+  -- searches per leg is the point of doing it lazily.
+  destination_profile_json jsonb,
+  -- First date of a leg that follows another one: you arrive that day, so the
+  -- board is light and transit-shaped. Leg 1 is never a travel day.
+  is_travel_day boolean not null default false,
+  created_at timestamptz not null default now(),
+  unique (trip_id, leg_order),
+  constraint trip_legs_dates_ordered check (end_date >= start_date)
+);
+create index trip_legs_trip_dates on trip_legs (trip_id, start_date, end_date);
+
 -- Days worth more points for everyone: national holidays (Nager.Date) and
--- local festivals (Browserbase), looked up per trip. Weekends and friday
+-- local festivals (Browserbase), looked up per leg (a Tokyo to Seoul trip has
+-- two countries). Weekends and friday
 -- nights are computed in lib/game/multipliers.ts and never stored.
 create table multiplier_days (
   id uuid primary key default gen_random_uuid(),
@@ -377,6 +408,9 @@ create table multiplier_days (
   multiplier numeric not null check (multiplier > 1 and multiplier <= 3),
   label text not null,
   source text not null check (source in ('holiday', 'festival')),
+  -- Which leg's country this came from. unique (trip_id, local_date) still
+  -- holds: legs partition the dates, so two legs never claim the same one.
+  leg_id uuid references trip_legs (id) on delete cascade,
   created_at timestamptz not null default now(),
   unique (trip_id, local_date)
 );

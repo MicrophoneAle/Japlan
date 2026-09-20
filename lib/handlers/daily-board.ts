@@ -86,10 +86,19 @@ import { TRIP_COLS } from "@/lib/db/columns";
 import { missingRequiredSetup, type SetupFields } from "@/lib/game/setup";
 import { recordTasksChanged } from "./stats";
 import { boardDueNow, dateForTripDay, tripDayForDate } from "@/lib/game/board-schedule";
+import { cityFor, isMultiCity, isTravelDate, legForDate, todayFor, zoneFor, zoneNow } from "@/lib/game/legs";
 import { dayMultiplierFor, loadMultiplierDays, refreshTripMultipliers } from "@/lib/handlers/holidays";
 import { multiplierHeaderPart, multiplierDayAnnouncement } from "@/lib/game/copy";
 import { multiplierLabel, taskMultiplierFor, type TaskMultiplier } from "@/lib/game/multipliers";
 import { remindOpenGroupDecisions } from "@/lib/handlers/group-decisions";
+
+// When a travel day's board starts: late afternoon, once they have arrived and
+// dropped bags. Deliberately a constant rather than a per-leg arrival time,
+// which PLAN asks for but setup does not collect yet.
+export const TRAVEL_DAY_START_MINUTE = 16 * 60;
+// A travel day gets a short board on purpose: two or three things near where
+// they are staying, not a normal day that assumes they are already out.
+export const TRAVEL_DAY_MAX_TASKS = 3;
 
 // Matches tasks_owner_code_key: codes are unique per owner per day, not per trip.
 const TASK_CODE_CONFLICT = "trip_id,day,participant_id,team_id,code";
@@ -146,7 +155,7 @@ export function tripDayOn(trip: TripRow, date: string, now: Date): number {
 
 export function currentTripDay(trip: TripRow, now: Date): number {
   if (!trip.start_date) return 1;
-  const today = localDateString(now, trip.timezone || "UTC");
+  const today = todayFor(trip, now);
   const start = Date.parse(trip.start_date);
   const current = Date.parse(today);
   if (Number.isNaN(start) || Number.isNaN(current)) return 1;
@@ -268,7 +277,7 @@ export async function dayAnchorsForBoard(trip: TripRow, day: number): Promise<Bo
     const place = ((places.data ?? []) as Pick<PlaceRow, "id" | "name" | "suggested_by">[]).find((p) => p.id === row.place_id);
     const by = ((people.data ?? []) as Pick<ParticipantRow, "id" | "display_name">[]).find((p) => p.id === place?.suggested_by);
     const slot = row.planned_time
-      ? slotForMinute(parseClockMinutes(localTimeHHMM(new Date(row.planned_time), trip.timezone)))
+      ? slotForMinute(parseClockMinutes(localTimeHHMM(new Date(row.planned_time), zoneNow(trip, new Date(row.planned_time)))))
       : null;
     return { name: place?.name ?? "a stop", by: by?.display_name ?? null, slot };
   });
@@ -527,17 +536,22 @@ export function dayWindowFor(
   now: Date,
   group: { startAt?: number | null; endAt?: number | null } = {},
 ): DayWindow {
-  const timezone = trip.timezone || "UTC";
+  const timezone = zoneFor(trip, date);
   const answers = people.map((p) => (p.survey_json ?? {}) as SurveyAnswers);
   const pace = paceFor(answers.map((a) => answerValue(a, "pace")));
   const today = localDateString(now, timezone);
   const nowMinutes = date === today ? parseClockMinutes(localTimeHHMM(now, timezone)) : null;
+  // A travel day starts when they land, not at board_time: the morning is a
+  // train or an airport, so the usable day is the evening in the new city.
+  // Everything downstream (60-70% fill, max task count, the route) then falls
+  // out of the shorter window on its own.
+  const travel = isTravelDate(trip, date);
   return usableWindow({
     boardTime: trip.board_time,
     pace,
     nowMinutes,
     blackouts: groupBlackouts(answers),
-    startAt: group.startAt,
+    startAt: travel ? Math.max(TRAVEL_DAY_START_MINUTE, group.startAt ?? 0) : group.startAt,
     endAt: group.endAt,
   });
 }
@@ -583,12 +597,15 @@ async function planForAssignee(opts: {
   const bank = boardTemplates({ solo });
   const templates = templatesAllowedFor(bank, answers);
   const curveball = isCurveballBoard(`${trip.id}:${opts.day}:${assignee.id}`);
+  const travelDay = isTravelDate(trip, opts.date);
   const prefs = boardPreferencesFor({
     answers,
     difficulty: trip.difficulty,
     avoid: opts.avoid,
     suggestions: opts.suggestions,
-    targetCount: opts.targetCount,
+    // An explicit "7 attractions" still wins; the cap is only the default.
+    targetCount:
+      travelDay && !opts.targetCount ? TRAVEL_DAY_MAX_TASKS : opts.targetCount,
   });
   const ctx: PrepareContext = {
     profile: opts.profile,
@@ -596,7 +613,7 @@ async function planForAssignee(opts: {
     window,
     assignees: answers.map((a) => ({ answers: a })),
     completedTitles: completed,
-    expiresAt: endOfLocalDay(opts.date, trip.timezone || "UTC"),
+    expiresAt: endOfLocalDay(opts.date, zoneFor(trip, opts.date)),
     now: opts.now,
     onReject: (reason, title) => logReject(reason, title, { assignee: assignee.label }),
   };
@@ -656,6 +673,7 @@ async function planForAssignee(opts: {
         specialDay: opts.specialDay
           ? { label: opts.specialDay.label, source: opts.specialDay.source }
           : null,
+        travelDay: travelDay ? { city: legForDate(trip, opts.date).city } : null,
       });
     } catch (err) {
       console.error("[japlan.generate] llm failed", { round, assignee: assignee.label, err });
@@ -800,9 +818,9 @@ export async function generateValidatedBoard(opts: {
   anchors: { itineraryId: string; slot: DaySlot }[];
 }> {
   const now = opts.now ?? new Date();
-  const date = opts.date ?? localDateString(now, opts.trip.timezone || "UTC");
+  const date = opts.date ?? todayFor(opts.trip, now);
   const day = tripDayOn(opts.trip, date, now);
-  const expiresAt = endOfLocalDay(date, opts.trip.timezone || "UTC");
+  const expiresAt = endOfLocalDay(date, zoneFor(opts.trip, date));
   const assignees = await loadAssignees(opts.trip, opts.people, day);
   const ratings = await yesterdayRatings(opts.people);
   const gap = scoreGapText(opts.people);
@@ -1008,7 +1026,7 @@ export async function buildBoardForDate(
   opts: { date: string; now?: Date },
 ): Promise<BuiltBoard> {
   const now = opts.now ?? new Date();
-  const timezone = trip.timezone || "UTC";
+  const timezone = zoneFor(trip, opts.date);
   const people = await tripPeople(trip.id);
   let profile: DestinationProfile;
   try {
@@ -1124,7 +1142,7 @@ export async function runDailyBoardForTrip(
   const now = opts.now ?? new Date();
   // A manual run for a trip outside its dates builds the nearest real day
   // (day 1 before the trip, the last day after it) rather than day 0 or -3.
-  const today = localDateString(now, trip.timezone || "UTC");
+  const today = todayFor(trip, now);
   const date =
     trip.start_date && today < trip.start_date
       ? trip.start_date
@@ -1281,7 +1299,7 @@ export async function deliverExistingBoard(trip: TripRow, day: number, date: str
   );
   const lapsed = await sweepLapsedPeerClaims(trip.id, now);
   const profile = await cachedProfileOf(trip);
-  const weather = await weatherFor(profile, date, trip.timezone || "UTC");
+  const weather = await weatherFor(profile, date, zoneFor(trip, date));
   // Anyone who finished their survey after this board was made has no tasks
   // on it yet: add theirs now, so they are not skipped for the day.
   const dayTasks = await tasksForDay(trip.id, day);
@@ -1568,6 +1586,13 @@ async function deliverMorningBoards(opts: {
       : opts.trip.start_date
         ? await dayMultiplierFor(opts.trip, opts.day, dateForTripDay(opts.trip.start_date, opts.day))
         : null;
+  // Multi-city only: the city goes in the header so day five reads as Osaka.
+  // A single-leg trip passes null and its header is byte-identical to before.
+  const boardDate = opts.trip.start_date ? dateForTripDay(opts.trip.start_date, opts.day) : null;
+  const place =
+    boardDate && isMultiCity(opts.trip)
+      ? { city: cityFor(opts.trip, boardDate), travelDay: isTravelDate(opts.trip, boardDate) }
+      : null;
   const multiplierPart = specialDay
     ? multiplierHeaderPart({
         label: specialDay.label,
@@ -1581,6 +1606,7 @@ async function deliverMorningBoards(opts: {
       day: opts.day,
       weatherLine: opts.weatherLine,
       multiplierPart,
+      place,
       tasks: sharedTasks.map((row) => ({
         code: row.code,
         title: row.title,
@@ -1668,6 +1694,7 @@ async function deliverMorningBoards(opts: {
           day: opts.day,
           weatherLine: opts.weatherLine,
           multiplierPart,
+          place,
           anchors,
           tasks: tasks.map((row) => ({
             code: row.code,
@@ -1712,6 +1739,7 @@ async function deliverMorningBoards(opts: {
     day: opts.day,
     weatherLine: opts.weatherLine,
     multiplierPart,
+    place,
     standings: buildStandingsRows(opts.allPeople ?? opts.people, teams),
   });
   await sendText(opts.trip.linq_chat_id, standings);
@@ -1758,8 +1786,8 @@ export async function refillPersonalTasksIfNeeded(opts: {
   }
 
   const now = opts.now ?? new Date();
-  const timezone = opts.trip.timezone || "UTC";
-  const today = opts.date ?? localDateString(now, timezone);
+  const today = opts.date ?? todayFor(opts.trip, now);
+  const timezone = zoneFor(opts.trip, today);
   const day = opts.date ? tripDayOn(opts.trip, opts.date, now) : currentTripDay(opts.trip, now);
   let weather: DayWeather = {
     temperatureC: null,
@@ -2122,7 +2150,7 @@ export async function redoMyDay(opts: {
   // How many redos of this day came before: varies the fallback.
   variant?: number;
 }): Promise<RedoOutcome> {
-  const date = opts.date ?? localDateString(opts.now, opts.trip.timezone || "UTC");
+  const date = opts.date ?? todayFor(opts.trip, opts.now);
   const day = tripDayOn(opts.trip, date, opts.now);
   const tasks = (await tasksForDay(opts.trip.id, day)).filter((t) => t.participant_id === opts.claimant.id);
   if (tasks.length === 0) {

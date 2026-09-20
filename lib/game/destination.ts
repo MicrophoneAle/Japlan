@@ -1,4 +1,5 @@
 import { getServiceClient } from "@/lib/db/client";
+import { isSyntheticLeg, legForDate, legsOf, type TripLeg } from "./legs";
 import type { ParticipantRow, TripRow } from "@/lib/db/types";
 import { answerValue, type SurveyAnswers } from "@/lib/game/survey";
 import {
@@ -164,7 +165,7 @@ export function profileFromPlaces(
   };
 }
 
-async function existingChatPlaces(tripId: string): Promise<{
+async function existingChatPlaces(tripId: string, legId: string | null): Promise<{
   name: string;
   lat: number | null;
   lng: number | null;
@@ -172,11 +173,19 @@ async function existingChatPlaces(tripId: string): Promise<{
 }[]> {
   const { data, error } = await getServiceClient()
     .from("places")
-    .select("name, lat, lng, category, source")
+    .select("name, lat, lng, category, source, leg_id")
     .eq("trip_id", tripId);
   if (error) throw error;
   return (data ?? [])
     .filter((row) => (row as { source: string | null }).source !== "foursquare")
+    // A place from another city must never reach this leg's profile, or
+    // clustering will route Tokyo and Osaka into one day. A row with no leg
+    // (saved before legs existed, or during setup) still counts: on a
+    // single-leg trip that is every row, which is today's behaviour exactly.
+    .filter((row) => {
+      const rowLeg = (row as { leg_id: string | null }).leg_id;
+      return !legId || !rowLeg || rowLeg === legId;
+    })
     .map((row) => ({
       name: (row as { name: string }).name,
       lat: (row as { lat: number | null }).lat,
@@ -187,11 +196,13 @@ async function existingChatPlaces(tripId: string): Promise<{
 
 async function cacheFoursquarePlaces(
   tripId: string,
+  legId: string | null,
   places: FoursquarePlace[],
 ): Promise<void> {
   if (places.length === 0) return;
   const rows = places.map((place) => ({
     trip_id: tripId,
+    leg_id: legId,
     fsq_place_id: place.fsq_place_id,
     name: place.name,
     lat: place.latitude,
@@ -207,10 +218,25 @@ async function cacheFoursquarePlaces(
   if (error) throw error;
 }
 
+// A leg's cached profile, falling back to the trip's for a synthesised leg
+// (a single-city trip whose legs were never written).
+// A real leg stores its own profile; a synthesised one (single-city trip,
+// legs never written) stores it on the trip exactly where it always went.
+async function saveProfileFor(
+  tripId: string,
+  legId: string | null,
+  profile: DestinationProfile,
+): Promise<void> {
+  const { error } = legId
+    ? await getServiceClient().from("trip_legs").update({ destination_profile_json: profile }).eq("id", legId)
+    : await getServiceClient().from("trips").update({ destination_profile_json: profile }).eq("id", tripId);
+  if (error) throw error;
+}
+
 export function cachedDestinationProfile(
-  trip: Pick<TripRow, "destination_profile_json">,
+  source: { destination_profile_json?: unknown | null },
 ): DestinationProfile | null {
-  const raw = trip.destination_profile_json;
+  const raw = source.destination_profile_json;
   if (!raw || typeof raw !== "object") return null;
   return raw as DestinationProfile;
 }
@@ -221,30 +247,53 @@ export function needsFoursquareFetch(
   return cachedDestinationProfile(trip) === null;
 }
 
+// The profile for a given date's leg, if it has already been fetched.
 export async function loadDestinationProfile(
   trip: TripRow,
+  date?: string,
 ): Promise<DestinationProfile | null> {
-  return cachedDestinationProfile(trip);
+  const leg = date ? legForDate(trip, date) : legsOf(trip)[0];
+  return legProfile(trip, leg);
 }
 
+// A leg's cached profile. On a SINGLE-leg trip the trip-level column is a
+// valid fallback: that is where every profile lived before legs existed, and
+// where scripts/seed-profile.ts still writes. On a multi-leg trip there is no
+// fallback, because a Tokyo profile must never be served to the Osaka leg.
+function legProfile(trip: TripRow, leg: TripLeg): DestinationProfile | null {
+  if (isSyntheticLeg(leg)) return cachedDestinationProfile(trip);
+  const own = cachedDestinationProfile({ destination_profile_json: leg.destination_profile_json });
+  if (own) return own;
+  return legsOf(trip).length === 1 ? cachedDestinationProfile(trip) : null;
+}
+
+// One leg's profile, fetched the first time that leg is needed rather than
+// every leg at trip creation: two Foursquare searches per leg is exactly the
+// budget this is protecting. `date` picks the leg; omitted means the trip's
+// only leg, which is the single-city path.
 export async function assembleDestinationProfile(opts: {
   trip: TripRow;
   people: ParticipantRow[];
+  date?: string;
 }): Promise<DestinationProfile> {
-  const cached = await loadDestinationProfile(opts.trip);
+  const leg = opts.date ? legForDate(opts.trip, opts.date) : legsOf(opts.trip)[0];
+  const cached = legProfile(opts.trip, leg);
   if (cached && !cached.partial) {
     console.info("[japlan.destination] using cached profile", {
       tripId: opts.trip.id,
+      leg: leg.leg_order,
+      city: leg.city,
     });
     return cached;
   }
 
-  const destination = opts.trip.destination?.trim();
+  const destination = leg.city?.trim() || opts.trip.destination?.trim();
   if (!destination) {
-    throw new Error("trip.destination is empty; cannot assemble a profile");
+    throw new Error("trip has no destination; cannot assemble a profile");
   }
 
-  const chatPlaces = await existingChatPlaces(opts.trip.id);
+  const legId = isSyntheticLeg(leg) ? null : leg.id;
+  const chatPlaces = await existingChatPlaces(opts.trip.id, legId);
   const buckets = interestBuckets(opts.people);
   const categoryIds = categoryIdsForBuckets(buckets);
 
@@ -282,13 +331,15 @@ export async function assembleDestinationProfile(opts: {
     byId.set(place.fsq_place_id, place);
   }
   const merged = [...byId.values()];
-  await cacheFoursquarePlaces(opts.trip.id, merged);
+  await cacheFoursquarePlaces(opts.trip.id, legId, merged);
 
   const profile = profileFromPlaces(destination, merged, chatPlaces);
-  const { error } = await getServiceClient()
-    .from("trips")
-    .update({ destination_profile_json: profile })
-    .eq("id", opts.trip.id);
-  if (error) throw error;
+  await saveProfileFor(opts.trip.id, legId, profile);
+  console.info("[japlan.destination] leg profile fetched", {
+    tripId: opts.trip.id,
+    leg: leg.leg_order,
+    city: destination,
+    places: merged.length,
+  });
   return profile;
 }

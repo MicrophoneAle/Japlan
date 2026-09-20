@@ -1,4 +1,5 @@
 import { REFILLS_PER_DAY } from "./board-request";
+import { todayFor, zoneNow } from "@/lib/game/legs";
 import { getServiceClient } from "@/lib/db/client";
 import type { ParticipantRow, PlaceRow, TripRow } from "@/lib/db/types";
 import { parseBoardDay } from "@/lib/game/board-schedule";
@@ -46,7 +47,7 @@ import { fitSuggestion, splitPlaceList, type DayPoints } from "@/lib/game/sugges
 import { hhmm, resolveSplit, type SplitInput } from "@/lib/game/split";
 import { answerValue, displayNameFromFirstName, type SurveyAnswers } from "@/lib/game/survey";
 import { looksLikePhone } from "@/lib/linq/payload";
-import { addDaysIso, localDateString, localTimeHHMM } from "@/lib/game/time";
+import { addDaysIso, localTimeHHMM } from "@/lib/game/time";
 import { tripDayForDate } from "@/lib/game/board-schedule";
 import {
   buildBoardForDate,
@@ -86,7 +87,7 @@ function profileOf(trip: TripRow): DestinationProfile | null {
 }
 
 function today(ctx: Ctx): string {
-  return localDateString(ctx.now, ctx.trip.timezone || "UTC");
+  return todayFor(ctx.trip, ctx.now);
 }
 
 // "tomorrow", "day 3", "friday", "oct 19"; nothing said is today.
@@ -114,7 +115,7 @@ export async function recordSplit(
   const day = tripDayOn(ctx.trip, date, ctx.now);
   const isToday = date === today(ctx);
   const nowMinutes = isToday
-    ? parseClockMinutes(localTimeHHMM(ctx.now, ctx.trip.timezone))
+    ? parseClockMinutes(localTimeHHMM(ctx.now, zoneNow(ctx.trip, ctx.now)))
     : parseClockMinutes(ctx.trip.board_time);
   const people = ctx.people.map((p) => ({
     id: p.id,

@@ -1,4 +1,5 @@
 import { getServiceClient } from "@/lib/db/client";
+import { todayFor, zoneNow } from "@/lib/game/legs";
 import type { ClaimRow, ParticipantRow, TaskRow, TripRow } from "@/lib/db/types";
 import { formatMorningStandings } from "@/lib/game/board";
 import { buildStandingsRows } from "@/lib/game/standings";
@@ -509,7 +510,7 @@ async function loadPhoto(
 }
 
 function taskCreatedOn(task: TaskRow, trip: TripRow): string | null {
-  return task.created_at ? localDateString(new Date(task.created_at), trip.timezone) : null;
+  return task.created_at ? localDateString(new Date(task.created_at), zoneNow(trip, new Date(task.created_at))) : null;
 }
 
 type VisionResult =
@@ -1075,7 +1076,7 @@ async function resolveKnownTask(opts: {
         awarded_points: null,
         resolved_by: "peer",
         resolution_json: {},
-        expires_at: endOfLocalDayContaining(new Date(), opts.trip.timezone).toISOString(),
+        expires_at: endOfLocalDayContaining(new Date(), zoneNow(opts.trip, new Date())).toISOString(),
       });
     } catch (err) {
       if (!isClaimConflict(err)) throw err;
@@ -1321,7 +1322,7 @@ async function tryHandleFreeform(opts: {
         takenAt,
         tripStart: opts.trip.start_date,
         tripEnd: opts.trip.end_date,
-        taskCreatedOn: localDateString(new Date(), opts.trip.timezone),
+        taskCreatedOn: todayFor(opts.trip, new Date()),
       });
       if (!bonus.reject) {
         photoBonus = Math.min(bonus.bonus, freeformBonusMax);
@@ -1372,7 +1373,7 @@ async function tryHandleFreeform(opts: {
         awarded_points: null,
         resolved_by: "peer",
         resolution_json: { photoBonus },
-        expires_at: endOfLocalDayContaining(new Date(), opts.trip.timezone).toISOString(),
+        expires_at: endOfLocalDayContaining(new Date(), zoneNow(opts.trip, new Date())).toISOString(),
       });
       claimWritten = true;
       const sent = await opts.send(

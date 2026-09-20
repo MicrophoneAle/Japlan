@@ -1,4 +1,5 @@
 import { getServiceClient } from "@/lib/db/client";
+import { cityFor, isMultiCity, isTravelDate, todayFor } from "@/lib/game/legs";
 import type { TaskRow, TripRow } from "@/lib/db/types";
 import { formatPersonalBoard } from "@/lib/game/board";
 import {
@@ -29,7 +30,6 @@ import {
 import { isUnderAge } from "@/lib/game/preferences";
 import type { SurveyAnswers } from "@/lib/game/survey";
 import { missingRequiredSetup, type SetupFields } from "@/lib/game/setup";
-import { localDateString } from "@/lib/game/time";
 import { sendDM } from "@/lib/linq/send";
 import type { ClaimFallthrough } from "./claims";
 import {
@@ -66,11 +66,13 @@ function boardText(
   tasks: Pick<TaskRow, "code" | "title" | "base_points" | "slot" | "neighborhood">[],
   anchors: BoardAnchor[] = [],
   multiplierPart: string | null = null,
+  place: { city?: string | null; travelDay?: boolean } | null = null,
 ): string {
   return formatPersonalBoard({
     day,
     anchors,
     multiplierPart,
+    place,
     tasks: tasks.map((t) => ({
       code: t.code,
       title: t.title,
@@ -83,6 +85,13 @@ function boardText(
 
 // The day's multiplier, as the tail of the board header. Weekends need
 // nothing looked up, so this answers before any holiday lookup has run.
+// Multi-city only: the city and whether they travel that day.
+function placeFor(trip: TripRow, day: number): { city?: string | null; travelDay?: boolean } | null {
+  if (!trip.start_date || !isMultiCity(trip)) return null;
+  const date = dateForTripDay(trip.start_date, day);
+  return { city: cityFor(trip, date), travelDay: isTravelDate(trip, date) };
+}
+
 async function bannerFor(trip: TripRow, day: number): Promise<string | null> {
   if (!trip.start_date) return null;
   const special = await dayMultiplierFor(trip, day, dateForTripDay(trip.start_date, day));
@@ -149,7 +158,7 @@ export async function answerBoardRequest(
 ): Promise<void> {
   const now = new Date(nowMs);
   const trip = miss.trip;
-  const today = localDateString(now, trip.timezone);
+  const today = todayFor(trip, now);
   const reply = async (text: string, opts: { board?: boolean } = {}) => {
     if (opts.board && trip.play_mode === "full_group") {
       await miss.send(trip.linq_chat_id, `📣 ${miss.claimant.display_name} asked for the shared board:\n\n${text}`);
@@ -219,7 +228,7 @@ export async function answerBoardRequest(
     // Served the stored board: a request to SEE it. Asking for a different
     // one is isRedoRequest, routed before this (redo_today).
     boardStep("list", { path: "served_existing", tripId: trip.id, day, open: open.length, provisional });
-    const text = boardText(day, open, await dayAnchorsForBoard(trip, day), await bannerFor(trip, day));
+    const text = boardText(day, open, await dayAnchorsForBoard(trip, day), await bannerFor(trip, day), placeFor(trip, day));
     await reply(provisional ? provisionalBoard(text) : text, { board: true });
     return;
   }
@@ -272,7 +281,7 @@ export async function answerBoardRequest(
       return;
     }
     boardStep(isRefill ? "refill" : "late_joiner", { path: "regenerated", tripId: trip.id, day, count: rows.length });
-    const text = boardText(day, rows, await dayAnchorsForBoard(trip, day), await bannerFor(trip, day));
+    const text = boardText(day, rows, await dayAnchorsForBoard(trip, day), await bannerFor(trip, day), placeFor(trip, day));
     await reply(isRefill ? boardRefillLine(text) : provisional ? provisionalBoard(text) : text, {
       board: true,
     });
@@ -337,7 +346,7 @@ export async function answerBoardRequest(
     await reply(BOARD_MAKE_FAILED_LINE);
     return;
   }
-  const text = boardText(day, myRows, await dayAnchorsForBoard(trip, day), await bannerFor(trip, day));
+  const text = boardText(day, myRows, await dayAnchorsForBoard(trip, day), await bannerFor(trip, day), placeFor(trip, day));
   await reply(isFuture ? provisionalBoard(text) : text, { board: true });
 }
 
@@ -358,7 +367,7 @@ export async function boardForNewlyReady(
   now: Date,
 ): Promise<string | null> {
   if (!trip.start_date || !trip.end_date || missingRequiredSetup(trip as SetupFields).length > 0) return null;
-  const today = localDateString(now, trip.timezone || "UTC");
+  const today = todayFor(trip, now);
   if (today > trip.end_date) return null;
   const date = today < trip.start_date ? trip.start_date : today;
   const day = tripDayForDate(trip.start_date, date);
@@ -404,7 +413,7 @@ export async function boardForNewlyReady(
     if (rows.length === 0) return null;
     // The cron skips people who already got this day's board.
     await logRequest(trip.id, participantId, today, day, "generate");
-    const text = boardText(day, rows, await dayAnchorsForBoard(trip, day), await bannerFor(trip, day));
+    const text = boardText(day, rows, await dayAnchorsForBoard(trip, day), await bannerFor(trip, day), placeFor(trip, day));
     return date > today ? provisionalBoard(text) : text;
   } catch (err) {
     boardStep("ready.board.failed", { tripId: trip.id, day, participantId, error: err instanceof Error ? err.message : String(err) });

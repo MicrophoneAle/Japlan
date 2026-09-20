@@ -1,4 +1,5 @@
 import type { SurveyAnswers } from "@/lib/game/survey";
+import type { TripLeg } from "@/lib/game/legs";
 
 export type TripRow = {
   id: string;
@@ -13,6 +14,10 @@ export type TripRow = {
   stake_text: string | null;
   timezone: string | null;
   destination_profile_json?: unknown | null;
+  // Loaded separately (lib/handlers/legs.ts), never part of TRIP_COLS: a
+  // missed migration must degrade to a synthesised single leg, not break every
+  // trip query. Read it through lib/game/legs.ts, never directly.
+  legs?: TripLeg[] | null;
   is_solo?: boolean;
   daily_points_cap?: number;
   organizer_participant_id?: string | null;

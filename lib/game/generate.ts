@@ -251,6 +251,10 @@ export type GenerationInput = {
   // holiday shuts the ordinary ones. A board full of closed venues on a 3x day
   // is worse than an ordinary day.
   specialDay?: { label: string; source: string } | null;
+  // The day they change cities. They arrive with bags, tired, knowing nothing
+  // about where they are, so the board is a short evening near where they are
+  // staying rather than a normal day that assumes they are already out.
+  travelDay?: { city: string } | null;
   // One board in four also gets one task that fits no template.
   curveball?: boolean;
   // The group's answers that shape the board. Sociability is enforced in
@@ -316,6 +320,18 @@ function hoursText(minutes: number): string {
   return `${hours} hour${hours === 1 ? "" : "s"}`;
 }
 
+// The day they move cities. Short, close, low-effort, and useful for someone
+// who just got off a train: the first meal, the walk around the block, the
+// convenience store run. Never a full day out, never anything ticketed or far.
+function travelDayGuidance(city: string): string {
+  return [
+    `Today is a TRAVEL DAY: they are moving to ${city} and only arrive in the late afternoon, bags in hand.`,
+    "Build a short evening, not a day out. Everything must be within a short walk or one short ride of where they are staying.",
+    "Good: the first meal in the new city, a convenience store haul, a walk around the block, asking someone who lives there what to do tomorrow.",
+    "Bad: anything ticketed, anything that needs booking, anything across the city, anything that takes more than about an hour, anything that assumes they already know the place.",
+  ].join(" ");
+}
+
 // What today being special should do to the board. Two different jobs: a
 // festival is an opportunity (go where it is), a national holiday is also a
 // warning (the ordinary city is shut and the trains are full).
@@ -359,6 +375,7 @@ export function buildGenerationPrompt(input: GenerationInput): string {
     `Transit: ${input.profile.transit_lines.join(", ") || "(unknown)"}`,
     `Price bands seen: ${input.profile.price_bands.join(", ") || "(unknown)"}`,
     `Weather: ${input.weather.summary}; ${indoor}`,
+    ...(input.travelDay ? [travelDayGuidance(input.travelDay.city)] : []),
     ...(input.specialDay ? [specialDayGuidance(input.specialDay)] : []),
     `Preferences: ${input.preferenceText}`,
     ...(difficultyGuidance(input.difficulty) ? [difficultyGuidance(input.difficulty) as string] : []),

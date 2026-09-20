@@ -22,6 +22,7 @@ import { getServiceClient } from "@/lib/db/client";
 import type { TripRow } from "@/lib/db/types";
 import { extractLocalFestivals } from "@/lib/llm/gemini";
 import { countryForTrip } from "@/lib/game/countries";
+import { isSyntheticLeg, legForDate, legsOf } from "@/lib/game/legs";
 import { fetchPublicHolidays } from "@/lib/holidays/nager";
 import {
   taskMultiplierFor,
@@ -127,7 +128,7 @@ async function markChecked(tripId: string, now: Date): Promise<void> {
 async function storeSource(
   tripId: string,
   source: "holiday" | "festival",
-  days: MultiplierDay[],
+  days: (MultiplierDay & { leg_id?: string | null })[],
 ): Promise<boolean> {
   const client = getServiceClient();
   const cleared = await client
@@ -150,22 +151,39 @@ async function storeSource(
   return true;
 }
 
-// Tier 1. Every public holiday the destination's country has inside the trip.
-async function nationalHolidays(trip: TripRow): Promise<MultiplierDay[] | null> {
-  const country = countryForTrip(trip);
-  if (!country) {
-    step("holidays.no_country", { tripId: trip.id, destination: trip.destination });
-    return null;
+// Tier 1, per leg. A Tokyo to Seoul trip has two countries and two holiday
+// sets, and each leg's holidays only count on that leg's own dates. Legs
+// partition the trip, so the results can never collide on a date.
+async function nationalHolidays(trip: TripRow): Promise<(MultiplierDay & { leg_id: string | null })[] | null> {
+  const legs = legsOf(trip);
+  const out: (MultiplierDay & { leg_id: string | null })[] = [];
+  let anyAnswered = false;
+  for (const leg of legs) {
+    const country = countryForTrip({ destination: leg.city, timezone: leg.timezone });
+    if (!country) {
+      step("holidays.no_country", { tripId: trip.id, leg: leg.leg_order, city: leg.city });
+      continue;
+    }
+    const years = [Number(leg.start_date.slice(0, 4)), Number(leg.end_date.slice(0, 4))];
+    const found = await fetchPublicHolidays({ countryCode: country, years });
+    if (found === null) continue;
+    anyAnswered = true;
+    // Clipped to THIS leg's dates: a Japanese holiday must not pay out on the
+    // Seoul half of the trip.
+    const days = validSpecialDays(
+      found.map((holiday) => ({ date: holiday.date, name: holiday.name, kind: "holiday" })),
+      { start: leg.start_date, end: leg.end_date },
+    );
+    step("holidays.kept", {
+      tripId: trip.id,
+      leg: leg.leg_order,
+      country,
+      fetched: found.length,
+      kept: days.length,
+    });
+    out.push(...days.map((day) => ({ ...day, leg_id: isSyntheticLeg(leg) ? null : leg.id })));
   }
-  const years = [Number(trip.start_date!.slice(0, 4)), Number(trip.end_date!.slice(0, 4))];
-  const found = await fetchPublicHolidays({ countryCode: country, years });
-  if (found === null) return null;
-  const days = validSpecialDays(
-    found.map((holiday) => ({ date: holiday.date, name: holiday.name, kind: "holiday" })),
-    { start: trip.start_date!, end: trip.end_date! },
-  );
-  step("holidays.kept", { tripId: trip.id, country, fetched: found.length, kept: days.length });
-  return days;
+  return anyAnswered ? out : null;
 }
 
 // Tier 2. Search, then read the first page that gives us anything. Two pages
@@ -210,7 +228,7 @@ async function festivalPageText(opts: {
   return null;
 }
 
-async function localFestivals(trip: TripRow): Promise<MultiplierDay[] | null> {
+async function localFestivals(trip: TripRow): Promise<(MultiplierDay & { leg_id: string | null })[] | null> {
   const apiKey = process.env.BROWSERBASE_API_KEY;
   if (!apiKey) {
     step("festivals.skip", { reason: "no_api_key", tripId: trip.id });
@@ -234,7 +252,12 @@ async function localFestivals(trip: TripRow): Promise<MultiplierDay[] | null> {
   const days = validSpecialDays(
     proposed.map((row) => ({ date: row.date, name: row.name, kind: "festival" })),
     { start: trip.start_date!, end: trip.end_date! },
-  );
+  ).map((day) => {
+    // Tag with whichever leg owns that date, so a festival found for one city
+    // is recorded against it.
+    const leg = legForDate(trip, day.local_date);
+    return { ...day, leg_id: isSyntheticLeg(leg) ? null : leg.id };
+  });
   step("festivals.kept", { tripId: trip.id, proposed: proposed.length, kept: days.length });
   return days;
 }

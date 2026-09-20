@@ -5,6 +5,7 @@ import {
   localTimeHHMM,
   zonedTimeToUtc,
 } from "./time";
+import { zoneFor, zoneNow, type TripLeg } from "./legs";
 
 // When boards post, and which day a request means. Pure.
 //
@@ -45,12 +46,28 @@ export function formatBoardTime(hhmm: string): string {
   return m === 0 ? `${hour12}${suffix}` : `${hour12}:${String(m).padStart(2, "0")}${suffix}`;
 }
 
+// Carries legs so board timing follows the city they are actually in: after a
+// leg change, board_time has to fire on the new city's clock. A trip with one
+// leg (or none loaded) resolves to trips.timezone exactly as it always did.
 export type TripWindow = {
+  id?: string;
   start_date: string | null;
   end_date: string | null;
   timezone: string | null;
   board_time?: string | null;
+  destination?: string | null;
+  destination_profile_json?: unknown | null;
+  legs?: TripLeg[] | null;
 };
+
+// board_time is trip-wide, but which zone it means depends on where they are.
+function zoneAt(trip: TripWindow, date: string): string {
+  return zoneFor({ id: trip.id ?? "", ...trip }, date);
+}
+
+function zoneRightNow(trip: TripWindow, now: Date): string {
+  return zoneNow({ id: trip.id ?? "", ...trip }, now);
+}
 
 function boardTimeOf(trip: TripWindow): string {
   return trip.board_time && /^\d{2}:\d{2}/.test(trip.board_time)
@@ -74,10 +91,12 @@ export type DueCheck =
 // The cron's question for one trip at one tick: is today's board due?
 export function boardDueNow(trip: TripWindow, now: Date): DueCheck {
   if (!trip.start_date || !trip.end_date) return { due: false, reason: "no_dates" };
-  const today = localDateString(now, trip.timezone);
+  // The leg they are in right now decides what "today" is and whose 8am it is.
+  const zone = zoneRightNow(trip, now);
+  const today = localDateString(now, zone);
   if (today < trip.start_date) return { due: false, reason: "not_started" };
   if (today > trip.end_date) return { due: false, reason: "ended" };
-  if (localTimeHHMM(now, trip.timezone) < boardTimeOf(trip)) {
+  if (localTimeHHMM(now, zone) < boardTimeOf(trip)) {
     return { due: false, reason: "before_board_time" };
   }
   return { due: true, date: today, day: tripDayForDate(trip.start_date, today) };
@@ -91,11 +110,12 @@ export function nextBoardAt(
   opts: { todayBoardExists: boolean },
 ): { at: Date; date: string } | null {
   if (!trip.start_date || !trip.end_date) return null;
-  const today = localDateString(now, trip.timezone);
+  const today = localDateString(now, zoneRightNow(trip, now));
   let date = today < trip.start_date ? trip.start_date : today;
   if (date === today && opts.todayBoardExists) date = addDaysIso(today, 1);
   if (date > trip.end_date) return null;
-  const at = zonedTimeToUtc(date, `${boardTimeOf(trip)}:00`, trip.timezone);
+  // That date's own leg: "tomorrow at 8am" means 8am where they will be.
+  const at = zonedTimeToUtc(date, `${boardTimeOf(trip)}:00`, zoneAt(trip, date));
   // Today's time already passed without a board: the next tick posts it.
   return { at: at < now ? now : at, date };
 }
