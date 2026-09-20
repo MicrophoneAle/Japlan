@@ -53,11 +53,50 @@ function lifecycleStep(step: string, fields: Record<string, unknown> = {}): void
   console.log("[japlan.lifecycle] step", { step, ...fields });
 }
 
-// No per-trip Wrapped exists yet (app/wrapped is a fictional demo). When it
-// does, return its URL here and the final standings will carry the link.
 export function wrappedUrlFor(trip: TripRow): string | null {
-  void trip;
-  return null;
+  const origin = (
+    process.env.APP_URL ??
+    (process.env.VERCEL_PROJECT_PRODUCTION_URL
+      ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+      : null)
+  )?.replace(/\/+$/, "");
+  return origin ? `${origin}/wrapped/${trip.id}` : null;
+}
+
+// The conditional update is the idempotency guard. Only the request that
+// actually transitions the trip sends the final group-chat announcement.
+export async function completeTripAndAnnounce(opts: {
+  trip: TripRow;
+  people?: ParticipantRow[];
+  send?: SendFn;
+}): Promise<boolean> {
+  const send = opts.send ?? sendText;
+  const { data: ended, error } = await getServiceClient()
+    .from("trips")
+    .update({ state: "complete", completed_at: new Date().toISOString() })
+    .eq("id", opts.trip.id)
+    .neq("state", "complete")
+    .select("id");
+  if (error) throw error;
+  if (!ended || ended.length === 0) return false;
+
+  lifecycleStep("trip.completed", { tripId: opts.trip.id });
+  const people = opts.people ?? await listParticipants(opts.trip.id);
+  const teams = await teamsWithMembers(opts.trip.id);
+  const standings = buildStandingsRows(people, teams)
+    .map((row) => ({ name: row.display_name, score: row.score }))
+    .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+  await send(
+    opts.trip.linq_chat_id,
+    finalStandingsLine({
+      standings,
+      losers: losersOf(standings),
+      stake: opts.trip.stake_text,
+      wrappedUrl: wrappedUrlFor(opts.trip),
+    }),
+    { effect: { type: "screen", name: "confetti" } },
+  );
+  return true;
 }
 
 // Organizer-only actions. Trips from before the organizer column have no
@@ -233,36 +272,9 @@ export async function handleTripCommand(opts: {
     return;
   }
 
-  // end_trip_confirm: only the call that flips the state posts the final line.
-  const { data: ended, error } = await getServiceClient()
-    .from("trips")
-    .update({ state: "complete", completed_at: new Date().toISOString() })
-    .eq("id", trip.id)
-    .neq("state", "complete")
-    .select("id");
-  if (error) throw error;
-  if (!ended || ended.length === 0) {
+  if (!await completeTripAndAnnounce({ trip, people, send })) {
     await send(opts.chatId, TRIP_OVER_LINE);
-    return;
   }
-  lifecycleStep("trip.completed", { tripId: trip.id });
-  const teams = await teamsWithMembers(trip.id);
-  const standings = buildStandingsRows(people, teams)
-    .map((row) => ({ name: row.display_name, score: row.score }))
-    .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
-  // Final standings belong in the trip's own chat, even if confirmed by DM.
-  // Confetti, once: this branch only runs the one time a trip actually flips
-  // to complete (the update above is guarded by neq("state", "complete")).
-  await send(
-    trip.linq_chat_id,
-    finalStandingsLine({
-      standings,
-      losers: losersOf(standings),
-      stake: trip.stake_text,
-      wrappedUrl: wrappedUrlFor(trip),
-    }),
-    { effect: { type: "screen", name: "confetti" } },
-  );
 }
 
 async function startNewTrip(opts: {

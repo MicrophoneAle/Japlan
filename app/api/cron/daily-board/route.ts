@@ -1,5 +1,6 @@
 import { runDailyBoards } from "@/lib/handlers/daily-board";
 import { sweepStalledEvents } from "@/lib/handlers/event-sweep";
+import { completeExpiredTrips } from "@/lib/handlers/trip-expiry";
 
 export const maxDuration = 60;
 
@@ -20,8 +21,9 @@ export async function GET(request: Request): Promise<Response> {
 
   try {
     const result = await runDailyBoards({ force, tripId });
+    const expiredTrips = await completeExpiredTrips({ tripId });
     await sweepStalledEvents({ force: true }).catch((err) => console.error("[japlan.cron] sweep failed", err));
-    return Response.json({ ok: true, ...result });
+    return Response.json({ ok: true, ...result, expiredTrips });
   } catch (err) {
     console.error("[japlan.cron.daily-board]", err);
     return Response.json(

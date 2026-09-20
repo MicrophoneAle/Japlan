@@ -114,6 +114,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date("2026-09-19T03:00:00Z"));
   process.env.LINQ_FROM_NUMBER = BOT;
+  process.env.APP_URL = "https://japlan.example";
   process.env.JAPLAN_SOLO_MODE = "false";
   h.db = new FakeSupabase();
   h.sent.length = 0;
@@ -356,7 +357,9 @@ describe("end trip and new trip", () => {
     await send(MIKE, GROUP, "japlan end trip confirm");
     expect(trips()[0].state).toBe("complete");
     expect(trips()[0].completed_at).toBeTruthy();
-    expect(lastTo(GROUP)).toBe("it's over 😭 final: Mike 120 · Sam 40\nSam is on the hook, no takebacks: karaoke solo");
+    expect(lastTo(GROUP)).toBe(
+      `it's over 😭 final: Mike 120 · Sam 40\nSam is on the hook, no takebacks: karaoke solo\nthe recap: https://japlan.example/wrapped/${trips()[0].id}`,
+    );
     expect(lastMessageTo(GROUP)?.effect).toEqual({ type: "screen", name: "confetti" });
   });
 
