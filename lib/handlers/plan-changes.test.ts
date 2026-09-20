@@ -228,9 +228,15 @@ describe("the group is one group until someone says otherwise", () => {
     const slotsOf = (teamId: unknown) => tasks().filter((t) => t.team_id === teamId).map((t) => t.slot);
     expect(slotsOf(early.id)).toContain("morning");
     expect(slotsOf(late.id).every((s) => s !== "morning")).toBe(true);
-    // Everyone has tasks for after they rejoin.
+    // Everyone has tasks for after they rejoin. Split tasks belong to the
+    // team, so a person's board is their own rows plus their team's.
+    const teamsOf = (who: string) =>
+      h.db.table("team_members").filter((m) => m.participant_id === id(who)).map((m) => m.team_id);
     for (const who of Object.keys(PHONES)) {
-      expect(tasks().some((t) => t.participant_id === id(who) && t.slot !== "morning"), who).toBe(true);
+      const mine = tasks().filter(
+        (t) => t.participant_id === id(who) || (t.team_id && teamsOf(who).includes(t.team_id)),
+      );
+      expect(mine.some((t) => t.slot !== "morning"), who).toBe(true);
     }
   });
 });
@@ -342,7 +348,8 @@ describe("settings and task counts are requests, handled by tools", () => {
     expect(lastIn(dm("mike"))).toMatch(/^starting over, one question at a time\. skip keeps what you said before\./);
     // Skip keeps the old answer.
     const row = h.db.table("participants").find((p) => p.id === id("mike"))!;
-    expect(row.survey_state).toBe("ab_food_outdoors");
+    // Back to the first question, which in v2 is the name.
+    expect(row.survey_state).toBe("first_name");
     expect((row.survey_json as Record<string, unknown>).pace).toEqual({ value: "steady" });
   });
 });

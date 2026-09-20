@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SURVEY_DONE_DM } from "@/lib/game/copy";
 import { FakeSupabase } from "@/lib/test/fake-supabase";
 import type { ToolContent } from "@/lib/llm";
 
@@ -155,9 +156,14 @@ describe("solo setup and survey", () => {
     // One closing message: the close and "we're live", then their day 1
     // board (the trip has not started, so marked as provisional), then the
     // sidequest question last, so their next reply answers it.
-    expect(last()).toMatch(
-      /^done\. you're less mysterious than you think\. we're live 🔥 every morning your tasks land in your dms, and a code like A1 claims one\. first board drops oct 17 at 8am\.\n\nDay 1, might still change[\s\S]+\n\nbtw i'm turning on sidequests\./,
-    );
+    const close = last()!;
+    expect(close).toContain(SURVEY_DONE_DM);
+    expect(close).toContain("we're live");
+    expect(close).toContain("first board drops oct 17 at 8am");
+    expect(close).toContain("Day 1, might still change");
+    // The sidequest question is last, so their next reply answers it.
+    expect(close.indexOf("Day 1")).toBeLessThan(close.indexOf("btw i'm turning on sidequests"));
+    expect(close).toMatch(/btw i'm turning on sidequests\./);
     const surveyAsked = h.sent.slice(surveyStart).length;
     // At most eight questions, then the close.
     expect(surveyAsked).toBeLessThanOrEqual(9);

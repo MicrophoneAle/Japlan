@@ -510,25 +510,7 @@ export async function loadAssignees(trip: TripRow, people: ParticipantRow[], day
   if (trip.play_mode === "individual") return people.map(personAssignee);
 
   if (trip.play_mode === "teams") {
-    const teams = await createPreferenceTeamsForDay(trip.id, day, people);
-    const assigned = new Set<string>();
-    const assignees: Assignee[] = teams.map((team) => {
-      const members = people.filter((person) => team.memberIds.includes(person.id));
-      members.forEach((person) => assigned.add(person.id));
-      return {
-        kind: "team",
-        id: `team:${team.id}`,
-        teamId: team.id,
-        people: members,
-        label: team.name,
-        startAt: team.startsAt,
-        endAt: team.rejoinAt,
-        startNear: team.area,
-        endNear: team.rejoinPlace,
-      };
-    });
-    assignees.push(...people.filter((person) => !assigned.has(person.id)).map(personAssignee));
-    return assignees;
+    return teamAssignees(await createPreferenceTeamsForDay(trip.id, day, people), people);
   }
 
   // Legacy trips retain the former shared-plan behavior.
