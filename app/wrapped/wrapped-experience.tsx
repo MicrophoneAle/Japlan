@@ -54,7 +54,7 @@ function MobileLayoutGuards() {
       .${styles.statHalo} { opacity: .34; bottom: 21vh; font-size: 12rem; }
 
       .${styles.places} h2 { max-width: 84%; }
-      .${styles.placeNames} { z-index: 5; bottom: 10.2rem; max-width: 64%; gap: 4px; }
+      .${styles.placeNames} { display: none !important; }
       .${styles.placeNames} span { font-size: clamp(.9rem, 5vw, 1.3rem); line-height: 1.05; overflow-wrap: anywhere; }
       .${styles.mapBlob} { z-index: 6; width: 43vw; right: -7vw; bottom: 1.1rem; gap: 4px; }
       .${styles.mapBlob} b { font-size: clamp(3rem, 15vw, 4.8rem); }
