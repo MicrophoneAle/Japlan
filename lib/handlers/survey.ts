@@ -193,7 +193,15 @@ export async function handleSurveyDm(opts: {
       // Held to the same rule as the conversation: no codes, numbers, people
       // or places it was not given. A failed check drops the aside and just
       // re-asks.
-      const check = checkReply(read.reply, { taskCodes: [], people: [], toolText: "", userText: opts.text, contextText: "" });
+      const check = checkReply(read.reply, {
+        taskCodes: [],
+        people: [],
+        toolText: "",
+        userText: opts.text,
+        contextText: "",
+        // A survey aside is chat, never an action. It may not claim one.
+        stateChanged: false,
+      });
       if (check.ok) offTopic = read.reply;
       else console.warn("[japlan.survey] aside discarded", { participantId: participant.id, reason: check.reason });
     }

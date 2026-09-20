@@ -262,7 +262,7 @@ describe("asking for a board makes one", () => {
     clearDay1();
     await say(MIKE, DM[MIKE], "japlan plans");
     expect(last(DM[MIKE])).toBe(
-      `that's ${REFILLS_PER_DAY} refills for today already, plenty for one day. next day's board is yours whenever.`,
+      `that's ${REFILLS_PER_DAY} refills for today already, plenty for one day.\nnext day's board is yours whenever.`,
     );
     // Other days are never limited by it.
     await say(MIKE, DM[MIKE], "japlan tomorrow");

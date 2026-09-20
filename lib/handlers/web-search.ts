@@ -16,7 +16,22 @@ export type WebSearchResult = { title: string; url: string };
 
 export type WebSearchOutcome =
   | { ok: true; results: WebSearchResult[] }
-  | { ok: false; reason: "unavailable" | "no_results" | "failed" };
+  | { ok: false; reason: "unavailable" | "no_results" | "failed" | "is_a_url" };
+
+// Searching the web for a URL can never return anything useful: a query like
+// "instagram reel DRjSL_pEW3X tokyo place" is a shortcode, not a name, and no
+// search engine knows what is inside that post. A link someone pasted is
+// already read and resolved before the conversation turn (lib/handlers/
+// social-links.ts), and the venue it named is handed to the model as context,
+// so this refuses the query and points at that instead of burning a call.
+function looksLikeUrl(query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (/https?:\/\//.test(q)) return true;
+  if (/\b(?:instagram|tiktok|youtube|youtu\.be|fb\.watch|maps\.app\.goo\.gl)\b/.test(q)) return true;
+  // A bare shortcode someone pulled out of a URL: a long token with mixed
+  // case and no vowels to speak of.
+  return /\b[A-Za-z0-9_-]{9,}\b/.test(query) && !/\s/.test(query.trim());
+}
 
 const SEARCH_TIMEOUT_MS = 8_000;
 const MAX_RESULTS = 5;
@@ -43,6 +58,10 @@ async function withTimeout<T>(work: Promise<T>, ms: number, label: string): Prom
 // back to the model's own declared best guess (see CONVERSATION_SYSTEM_PROMPT),
 // so this never throws.
 export async function searchTheWeb(query: string): Promise<WebSearchOutcome> {
+  if (looksLikeUrl(query)) {
+    webSearchStep("web_search.rejected", { reason: "is_a_url", query: query.slice(0, 80) });
+    return { ok: false, reason: "is_a_url" };
+  }
   const apiKey = process.env.BROWSERBASE_API_KEY;
   if (!apiKey) {
     webSearchStep("web_search.skip", { reason: "no_api_key" });

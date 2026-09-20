@@ -1,5 +1,7 @@
 import type { ClaimRow, TaskRow } from "@/lib/db/types";
-import { zoneNow } from "@/lib/game/legs";
+import { todayFor, zoneNow } from "@/lib/game/legs";
+import { findUrls } from "@/lib/game/urls";
+import { resolveFirstLinkForContext } from "@/lib/handlers/social-links";
 import { evaluateAddress } from "@/lib/game/addressing";
 import {
   CONVERSATION_MAX_TOOL_ITERS,
@@ -53,7 +55,7 @@ import type { LLMProvider, ToolContent, ToolTurn } from "@/lib/llm";
 import { GeminiProvider } from "@/lib/llm/gemini";
 import { react, sendDM, sendText } from "@/lib/linq/send";
 import { recentMessages, TRANSCRIPT_LIMIT } from "@/lib/chat/transcript";
-import { checkReply } from "@/lib/game/reply-check";
+import { changedState, checkReply } from "@/lib/game/reply-check";
 import type { DestinationProfile } from "@/lib/game/destination";
 import { judgeRelevance } from "@/lib/llm/gemini";
 import {
@@ -280,6 +282,10 @@ function userPrompt(opts: {
   day: number;
   timeOfDay: string;
   history: { role: string; text: string }[];
+  // The first link in this message, already read. Without it the model sees a
+  // bare URL, has no venue to pass to add_suggestion, and reaches for
+  // search_web on the shortcode, which can never return anything.
+  link: { url: string; name: string; city: string | null; address: string | null } | null;
 }): string {
   const history = opts.history
     .map((line) => `${line.role}: ${line.text}`)
@@ -294,6 +300,11 @@ function userPrompt(opts: {
     // Not rules: never quote one back as a reason something cannot happen.
     `sender's own settings (editable by them any time, not rules): ${JSON.stringify(opts.survey)}`,
     `open tasks: ${opts.openTasks.map((t) => `${t.code} ${t.title}`).join("; ") || "(none)"}`,
+    ...(opts.link
+      ? [
+          `the link in this message is about: ${opts.link.name}${opts.link.city ? `, ${opts.link.city}` : ""}${opts.link.address ? ` (${opts.link.address})` : ""}. this is a real place read from the link itself: pass it to add_suggestion if they want to do it. never search_web for a url.`,
+        ]
+      : []),
     `recent chat:\n${history || "(none)"}`,
     `message:\n${opts.text}`,
   ].join("\n");
@@ -398,6 +409,26 @@ export async function handleConversation(
     lines: history.length,
     empty: history.length === 0,
   });
+  // The first link in this message, read inline before the turn. Without it
+  // the model sees a bare URL, has no venue to pass to add_suggestion, and
+  // reaches for search_web on the shortcode. ~1.4s for a stateless read,
+  // comparable to the search_web call already allowed here, and a miss just
+  // leaves the model with what it had before.
+  const link = findUrls(miss.text).length
+    ? await resolveFirstLinkForContext({
+        trip: miss.trip,
+        text: miss.text,
+        date: todayFor(miss.trip, new Date(now)),
+      }).catch(() => null)
+    : null;
+  if (link) {
+    console.info("[japlan.conversation] link context", {
+      chatId: miss.chatId,
+      kind: link.kind,
+      place: link.name,
+    });
+  }
+
   const toolText: string[] = [];
   const contents: ToolContent[] = [];
   for (const line of history) {
@@ -419,6 +450,7 @@ export async function handleConversation(
           day,
           timeOfDay: timeOfDayLabel(localHour(new Date(now), zoneNow(miss.trip, new Date(now)))),
           history,
+          link,
         }),
       },
     ],
@@ -526,7 +558,9 @@ export async function handleConversation(
   // empty, and actually a reply to what was said. Code-written lines (the
   // fallback, the privacy line) are not model text and skip the checks.
   const fromModel = reply !== CONVERSATION_FALLBACK && reply !== CONVERSATION_PRIVACY_LINE;
-  const verdict = fromModel ? await vetReply(reply, miss, toolText, history) : { ok: true as const };
+  const verdict = fromModel
+    ? await vetReply(reply, miss, toolText, history, loop.toolNames)
+    : { ok: true as const };
   const out = verdict.ok ? reply : DISCARD_FALLBACK;
   if (!verdict.ok) {
     console.warn("[japlan.conversation] discard", { chatId: miss.chatId, reason: verdict.reason, reply: reply.slice(0, 300) });
@@ -554,6 +588,7 @@ async function vetReply(
   miss: ClaimFallthrough,
   toolText: string[],
   history: { text: string }[],
+  toolNames: string[],
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   const facts = checkReply(reply, {
     taskCodes: miss.tasks.map((t) => t.code),
@@ -561,6 +596,9 @@ async function vetReply(
     toolText: toolText.join(" "),
     userText: miss.text,
     contextText: tripContextText(miss, history),
+    // "i'll add that to day 3" is only allowed to go out if something
+    // actually wrote it.
+    stateChanged: changedState(toolNames),
   });
   if (!facts.ok) return facts;
   // One cheap check: does it respond to what was actually said?

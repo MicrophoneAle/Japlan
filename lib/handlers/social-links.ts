@@ -475,3 +475,82 @@ async function participantNames(tripId: string): Promise<Map<string, string>> {
     ]),
   );
 }
+
+// ---------------------------------------------------------- inline context
+
+// The first link in a message, read BEFORE the conversation turn so the model
+// has a real venue name instead of a bare URL.
+//
+// This is the fix for the model reaching for search_web with an Instagram
+// shortcode: it had nothing else to go on. With the venue in context,
+// "japlan can we do this <reel>" has something to pass to add_suggestion,
+// which is the behaviour we want.
+//
+// Reading only: no place row, no anchoring, no message. The queued row stays
+// for the cron, and whichever path writes the place first owns it (dedupe in
+// insertPlace and saveSuggestion). Additional links in the same message are
+// left on the queue; one inline read is the budget.
+//
+// Never throws, and bounded: a miss just means the model gets what it had
+// before. The stateless read measured ~1.4s, comparable to the search_web
+// call already allowed on this path.
+const INLINE_TIMEOUT_MS = 9_000;
+
+export type LinkContext = { url: string; kind: LinkKind; name: string; city: string | null; address: string | null };
+
+export async function resolveFirstLinkForContext(opts: {
+  trip: TripRow;
+  text: string;
+  date: string;
+}): Promise<LinkContext | null> {
+  const first = findUrls(opts.text)
+    .map((url) => ({ url, kind: classifyUrl(url) }))
+    .find((row): row is { url: string; kind: LinkKind } => row.kind !== null);
+  if (!first) return null;
+
+  try {
+    return await withTimeout(readForContext(opts, first), INLINE_TIMEOUT_MS, "social.inline");
+  } catch (err) {
+    step("inline.failed", { url: first.url, error: err instanceof Error ? err.message : String(err) });
+    return null;
+  }
+}
+
+async function readForContext(
+  opts: { trip: TripRow; text: string; date: string },
+  first: { url: string; kind: LinkKind },
+): Promise<LinkContext | null> {
+  const read = await readLink({
+    id: "inline",
+    trip_id: opts.trip.id,
+    participant_id: null,
+    url: first.url,
+    kind: first.kind,
+    attempts: 0,
+  });
+  if (!read.ok) {
+    step("inline.miss", { kind: first.kind, reason: read.reason });
+    return null;
+  }
+  // A maps link names the place on its face; nothing needs a model.
+  if (read.maps?.name) {
+    step("inline.resolved", { kind: first.kind, place: read.maps.name, via: "url" });
+    return { url: first.url, kind: first.kind, name: read.maps.name, city: null, address: null };
+  }
+  const found = await extractPlaceFromText({
+    text: read.text,
+    destination: cityFor(opts.trip, opts.date) || opts.trip.destination,
+  }).catch(() => null);
+  if (!found?.place_name) {
+    step("inline.no_venue", { kind: first.kind, chars: read.text.length });
+    return null;
+  }
+  step("inline.resolved", { kind: first.kind, place: found.place_name, via: read.via });
+  return {
+    url: first.url,
+    kind: first.kind,
+    name: found.place_name,
+    city: found.city,
+    address: found.address,
+  };
+}

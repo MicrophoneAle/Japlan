@@ -276,7 +276,7 @@ describe("photo sent alone after claiming", () => {
     await dispatchLinqEvent(message([photoPart]));
     expect(a1Claim()?.awarded_points).toBe(8);
     expect(h.sent.at(-1)?.text).toBe(
-      "that doesn't really look like A1 ngl, so no photo bonus. a clearer shot still counts.",
+      "that doesn't really look like A1 ngl, so no photo bonus.\na clearer shot still counts.",
     );
   });
   it("says the check failed, not 'doesn't look like', when the model answer is unreadable", async () => {

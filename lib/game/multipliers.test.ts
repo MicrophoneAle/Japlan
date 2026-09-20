@@ -311,7 +311,6 @@ describe("how a special day reaches people", () => {
     expect(holidayLine).toContain("respect for the aged day");
     expect(holidayLine).toContain("3x");
     expect(holidayLine).toMatch(/shut/);
-    expect(holidayLine.split("\n")).toHaveLength(1);
 
     const festivalLine = multiplierDayAnnouncement({
       label: "golden week",
@@ -320,10 +319,12 @@ describe("how a special day reaches people", () => {
     });
     expect(festivalLine).toContain("golden week");
     expect(festivalLine).not.toMatch(/shut/);
-    expect(festivalLine.split("\n")).toHaveLength(1);
   });
 
-  it("keeps the house style: lowercase, one line, no em dashes", () => {
+  // One MESSAGE, never two. Line breaks inside it are the house style: the
+  // announcement is two distinct ideas (what today is worth, and the warning
+  // that comes with a holiday), so they get a line each.
+  it("keeps the house style: lowercase, no em dashes, still one message", () => {
     const lines = [
       part("golden week", 2),
       part("friday", 1.25),
@@ -332,7 +333,7 @@ describe("how a special day reaches people", () => {
     ];
     for (const line of lines) {
       expect(line).not.toMatch(/—/);
-      expect(line.split("\n")).toHaveLength(1);
+      expect(line.split("\n\n\n")).toHaveLength(1);
       // No capital letters anywhere: emoji and elongation carry emphasis.
       expect(line.replace(/[^A-Za-z]/g, "")).toBe(line.replace(/[^A-Za-z]/g, "").toLowerCase());
     }

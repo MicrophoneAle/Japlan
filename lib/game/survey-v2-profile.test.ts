@@ -16,7 +16,7 @@ import {
   withBasis,
 } from "./prefs";
 import { constraintLine, groupProfile, personProfile } from "./profile";
-import { checkReply, type ReplyFacts } from "./reply-check";
+import { changedState, checkReply, type ReplyFacts } from "./reply-check";
 import type { SurveyAnswers } from "./survey";
 import { validateGeneratedTask, type ProposedTask } from "./validate";
 
@@ -257,6 +257,7 @@ describe("reply checks", () => {
     toolText: '{"standings":[{"name":"Maya","points":40}]}',
     userText: "who's winning",
     contextText: "Yoyogi Park | Senso-ji",
+    stateChanged: false,
   };
 
   it("passes a reply built from what tools returned", () => {
@@ -330,5 +331,57 @@ describe("the group profile only claims what was answered", () => {
 
   it("counts people who never answered in the group size", () => {
     expect(groupProfile([{ answers: {} }], { groupSize: 3 })).toMatch(/^A group of 3\. Nobody has said what they're into yet\./);
+  });
+});
+
+// The bug class this exists for: "got it bob, profile locked in" when nothing
+// changed. A reply may only claim a state change if a tool actually made one.
+describe("a reply may not promise what no tool did", () => {
+  const base: ReplyFacts = {
+    taskCodes: ["A1"],
+    people: ["Dev"],
+    toolText: "",
+    // Carries "day 3" so the number rule is not what fires in these cases.
+    userText: "can we do shibuya sky on day 3",
+    contextText: "",
+    stateChanged: false,
+  };
+
+  it("discards a claim that something was added when nothing wrote it", () => {
+    for (const reply of [
+      "ooh i'll add that to the board",
+      "added it to day 3",
+      "bet, saved",
+      "locked in 🔒",
+      "ok say less, putting it on the board",
+    ]) {
+      expect(checkReply(reply, base)).toMatchObject({ ok: false, reason: "narrated_uncompleted_action" });
+    }
+  });
+
+  it("lets the same claim through once a tool actually changed something", () => {
+    for (const reply of ["added it to day 3", "locked in 🔒"]) {
+      expect(checkReply(reply, { ...base, stateChanged: true })).toEqual({ ok: true });
+    }
+    expect(changedState(["add_suggestion"])).toBe(true);
+    expect(changedState(["get_standings", "search_web"])).toBe(false);
+  });
+
+  it("never touches an offer, a question, or ordinary chat", () => {
+    for (const reply of [
+      "want me to add it?",
+      "should i put it on day 3?",
+      "shibuya sky is unreal at sunset, go at golden hour",
+      "yeah the views there are worth it",
+      "lemme know if you want it on a specific day",
+    ]) {
+      expect(checkReply(reply, base)).toEqual({ ok: true });
+    }
+  });
+
+  // "sort" is a deferral in ordinary speech, and this is real survey copy.
+  // A rule that discards it costs a good reply and catches nothing.
+  it("lets a deferral through rather than reading it as a promise", () => {
+    expect(checkReply("no clue yet, i'll sort that once we're done here.", base)).toEqual({ ok: true });
   });
 });
