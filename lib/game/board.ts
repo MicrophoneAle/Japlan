@@ -53,10 +53,10 @@ function taskLine(task: BoardTask): string {
 }
 
 const SLOT_LABEL: Record<string, string> = {
-  morning: "🌅 morning",
-  afternoon: "☀️ afternoon",
-  evening: "🌙 evening",
-  anytime: "✨ anytime",
+  morning: "🌅 MORNING",
+  afternoon: "☀️ AFTERNOON",
+  evening: "🌙 EVENING",
+  anytime: "✨ ANYTIME",
 };
 
 function taskSections(
@@ -68,9 +68,15 @@ function taskSections(
     const slotTasks = tasks.filter((task) => (task.slot ?? "anytime") === slot);
     const slotAnchors = anchors.filter((anchor) => (anchor.slot ?? "anytime") === slot);
     if (slotTasks.length === 0 && slotAnchors.length === 0) continue;
-    sections.push(SLOT_LABEL[slot]);
-    sections.push(...slotTasks.map(taskLine));
-    sections.push(...slotAnchors.map((anchor) => boardAnchorLine(anchor.name, anchor.by)));
+    sections.push(`${SLOT_LABEL[slot]}${slotTasks.length > 0 ? ` · ${slotTasks.length} ${slotTasks.length === 1 ? "task" : "tasks"}` : ""}`);
+    const rows = [
+      ...slotTasks.map(taskLine),
+      ...slotAnchors.map((anchor) => boardAnchorLine(anchor.name, anchor.by)),
+    ];
+    rows.forEach((row, index) => {
+      if (index > 0) sections.push("");
+      sections.push(row);
+    });
     sections.push("");
   }
   while (sections.at(-1) === "") sections.pop();
@@ -91,8 +97,10 @@ export function formatDailyBoard(opts: {
   // weather, so it changes what people do and not only what they score.
   multiplierPart?: string | null;
   place?: { city?: string | null; travelDay?: boolean } | null;
+  // When set, render only the selected section. Standings appear with morning.
+  slot?: "morning" | "afternoon" | "evening";
 }): string {
-  const tasks = boardOrder(opts.tasks);
+  const tasks = boardOrder(opts.slot ? opts.tasks.filter((task) => belongsToSlot(task, opts.slot!)) : opts.tasks);
   const standings = [...opts.standings].sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
     return a.display_name.localeCompare(b.display_name);
@@ -102,13 +110,20 @@ export function formatDailyBoard(opts: {
     dailyBoardHeader(opts.day, opts.weatherLine, routeOf(tasks), opts.multiplierPart, opts.place),
     "",
     ...taskSections(tasks),
-    "",
-    standingsLine(standings),
+    ...(opts.slot === "afternoon" || opts.slot === "evening"
+      ? []
+      : ["", standingsLine(standings)]),
   ];
   return lines.join("\n");
 }
 
 export type BoardAnchorItem = { name: string; by: string | null; slot: string | null };
+
+function belongsToSlot(task: BoardTask, slot: "morning" | "afternoon" | "evening"): boolean {
+  // Older tasks without a slot were originally delivered with the morning
+  // board, so keep them there when showing one period at a time.
+  return (task.slot ?? "morning") === slot;
+}
 
 export function formatPersonalBoard(opts: {
   day: number;
@@ -118,13 +133,18 @@ export function formatPersonalBoard(opts: {
   anchors?: BoardAnchorItem[];
   multiplierPart?: string | null;
   place?: { city?: string | null; travelDay?: boolean } | null;
+  // Render one time-of-day section rather than the whole day's board.
+  slot?: "morning" | "afternoon" | "evening";
 }): string {
-  const tasks = boardOrder(opts.tasks);
+  const tasks = boardOrder(opts.slot ? opts.tasks.filter((task) => belongsToSlot(task, opts.slot!)) : opts.tasks);
   // Anchors sit in their time of day, after that slot's tasks.
+  const anchors = opts.slot
+    ? (opts.anchors ?? []).filter((anchor) => (anchor.slot ?? "morning") === opts.slot)
+    : opts.anchors;
   return [
     dailyBoardHeader(opts.day, opts.weatherLine, routeOf(tasks), opts.multiplierPart, opts.place),
     "",
-    ...taskSections(tasks, opts.anchors),
+    ...taskSections(tasks, anchors),
   ].join("\n");
 }
 

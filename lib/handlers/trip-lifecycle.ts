@@ -17,11 +17,12 @@ import {
   profileUnfinishedLine,
   resurveyStartLine,
   SETTINGS_IN_DM_LINE,
+  SURVEY_IN_DM_LINE,
   settingsListLine,
   surveyStatusLine,
   tripNotReadyLine,
 } from "@/lib/game/copy";
-import { settingsSummary } from "@/lib/game/settings";
+import { settingsOverview } from "@/lib/game/settings";
 import { lookupOwnProfile } from "./profiles";
 import type { SurveyAnswers } from "@/lib/game/survey";
 import { FIRST_QUESTION_ID, QUESTIONS } from "@/lib/game/survey-questions";
@@ -216,7 +217,19 @@ export async function handleTripCommand(opts: {
   // Everyone's own answers are theirs to see and change, any time. Private
   // ones, so the list goes to their DM.
   if (opts.command === "settings") {
-    const text = settingsListLine(settingsSummary((participant.survey_json ?? {}) as SurveyAnswers));
+    const { data: profile, error: profileError } = await getServiceClient()
+      .from("participants")
+      .select("prefs_json")
+      .eq("id", participant.id)
+      .maybeSingle();
+    if (profileError) throw profileError;
+    const text = settingsListLine(
+      settingsOverview((participant.survey_json ?? {}) as SurveyAnswers, {
+        displayName: participant.display_name,
+        sidequestsMuted: participant.sidequests_muted,
+        prefsJson: profile?.prefs_json,
+      }),
+    );
     if (opts.isDm) {
       await send(opts.chatId, text);
     } else {
@@ -252,7 +265,7 @@ export async function handleTripCommand(opts: {
       await send(opts.chatId, prompt);
     } else {
       await sendDM(participant.phone, prompt);
-      await send(opts.chatId, SETTINGS_IN_DM_LINE.replace("your settings are", "your questions are"));
+      await send(opts.chatId, SURVEY_IN_DM_LINE);
     }
     return;
   }
@@ -265,13 +278,13 @@ export async function handleTripCommand(opts: {
     }
     await beginSetup(trip);
     if (trip.is_solo) {
-      await send(opts.chatId, setupPromptFor(trip, "destination"));
+      await send(opts.chatId, setupPromptFor(trip, "destination", true));
       return;
     }
-    const prompt = setupPromptFor(trip, "destination");
+    const prompt = setupPromptFor(trip, "destination", true);
     await send(
       trip.linq_chat_id,
-      `👑 ${participant.display_name} is the organizer and controls the shared setup. answer in this chat with “japlan” + your response.\n${prompt}`,
+      `👑 ${participant.display_name} is the organizer and controls the shared setup. We'll set the city, dates, and board style here before private surveys go out. Send only the answer to each question; you don't need to type “Japlan.”\n\n${prompt}`,
     );
     if (opts.isDm) {
       await send(opts.chatId, `setup is in the group chat so everyone can see the shared trip details.`);

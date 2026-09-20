@@ -44,7 +44,8 @@ export type TaskTemplate = {
   kind: TaskKind;
   slots: TemplateSlot[];
   verification: SeedVerification;
-  // photo_bonus_max is the bonus ceiling. verification "photo" is not a claim gate.
+  // Tasks need a matching photo or a different trip member's group validation.
+  // This marks the natural route; photo_bonus_max caps extra points for photo proof.
   photo_bonus_max: number;
   axes: Record<keyof Axes, AxisRange>;
   indoor: boolean;
@@ -652,8 +653,11 @@ export const TEMPLATES: TaskTemplate[] = [
   // kind, duration (with the time axis range inside it), needs_stranger,
   // blind_food, alcohol, interests, venue /
   // leg / fixedMinutes, verification, photo_bonus_max, indoor, typical_cost
-  // and axis ranges on every row. verification "photo" means a photo can add
-  // bonus points; code claims still resolve.
+  // and axis ranges on every row. verification marks the natural proof route;
+  // photo_bonus_max is extra points for photo proof. Every task still needs a
+  // matching photo or group validation.
+  // For a solo trip, use tasks with clear visual evidence because nobody else
+  // can validate a claim.
   // ---------------------------------------------------------------------------
 ];
 
@@ -662,10 +666,13 @@ export function templateById(id: string | null | undefined): TaskTemplate | null
 }
 
 // Templates that can go on a daily board: main tasks only (sidequests fill
-// the gaps between them), and nothing needing a group on a solo trip.
+// the gaps between them). Solo boards use templates whose natural proof is a
+// photo, since no other trip member can validate a claim.
 export function boardTemplates(opts: { solo: boolean }): TaskTemplate[] {
   return TEMPLATES.filter(
-    (t) => t.duration !== "sidequest" && !(opts.solo && t.groupOnly),
+    (t) =>
+      t.duration !== "sidequest" &&
+      !(opts.solo && (t.groupOnly || t.verification !== "photo")),
   );
 }
 

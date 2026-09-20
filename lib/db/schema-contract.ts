@@ -27,11 +27,12 @@ export const SCHEMA_CONTRACT: TableColumns = {
     "difficulty", "stake_text", "timezone", "destination_profile_json", "is_solo", "daily_points_cap",
     "organizer_participant_id", "setup_state", "completed_at", "board_time", "category_weights",
     "group_profile_md", "engagement_json", "waiting_notice_sent_at", "sidequest_state",
-    "multipliers_checked_at", "created_at",
+    "multipliers_checked_at", "show_suggested_at", "created_at",
   ],
   participants: [
     "id", "trip_id", "phone", "display_name", "score", "survey_json", "survey_state",
-    "sidequests_muted", "consented_at", "prefs_json", "profile_md", "survey_nudged_on", "created_at",
+    "sidequests_muted", "consented_at", "prefs_json", "profile_md", "survey_nudged_on",
+    "setup_pending_told_at", "created_at",
   ],
   tasks: [
     "id", "trip_id", "participant_id", "team_id", "code", "title", "tier", "axes_json", "base_points",
@@ -62,13 +63,18 @@ export const SCHEMA_CONTRACT: TableColumns = {
   ],
   sidequests: ["id", "trip_id", "day", "local_date", "template_id", "title", "points", "photo_bonus_max", "trigger", "status", "won_by", "won_at", "created_at"],
   sidequest_offers: ["id", "sidequest_id", "trip_id", "participant_id", "status", "queued_at", "fired_at", "expires_at", "resolved_at", "awarded_points", "photo_bonus", "created_at"],
-  group_decisions: ["id", "trip_id", "prompt", "status", "created_by", "selected_option", "created_at", "closed_at", "last_reminded_at"],
-  group_decision_options: ["id", "decision_id", "option_index", "label", "message_id"],
+  group_decisions: ["id", "trip_id", "prompt", "status", "created_by", "selected_option", "poll_message_id", "voting_mode", "created_at", "closed_at", "last_reminded_at"],
+  group_decision_options: ["id", "decision_id", "option_index", "label", "message_id", "poll_option_id"],
   group_decision_votes: ["id", "decision_id", "participant_id", "option_index", "created_at", "updated_at"],
+  trip_location_shares: ["trip_id", "participant_id", "direct_chat_id", "share_status", "expires_at"],
   multiplier_days: ["id", "trip_id", "local_date", "multiplier", "label", "source", "leg_id", "created_at"],
   social_links: [
     "id", "trip_id", "participant_id", "chat_id", "url", "kind", "status", "attempts",
     "extracted_text", "outcome", "place_id", "created_at", "attempted_at", "resolved_at",
+  ],
+  trip_events: [
+    "id", "trip_id", "leg_id", "name", "venue", "lat", "lng", "starts_at",
+    "category", "url", "price_note", "source", "created_at",
   ],
   trip_legs: [
     "id", "trip_id", "leg_order", "city", "start_date", "end_date", "timezone",

@@ -1,5 +1,29 @@
 import { describe, expect, it } from "vitest";
-import { detectTeamNameCommand, isDashboardRequest, isStandingsRequest } from "./commands";
+import {
+  detectLocationSharingRequest,
+  detectTeamNameCommand,
+  isDashboardRequest,
+  isStandingsRequest,
+} from "./commands";
+
+describe("detectLocationSharingRequest", () => {
+  it("accepts the documented command and natural word order", () => {
+    for (const text of [
+      "japlan share locations",
+      "japlan share location",
+      "japlan request location sharing",
+      "Request location sharing japlan",
+      "japlan turn on live location sharing",
+    ]) {
+      expect(detectLocationSharingRequest(text), text).toBe(true);
+    }
+  });
+
+  it("requires the wake keyword so ordinary group conversation is not intercepted", () => {
+    expect(detectLocationSharingRequest("request location sharing")).toBe(false);
+    expect(detectLocationSharingRequest("we should share locations later")).toBe(false);
+  });
+});
 
 describe("isStandingsRequest", () => {
   it("recognises the leaderboard command and its short forms", () => {

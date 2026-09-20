@@ -65,7 +65,7 @@ const LEGACY_QUESTIONS: Partial<Record<QuestionId, Question>> = {
     id: "first_name",
     kind: "free_text",
     prompt:
-      "a few quick ones so the tasks fit you. skip any of them by saying skip. what should i call you?",
+      "first up: what name should go on your board and the leaderboard? say it however you'd naturally say it, like “i’m ___,” “call me ___,” or just the name. nicknames count too; say skip if your current chat name already works.",
   },
   age_bracket: {
     id: "age_bracket",
@@ -329,6 +329,15 @@ export const SURVEY_INTRO =
   `🔒 quick private setup: up to 8 short questions to shape your board. replies stay in this dm; the group sees who's done, never your answers. use the number shown, say “both” on either-or questions, or “skip”; i'll only ask extra questions if i need a safety detail right.`;
 
 export const SURVEY_V2: Partial<Record<QuestionId, Question>> = {
+  // v2's own first question. The legacy first_name prompt re-explains "skip",
+  // which SURVEY_INTRO has already done two sentences earlier, and re-opens
+  // with "a few quick ones" after the intro has already opened. Together they
+  // read as two messages glued into one.
+  first_name: {
+    id: "first_name",
+    kind: "free_text",
+    prompt: "what should i call you?",
+  },
   ab_food_outdoors: {
     id: "ab_food_outdoors",
     kind: "either_or",
@@ -448,8 +457,8 @@ export const SURVEY_V2: Partial<Record<QuestionId, Question>> = {
     id: "sidequest_level",
     kind: "choice",
     prompt:
-      "btw i'm turning on sidequests. how unhinged am i allowed to get?\n1 civilized (food, photos, exploring)\n2 questionable (strangers, mild embarrassment)\n3 feral (surprise me)\n4 absolutely not",
-    reask: "sidequests: 1 civilized, 2 questionable, 3 feral, or 4 absolutely not?",
+      "optional sidequests are quick bonus challenges i'll send privately during the trip. how bold should i make them?\n1 · gentle (food, photos, exploring)\n2 · social (strangers, mild silliness)\n3 · wild (surprise me)\n4 · none, thanks",
+    reask: "optional sidequests: 1 gentle, 2 social, 3 wild, or 4 none?",
     choices: [
       { id: "1", label: "civilized" },
       { id: "2", label: "questionable" },

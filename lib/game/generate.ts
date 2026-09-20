@@ -245,12 +245,20 @@ export type GenerationInput = {
   // The bank the model may build from: main-task templates only (sidequests
   // never go on the board), no group templates on a solo trip.
   templates?: TaskTemplate[];
+  // Solo claims have no other trip member available for validation.
+  solo?: boolean;
   plan?: GenerationPlan;
   // A holiday or a festival changes what is worth doing, not only what it
   // scores: the day's own events are the best tasks available, and a national
   // holiday shuts the ordinary ones. A board full of closed venues on a 3x day
   // is worse than an ordinary day.
   specialDay?: { label: string; source: string } | null;
+  // "this trip is a waste if we don't ___", in their own words. The highest
+  // signal answer in the survey: somebody naming the one thing that decides
+  // whether the trip worked. It used to reach the prompt only as a sentence
+  // buried in the preferences paragraph, reading like any other lean. It is
+  // its own line now, and it outranks an interest weight.
+  mustHaves?: string[];
   // The day they change cities. They arrive with bags, tired, knowing nothing
   // about where they are, so the board is a short evening near where they are
   // staying rather than a normal day that assumes they are already out.
@@ -393,6 +401,11 @@ export function buildGenerationPrompt(input: GenerationInput): string {
     input.sociability === "rather_not" ? NO_STRANGERS_GUIDANCE : TASK_QUALITY_GUIDANCE,
     ...(sociabilityLine(input.sociability) ? [sociabilityLine(input.sociability) as string] : []),
     `At least ${bold} of the ${count} tasks must honestly rate boldness 3 or more.`,
+    ...(input.mustHaves?.length
+      ? [
+          `Must-haves, in their own words: ${input.mustHaves.join("; ")}. Somebody said the trip is a waste without these. Treat each one as a standing constraint on the WHOLE trip, not a preference: it outranks the interest leans below. Build toward it across the days, and never let a board go by that makes it less likely to happen.`,
+        ]
+      : []),
     ...(input.interests?.length
       ? [
           `What this group picked as its top interests (lean the board toward these): ${input.interests
@@ -408,11 +421,14 @@ export function buildGenerationPrompt(input: GenerationInput): string {
         ]
       : []),
     ...(input.avoid?.length ? [`The group asked to avoid: ${input.avoid.join(", ")}.`] : []),
+    input.solo
+      ? "Proof requirement: This is a solo trip, so every task must have a clear visual result a phone photo can plausibly show. Do not generate an activity that needs another person to confirm it or that has no photo evidence; code-only claims never score."
+      : "Proof requirement: Every task needs either a photo that plausibly matches it or a 👍 validation from another trip participant in the group. Make tasks concrete enough for a picture or another participant to recognize what was done; code-only claims never score.",
     ...(input.curveball ? [CURVEBALL_GUIDANCE] : []),
     "title: the full instruction as the player reads it, lowercase, one short sentence (\"ask a stranger in koenji for their single best recommendation, then actually do it\"), not a headline.",
     "places: the specific spots the task happens at, named as in the neighborhoods or landmarks above where possible; a route task names its start then its end; a task that can happen anywhere has none.",
     `Return exactly ${count} tasks as JSON matching the schema, best first. Fill slots from the destination profile. Axes are integers 1-5. Never include a point value.`,
-    "Verification is not a photo gate. honor and photo are both claimable by code immediately; photo_bonus_max is the optional bonus ceiling for a matching photo. Only peer requires someone else's tapback.",
+    "Verification describes the natural proof route: photo for tasks with a visible result, peer for tasks another participant can best witness, and honor when either route works. It never waives proof. Every claim is held until a matching photo or another trip member's 👍; photo_bonus_max controls extra points on top of the base award, not whether the photo is required as proof.",
   ].join("\n");
 }
 
@@ -422,7 +438,7 @@ export async function generateTasksForAssignee(
 ): Promise<ProposedTask[]> {
   const raw = await provider.complete({
     system:
-      "You generate daily scavenger-hunt tasks. Propose axes only, never points. Classification of difficulty is the six axes. JSON only. A photo is a bonus, never a requirement; only peer verification needs another person.",
+      "You generate daily scavenger-hunt tasks. Propose axes only, never points. Classification of difficulty is the six axes. JSON only. Every task must be verifiable by either a plausibly matching photo or another trip participant's group reaction; solo tasks must be photo-verifiable. Code-only claims do not score. photo_bonus_max is optional extra points after photo proof.",
     messages: [{ role: "user", content: buildGenerationPrompt(input) }],
     schema: GENERATED_TASK_SCHEMA,
     tier: "smart",

@@ -65,6 +65,9 @@ export function isSetupSkip(text: string): boolean {
 export function matchDifficulty(text: string): Difficulty | null {
   const t = text.trim().toLowerCase().replace(/[.!]+$/, "");
   if (DIFFICULTIES.includes(t as Difficulty)) return t as Difficulty;
+  if (t === "1") return "chill";
+  if (t === "2") return "normal";
+  if (t === "3") return "unhinged";
   if (/^(easy|chilled|relaxed|low)$/.test(t)) return "chill";
   if (/^(medium|regular|mid|standard)$/.test(t)) return "normal";
   if (/^(hard|chaos|chaotic|wild|insane|max)$/.test(t)) return "unhinged";
@@ -262,4 +265,69 @@ export function losersOf(standings: { name: string; score: number }[]): string[]
   if (standings.length < 2) return [];
   const low = Math.min(...standings.map((s) => s.score));
   return standings.filter((s) => s.score === low).map((s) => s.name);
+}
+
+// Not every addressed message during setup is an ANSWER to the pending
+// question. The flow used to consume whatever arrived, so "japlan where did
+// you get that city from" became the date answer and got "couldn't read those
+// dates", and there was no way to correct a wrong answer at all: the
+// correction just became the next answer.
+export type SetupIntent = "answer" | "question" | "correction";
+
+// Asking about the setup rather than answering it.
+const QUESTION_RE =
+  /^(?:where|what|whats|what's|why|who|when|how|which|did|do|does|are|is|can|could|would|should)\b|[?]\s*$/i;
+
+// Telling us the last answer was wrong. "no" on its own is never an answer to
+// a setup question (destination, dates, play mode, difficulty, stake), so it
+// is safe to read as a correction.
+const CORRECTION_RE =
+  /^(?:no|nope|nah|wrong|thats wrong|that's wrong|thats not right|that's not right|not right|incorrect|i didn'?t say|i never said|change it|undo|redo|fix it|that'?s not what i said)\b/i;
+
+export function setupMessageIntent(text: string): SetupIntent {
+  // The wake keyword is stripped upstream, but a leading name or filler
+  // must not hide a question from this check either.
+  const t = text
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/^(?:japlan|hey|hi|yo|ok|okay|so|um|erm)[,!.:\s]+/i, "")
+    .trim();
+  if (!t) return "answer";
+  if (CORRECTION_RE.test(t)) return "correction";
+  if (QUESTION_RE.test(t)) return "question";
+  return "answer";
+}
+
+// Could this plausibly be a place somebody named? Deliberately a shape check,
+// never a lookup: the job is to reject text that is obviously not an answer,
+// so that a resolver is never handed a question and asked to find the
+// nearest-sounding city in it.
+//
+// This is the same bug class as the trip settings corruption: a low-confidence
+// resolve must never be written, and "got it: X" must only ever appear when X
+// came from the user.
+const NOT_A_PLACE_RE =
+  /\b(?:did you|do you|where did|what did|why did|how did|get that|come from|made up|invent|you said|i said|that's not|thats not)\b/i;
+
+export function looksLikeDestinationAnswer(text: string): boolean {
+  const t = text.trim().replace(/\s+/g, " ");
+  if (t.length < 2) return false;
+  // A city name is short. A sentence is not a city.
+  if (t.length > 60) return false;
+  if (!/[a-z]/i.test(t)) return false;
+  if (setupMessageIntent(t) !== "answer") return false;
+  if (NOT_A_PLACE_RE.test(t)) return false;
+  // More than about six words stops being a destination and starts being a
+  // sentence about one.
+  if (t.split(" ").length > 6) return false;
+  return true;
+}
+
+// How sure we are that the stored destination is a real place the person
+// named. Only a deterministic table hit or a real places lookup counts as
+// resolved; a model asked "where is this" will always name somewhere.
+export type DestinationConfidence = "lookup" | "places" | "raw" | "unusable";
+
+export function destinationIsWritable(confidence: DestinationConfidence): boolean {
+  return confidence !== "unusable";
 }

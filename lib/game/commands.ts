@@ -3,6 +3,23 @@ import { parseBoardTime } from "./board-schedule";
 
 export type TripCommand = "end_trip" | "end_trip_confirm" | "new_trip" | "setup" | "settings" | "resurvey" | "profile" | "survey_status";
 
+// Group location sharing is organizer-controlled. Accept the documented
+// "japlan share locations" and natural variants such as
+// "request location sharing japlan".
+export function detectLocationSharingRequest(
+  text: string,
+  keyword: string = defaultWakeKeyword(),
+): boolean {
+  if (!keyword || !wakeKeywordRe(keyword).test(text)) return false;
+  const body = stripWakeKeyword(text, keyword)
+    .toLowerCase()
+    .replace(/^[,;:\-\s]+/, "")
+    .replace(/[.!?]+$/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return /^(?:(?:please\s+)?(?:request|share|turn on)\s+(?:(?:live|my|trip)\s+)?locations?(?:\s+sharing)?)$/i.test(body);
+}
+
 const COMMANDS: [TripCommand, RegExp][] = [
   ["end_trip_confirm", /^(?:end (?:the |this )?trip|trip end),? confirm(ed)?$/],
   ["end_trip", /^(?:end (the |this )?trip|trip end)$/],

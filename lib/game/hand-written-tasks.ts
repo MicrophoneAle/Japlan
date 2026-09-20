@@ -1,7 +1,8 @@
 import type { Axes } from "./scoring";
 
 export type SeedVerification = "photo" | "honor" | "peer";
-// "photo" is a bonus hint (see photo_bonus_max), not a claim requirement. "peer" still needs a tapback.
+// Marks the natural proof route. Every claim needs a matching photo or a
+// different trip member's group validation; photo_bonus_max is extra points.
 
 export type HandWrittenTask = {
   code: string;

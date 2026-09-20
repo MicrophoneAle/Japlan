@@ -9,12 +9,62 @@ import { zoneFor, zoneNow, type TripLeg } from "./legs";
 
 // When boards post, and which day a request means. Pure.
 //
-// A trip's board for a local day posts at trips.board_time (default 08:00):
-// any cron tick at or after that time posts it if it does not exist yet, so a
-// late or missed tick recovers on the next one instead of skipping the day.
-// Days outside start_date..end_date never get a board.
+// Board requests default to the current part of the day. The trip's morning
+// starts at trips.board_time (default 08:00); afternoon and evening start at
+// 13:00 and 18:00. Days outside start_date..end_date get no board.
 
 export const DEFAULT_BOARD_TIME = "08:00";
+export const DEFAULT_BOARD_PERIODS = [
+  { slot: "morning", time: DEFAULT_BOARD_TIME },
+  { slot: "afternoon", time: "13:00" },
+  { slot: "evening", time: "18:00" },
+] as const;
+
+export type BoardPeriod = (typeof DEFAULT_BOARD_PERIODS)[number]["slot"];
+
+export function boardPeriods(trip: TripWindow): { slot: BoardPeriod; time: string }[] {
+  const morning = boardTimeOf(trip);
+  const periods: { slot: BoardPeriod; time: string }[] = [
+    { slot: "morning", time: morning },
+    { slot: "afternoon", time: "13:00" },
+    { slot: "evening", time: "18:00" },
+  ];
+  return periods.sort((a, b) => a.time.localeCompare(b.time));
+}
+
+// Which section a plain "japlan show" should return in trip-local time. Before
+// the morning start, show morning; after evening starts, show evening.
+export function currentBoardPeriod(trip: TripWindow, now: Date): BoardPeriod {
+  const nowTime = localTimeHHMM(now, trip.timezone);
+  const periods = boardPeriods(trip);
+  return periods.filter((period) => period.time <= nowTime).at(-1)?.slot ?? periods[0].slot;
+}
+
+// A board delivered for today shows the period we're in. A future day's first
+// delivery starts with morning; the remaining periods can be requested later.
+export function boardPeriodForDate(trip: TripWindow, date: string, now: Date): BoardPeriod {
+  return date === localDateString(now, trip.timezone) ? currentBoardPeriod(trip, now) : "morning";
+}
+
+// The next section someone can request. For example, at 8:05am this is
+// afternoon at 1pm; after evening it moves to tomorrow morning.
+export function nextBoardPeriod(
+  trip: TripWindow,
+  now: Date,
+): { date: string; slot: BoardPeriod; time: string } | null {
+  if (!trip.start_date || !trip.end_date) return null;
+  const today = localDateString(now, trip.timezone);
+  if (today > trip.end_date) return null;
+  let date = today < trip.start_date ? trip.start_date : today;
+  const nowTime = date === today ? localTimeHHMM(now, trip.timezone) : "00:00";
+  let period = boardPeriods(trip).find((candidate) => candidate.time > nowTime);
+  if (!period) {
+    date = addDaysIso(date, 1);
+    if (date > trip.end_date) return null;
+    period = boardPeriods(trip)[0];
+  }
+  return period ? { date, slot: period.slot, time: period.time } : null;
+}
 
 // "7am", "7 am", "07:00", "10:30", "10.30", "7:15pm", "19:00", "noon".
 export function parseBoardTime(text: string): string | null {
@@ -102,8 +152,7 @@ export function boardDueNow(trip: TripWindow, now: Date): DueCheck {
   return { due: true, date: today, day: tripDayForDate(trip.start_date, today) };
 }
 
-// When the next scheduled board posts, for messages like "first board lands
-// tomorrow at 8am". Null when the trip has no dates or is over.
+// Next period time for optional sidequest scheduling. Null when trip dates end.
 export function nextBoardAt(
   trip: TripWindow,
   now: Date,
@@ -245,6 +294,8 @@ export function isRedoRequest(text: string): boolean {
 export function isBoardRequest(text: string): boolean {
   const t = text.toLowerCase().replace(/\bjaplan\b[,:]?/g, " ").replace(/\s+/g, " ").trim();
   if (/\b(did|done|finished|completed|claimed|got)\b/.test(t)) return false;
+  if (/\b(next|upcoming)\s+(period|drop|tasks?)\b/.test(t) || /^what'?s next[?.!]*$/.test(t)) return true;
+  if (/^show(?: me)?(?:\s+(?:all|morning|afternoon|evening|night|next period|next drop|today|tonight|tomorrow|tmrw|day\s*\d{1,2})(?:\s+(?:morning|afternoon|evening|night))?)?[?.!]*$/.test(t)) return true;
   // Just a day: "tomorrow", "day 3", "friday", "oct 19", "the last day"
   const dayOnly = new RegExp(
     `^(?:(?:what about|and|how about|for|show me)\\s+)?(?:today|tonight|tomorrow|tmrw|the day after tomorrow|day\\s*\\d{1,2}|${WEEKDAY_RE}|(?:the\\s+)?(?:first|last|final)\\s+day|${MONTH_WORD}\\s*\\d{1,2}(?:st|nd|rd|th)?|\\d{1,2}(?:st|nd|rd|th)?\\s*${MONTH_WORD})[?.!]*$`,

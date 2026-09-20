@@ -1,5 +1,6 @@
 import {
   GROUP_INTRO,
+  GROUP_INTRO_MESSAGES,
   SETUP_COMPLETE,
   SURVEY_DONE_DM,
   surveyReaskLine,
@@ -431,7 +432,10 @@ export function recordAnswer(
 export function startSurvey(answers: SurveyAnswers = {}): SurveyStep {
   return {
     state: { awaiting: FIRST_QUESTION_ID, answers },
-    prompt: `${SURVEY_INTRO} ${QUESTIONS[FIRST_QUESTION_ID].prompt}`,
+    // A blank line, not a space: the intro and the first question are two
+    // distinct ideas, and space-joining them made one run-on that read as a
+    // glitch ("...if i need a safety detail right. a few quick ones...").
+    prompt: `${SURVEY_INTRO}\n\n${QUESTIONS[FIRST_QUESTION_ID].prompt}`,
     completed: false,
   };
 }
@@ -543,6 +547,17 @@ export function buildIntroGroupPost(trip: PublicTripFields): string {
   return trip.organizerName
     ? `👑 ${trip.organizerName} is the organizer for this trip.\n\n${GROUP_INTRO}`
     : GROUP_INTRO;
+}
+
+export function buildIntroGroupMessages(trip: PublicTripFields): string[] {
+  const [overview, setup, organizer] = GROUP_INTRO_MESSAGES;
+  return [
+    trip.organizerName
+      ? `👑 ${trip.organizerName} is the organizer for this trip.\n\n${overview}`
+      : overview,
+    setup,
+    organizer,
+  ];
 }
 
 export function buildSetupCompleteGroupPost(trip: PublicTripFields): string {

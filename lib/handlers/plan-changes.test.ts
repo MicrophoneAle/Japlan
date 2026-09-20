@@ -333,8 +333,8 @@ describe("settings and task counts are requests, handled by tools", () => {
   it("'japlan settings' shows your own values in your dm; 'japlan resurvey' starts again", async () => {
     seed({ mike: { pace: { value: "steady" } } });
     await say("mike", "japlan settings");
-    expect(lastIn(GROUP)).toBe("your settings are in your dm.");
-    expect(h.sent.at(-2)!.text).toMatch(/^your settings:\n· pace: somewhere in between/);
+    expect(lastIn(GROUP)).toBe("📩 sent your private preferences to your dm. your answers stay private.");
+    expect(h.sent.at(-2)!.text).toMatch(/^🔒 your private trip profile[\s\S]*day pace:/);
     await say("mike", "japlan resurvey", dm("mike"));
     expect(lastIn(dm("mike"))).toMatch(/^starting over, one question at a time\. skip keeps what you said before\./);
     // Skip keeps the old answer.

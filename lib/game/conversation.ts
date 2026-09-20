@@ -29,6 +29,9 @@ export const POINT_FIELD_KEYS = [
   "photoBonus",
 ] as const;
 
+// DM only. The sender's own answers, in their own DM, where they are both
+// safe and useful: a reply about their day should know their budget and their
+// allergies. None of this reaches a group prompt.
 export const PRIVATE_SURVEY_IDS: QuestionId[] = [
   "budget",
   "dietary",
@@ -41,9 +44,33 @@ export const PRIVATE_SURVEY_IDS: QuestionId[] = [
   "social_with",
   "social_travelled",
   "social_couples",
+  // Survey v2. These were on neither list, so they reached no prompt at all:
+  // fail-closed and therefore safe, but it also meant the model could not see
+  // the person's own budget or allergies in their own DM.
+  "ab_food_outdoors",
+  "ab_discover_iconic",
+  "ab_culture_nightlife",
+  "ab_pace",
+  "budget_band",
+  "fu_budget",
+  "hard_constraints",
+  "fu_constraints",
+  "fu_allergy_cc",
+  "fu_diet_strict",
+  "splitting",
+  "fu_split",
 ];
 
-const PUBLIC_SURVEY_IDS: QuestionId[] = [
+// The ONLY survey answers that may reach a group prompt. An allowlist, not a
+// denylist: a question id in neither this nor PRIVATE_SURVEY_IDS is excluded
+// from every slice, so a new survey field is private until somebody decides
+// otherwise. conversation-privacy.test.ts pins that.
+//
+// must_have is here deliberately. "this trip is a waste if we don't ___" is
+// the one answer a person is making TO the group: it is their pitch, not a
+// fact about their body, their money or who they want to be with. Everything
+// in PRIVATE_SURVEY_IDS stays in DM.
+export const PUBLIC_SURVEY_IDS: QuestionId[] = [
   "first_name",
   "interests",
   "interest_picks",
@@ -52,6 +79,7 @@ const PUBLIC_SURVEY_IDS: QuestionId[] = [
   "nightlife",
   "competitiveness",
   "attractions",
+  "must_have",
 ];
 
 const GAME_TOOLS = new Set<string>([

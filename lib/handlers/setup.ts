@@ -18,6 +18,9 @@ import {
   groupSetupCompleteLine,
   organizerOnlySetupLine,
   surveyReaskLine,
+  destinationUnreadableLine,
+  setupAsideLine,
+  setupValueSourceLine,
 } from "@/lib/game/copy";
 import { partialDestinationProfile } from "@/lib/game/destination";
 import {
@@ -35,6 +38,10 @@ import {
   parseLooseDates,
   type SetupFields,
   type SetupQuestionId,
+  looksLikeDestinationAnswer,
+  setupMessageIntent,
+  type DestinationConfidence,
+  type SetupIntent,
 } from "@/lib/game/setup";
 import { lookupCityTimezone } from "@/lib/game/city-timezones";
 import { formatBoardTime, parseBoardTime } from "@/lib/game/board-schedule";
@@ -58,7 +65,7 @@ import {
   startTripSurveys,
 } from "./bootstrap";
 import { sendText } from "@/lib/linq/send";
-import { defaultWakeKeyword, stripWakeKeyword } from "@/lib/game/addressing";
+import { defaultWakeKeyword, stripWakeKeyword, wakeKeywordRe } from "@/lib/game/addressing";
 
 export type SetupDeps = { provider?: LLMProvider; now?: Date };
 
@@ -84,8 +91,7 @@ function currentValue(trip: TripRow, id: SetupQuestionId): string | null {
 }
 
 export function setupPromptFor(trip: TripRow, id: SetupQuestionId, first = false): string {
-  const prompt = setupPrompt(id, currentValue(trip, id), { first, isSolo: Boolean(trip.is_solo) });
-  return trip.is_solo ? prompt : `${prompt} Reply here with “japlan” + your answer.`;
+  return setupPrompt(id, currentValue(trip, id), { first, isSolo: Boolean(trip.is_solo) });
 }
 
 async function saveTrip(tripId: string, patch: Record<string, unknown>): Promise<void> {
@@ -98,6 +104,15 @@ export type ResolvedDestination = {
   timezone: string | null;
   resolved: boolean;
   center: { lat: number; lng: number } | null;
+  // How sure we are this is a real place the person actually named:
+  //   lookup   the offline city table matched, deterministic
+  //   places   a real places lookup resolved it
+  //   raw      neither, so their own words are stored verbatim. Honest,
+  //            because "got it: X" is quoting them back.
+  //   unusable it does not look like a destination answer at all. NEVER
+  //            written: this is the bug where "where did you get that city
+  //            from" became a city.
+  confidence: DestinationConfidence;
 };
 
 export type TimezonePath = "lookup" | "gemini" | "none";
@@ -113,6 +128,22 @@ export async function resolveDestinationAnswer(
   deps: SetupDeps = {},
 ): Promise<ResolvedDestination & { timezonePath: TimezonePath }> {
   const raw = text.trim().replace(/\s+/g, " ").slice(0, 100);
+
+  // Before anything resolves: does this even look like a place somebody
+  // named? A resolver handed a question will find the nearest-sounding city
+  // in it rather than refusing, which is how "kronjo, indonesia" appeared
+  // from an answer nobody gave.
+  if (!looksLikeDestinationAnswer(raw)) {
+    setupStep("destination.rejected", { raw, reason: "not_a_destination_answer" });
+    return {
+      destination: raw,
+      timezone: null,
+      timezonePath: "none",
+      resolved: false,
+      center: null,
+      confidence: "unusable",
+    };
+  }
 
   const looked = lookupCityTimezone(raw);
   setupStep("destination.timezone.lookup", {
@@ -169,15 +200,29 @@ export async function resolveDestinationAnswer(
     }
   }
 
-  setupStep("destination.timezone.result", { input: raw, path: timezonePath, timezone });
   const center =
     area && area.lat !== null && area.lng !== null ? { lat: area.lat, lng: area.lng } : null;
+  // A model display name is only ever used when a real places lookup
+  // corroborated it. Asked "where is this", a model always names somewhere.
+  const destination = area && named?.display ? named.display : raw;
+  const confidence: DestinationConfidence = looked ? "lookup" : area ? "places" : "raw";
+  // The one line that would have caught this: the raw answer, what came back,
+  // and how sure we are, for every setup answer.
+  setupStep("destination.resolved", {
+    raw,
+    destination,
+    confidence,
+    timezone,
+    timezonePath,
+    fromModel: Boolean(area && named?.display),
+  });
   return {
     // Spec: an unresolved destination is stored as the raw string.
-    destination: area && named?.display ? named.display : raw,
+    destination,
     timezone,
     timezonePath,
     resolved: Boolean(area),
+    confidence,
     center,
   };
 }
@@ -244,6 +289,12 @@ async function setupChange(
       // still costs one Foursquare call, not one per city.
       const parts = splitDestinationAnswer(text);
       const resolved = await resolveDestinationAnswer(parts[0] ?? text, deps);
+      // Never write a destination we are not confident the person named.
+      // "got it: X" must only ever appear when X came from them.
+      if (resolved.confidence === "unusable") {
+        setupStep("destination.reask", { tripId: trip.id, raw: text.slice(0, 80) });
+        return { retry: destinationUnreadableLine(setupPromptFor(trip, "destination")) };
+      }
       const extraCities = parts.slice(1).map((city) => ({
         city,
         timezone: lookupCityTimezone(city)?.timezone ?? null,
@@ -324,7 +375,18 @@ async function setupChange(
       break;
     }
     case "stake": {
-      patch.stake_text = text.slice(0, 200);
+      const answer = text.trim();
+      const custom = answer.match(/^d(?:[.)]\s*|\s+)(.+)$/i);
+      if (/^d[.)]?$/i.test(answer)) {
+        return { retry: "For D, type the dare itself. Or choose A, B, or C; say skip for no forfeit." };
+      }
+      const choice = answer.match(/^(?:option\s+)?([abc])(?:[.)]|\s|$)/i)?.[1]?.toLowerCase();
+      const preset: Record<string, string> = {
+        a: "wear a ridiculous shirt on the flight home",
+        b: "give the winner a dramatic 20-second airport send-off",
+        c: "buy the winner dessert, within your normal budget",
+      };
+      patch.stake_text = (custom?.[1] ?? (choice ? preset[choice] : answer)).slice(0, 200);
       said = STAKE_SET_LINE;
       break;
     }
@@ -384,6 +446,17 @@ export async function answerSetup(opts: {
   let said = "";
 
   if (!text) return setupPromptFor(trip, id);
+
+  // A question about the setup, or a correction, is NOT an answer to the
+  // pending question. This used to consume whatever arrived: "where did you
+  // get that city from" became the date answer and got "couldn't read those
+  // dates", and a correction was impossible because it became the next
+  // answer. Skips are handled below and are a real answer.
+  const intent = setupMessageIntent(text);
+  if (intent !== "answer" && !isSetupSkip(text)) {
+    setupStep("aside", { tripId: trip.id, question: id, intent, raw: text.slice(0, 80) });
+    return setupAsideLine(asideReply(trip, id, intent, text), setupPromptFor(trip, id));
+  }
 
   if (isSetupSkip(text) && (id === "destination" || id === "dates" || id === "play_mode")) {
     const reason = id === "play_mode" ? "choose how the trip should run" : `set the ${id}`;
@@ -466,11 +539,14 @@ export async function handleGroupSetupMessage(opts: {
   senderPhone: string | null;
   text: string;
   deps?: SetupDeps;
+  allowPlainOrganizerReply?: boolean;
 }): Promise<boolean> {
   const trip = await getTripByChatId(opts.chatId);
   if (!trip || trip.is_solo || !isSetupQuestion(trip.setup_state)) return false;
 
-  const answer = stripWakeKeyword(opts.text, defaultWakeKeyword());
+  const hasWakeKeyword = wakeKeywordRe(defaultWakeKeyword()).test(opts.text);
+  if (!hasWakeKeyword && !opts.allowPlainOrganizerReply) return false;
+  const answer = hasWakeKeyword ? stripWakeKeyword(opts.text, defaultWakeKeyword()) : opts.text;
   if (!answer.trim()) return true;
   if (/^(?:help|commands?|menu|lb|leaders?|leaderboards?|standings?|scores?|rankings?|board|plans?|today|day\s+\d+|setup|settings|preferences|profile)\??$/i.test(answer)) {
     return false;
@@ -481,6 +557,8 @@ export async function handleGroupSetupMessage(opts: {
     : null;
   const organizer = sender && sender.id === trip.organizer_participant_id ? sender : null;
   if (!organizer) {
+    // Keep another participant's message out of the shared setup, and tell
+    // them who is answering while the setup prompt is active.
     const people = await getServiceClient()
       .from("participants")
       .select("id, display_name")
@@ -545,4 +623,40 @@ export async function syncTripLegs(trip: TripRow): Promise<void> {
     startDate: trip.start_date,
     endDate: trip.end_date,
   });
+}
+
+// What to say to a question or a correction during setup, before re-asking.
+// Deliberately small and factual: it reports what is stored and where it came
+// from, and never defends a value.
+function asideReply(trip: TripRow, id: SetupQuestionId, intent: SetupIntent, text: string): string {
+  if (intent === "correction") {
+    // The whole point: saying it is wrong has to be able to undo it, which
+    // re-asking does, because the next answer overwrites.
+    return "my bad, let's redo that one.";
+  }
+  const current: Record<string, string | null> = {
+    destination: trip.destination,
+    dates: trip.start_date && trip.end_date ? `${trip.start_date} to ${trip.end_date}` : null,
+    play_mode: trip.play_mode ?? null,
+    difficulty: trip.difficulty ?? null,
+    stake: trip.stake_text ?? null,
+  };
+  // Answer the field they ASKED about, not the one that happens to be
+  // pending: "where did you get that city from" arrived while the dates
+  // question was open, and replying "dates isn't set yet" answers nobody.
+  return setupValueSourceLine(asideField(text, id), current[asideField(text, id)] ?? null);
+}
+
+const ASIDE_FIELDS: [SetupQuestionId, RegExp][] = [
+  ["destination", /(city|cities|destination|place|where we|going)/i],
+  ["dates", /(date|dates|when|day|days|week)/i],
+  ["play_mode", /(play|mode|team|teams|individual|group)/i],
+  ["difficulty", /(difficult|chill|unhinged|hard|intense)/i],
+  ["stake", /(stake|bet|loser|punishment|wager)/i],
+];
+
+// Which setup field a question is about, falling back to whichever is pending.
+function asideField(text: string, pending: SetupQuestionId): SetupQuestionId {
+  for (const [field, re] of ASIDE_FIELDS) if (re.test(text)) return field;
+  return pending;
 }

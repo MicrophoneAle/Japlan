@@ -1,21 +1,27 @@
 import { clockLabel } from "./time";
 
-export const GROUP_INTRO =
-  "🗺️ i'm japlan.\ni turn your trip into daily tasks and points.\nclaim a task code when you do one; i'll post the leaderboard here.\n\n🧭 first, we set the city, dates, and play style in this chat.\nthen i'll DM each person a short private preference survey.\ni'll share who has finished, never their answers.\n\n👑 the organizer controls shared trip settings and makes the final call if the group gets stuck on an activity.\ni'll post shared choices here so everyone can vote; silence counts as abstaining.\nchange settings with “japlan setup.” personal preferences stay private.";
+export const GROUP_INTRO_MESSAGES = [
+  "🗺️ i'm japlan. i turn this trip into daily tasks and points. when you want tasks, say “japlan show”; i'll send the part of the day that's current to your board chat.",
+  "✨ optional sidequests are short bonus challenges i may send privately during the trip. first to finish wins; i'll announce the winner here, never their private preferences.",
+  "🧭 we'll set the city, dates, and play style in this chat. then i'll dm everyone a short private preference survey. the group only sees who has finished, never their answers.",
+  "👑 the organizer answers shared setup questions here, in plain text, and controls trip-wide settings with “japlan setup.” i'll post group choices here for everyone to vote on; the organizer makes the final call if we're stuck. personal preferences stay private.",
+] as const;
+
+export const GROUP_INTRO = GROUP_INTRO_MESSAGES.join("\n\n");
 
 // Kept for tests and older callers; setupCompleteLine carries the next board.
 export const SETUP_COMPLETE =
-  "we're live 🔥\n\nevery morning your tasks land in your dms, and a code like A1 claims one.";
+  "we're live 🔥 say “japlan show” whenever you want your current tasks.";
 
-export function setupCompleteLine(nextBoard: string | null, mode?: string | null): string {
+export function setupCompleteLine(mode?: string | null): string {
   const intro = mode === "full_group"
-    ? "we're live 🔥\n\nthe shared daily board lands in this group chat; claim a code here when you do a task."
+    ? "we're live 🔥 ask “japlan show” here whenever you want the shared board; claim its codes in this chat."
     : mode === "teams"
-      ? "we're live 🔥\n\ndaily boards land in your dms.\ni'll pair people for the day when their interests overlap."
+      ? "we're live 🔥 ask “japlan show” in your dm for the current part of your board. i'll pair people when their interests overlap."
       : mode === "individual"
-        ? "we're live 🔥\n\neveryone gets their own daily board in their dms, with separate tasks and points."
+        ? "we're live 🔥 everyone has a private board. ask “japlan show” in your dm whenever you want the current tasks."
         : SETUP_COMPLETE;
-  return nextBoard ? `${intro}\n\nfirst board drops ${nextBoard}.` : intro;
+  return intro;
 }
 
 // A link to the live trip dashboard (/live/[tripId]): standings, active
@@ -38,28 +44,32 @@ export function surveyReaskLine(options: string[]): string {
 
 // Organizer setup. Draft wording; edit freely.
 export const SETUP_QUESTIONS = {
-  destination: "ok where we headed? a city is plenty.",
-  dates: `when's this happening? something like "march 14-19" or "next weekend" works.`,
+  destination: "Where are you going? Send the city and country, for example “Kyoto, Japan.” I need the place to find local activities.",
+  dates: "What dates will you be there? Try “Sep 20–27” or “next weekend.” I use this to plan each trip day.",
   play_mode:
-    "how should we play?\n1 · individual — everyone gets their own board and separate tasks\n2 · teams — each day i'll pair people whose task interests overlap; no match means solo tasks\n3 · full group — one shared board lands here; decisions happen in this chat, and the organizer breaks ties",
-  difficulty: "how unhinged should the tasks be? chill / normal / unhinged",
-  stake: "real talk, what's the loser doing at the end of this 💀",
+    "Choose how the boards work:\n1 · Individual — everyone gets their own tasks in a private board.\n2 · Teams — I pair people with similar task interests; anyone without a match gets solo tasks.\n3 · Full group — one shared board, with claims and group decisions in this chat.\nReply 1, 2, or 3.",
+  difficulty:
+    "Pick the task vibe:\n1 · Chill — easygoing and low-pressure.\n2 · Normal — a mix of relaxed and adventurous.\n3 · Unhinged — bold and silly, while still safe.\nReply 1, 2, or 3.",
+  stake:
+    "What should the last-place finisher do? Pick one:\nA · Wear a ridiculous shirt on the flight home.\nB · Give the winner a dramatic 20-second airport send-off.\nC · Buy the winner dessert, within their normal budget.\nD · Write your own dare — type out the idea.\nSay skip if you don't want a forfeit.",
 } as const;
 
-const SETUP_REQUIRED = new Set(["destination", "dates"]);
+const SETUP_REQUIRED = new Set(["destination", "dates", "play_mode"]);
 
 export function setupPrompt(
   id: keyof typeof SETUP_QUESTIONS,
   current: string | null,
   opts: { first?: boolean; isSolo?: boolean } = {},
 ): string {
-  // Solo trips skip the stake question (no loser), so three, not four.
-  const lead = opts.first ? `trip setup, ${opts.isSolo ? 3 : 5} quick ones. ` : "";
+  // Solo trips skip the play-style and loser-stake questions.
+  const lead = opts.first
+    ? `🧭 let's set up this ${opts.isSolo ? "solo " : "group "}trip (${opts.isSolo ? 3 : 5} quick questions).\n`
+    : "";
   const tail = current
-    ? ` (rn: ${current}. skip keeps it)`
+    ? `\nSaved: ${current}. Say “skip” to keep it.`
     : SETUP_REQUIRED.has(id)
-      ? " (skip and i'll ask again later)"
-      : " (skip is fine)";
+      ? "\nI need this answer before I can start the trip."
+      : "\nSay “skip” if you want to leave this unset.";
   return `${lead}${SETUP_QUESTIONS[id]}${tail}`;
 }
 
@@ -107,8 +117,42 @@ export function setupFinishedLine(missing: ("destination" | "dates")[]): string 
   return `setup's paused rq.\nstill need ${what} before the game can start, i'll ask again next time you text.`;
 }
 
+// Linq gives a phone number when it has no display name, and a participant
+// keeps it until they answer the name question. Printing "+19057580877 is
+// setting the shared city" is worse than saying nothing specific, so a
+// phone-shaped name reads as "the organizer".
+export function personLabel(name: string | null | undefined): string {
+  const value = (name ?? "").trim();
+  if (!value) return "the organizer";
+  // +19057580877, 09057580877, (905) 758-0877: digits and punctuation only.
+  const digits = value.replace(/[^0-9]/g, "");
+  const looksLikePhone = digits.length >= 7 && /^[+()\-.\s0-9]+$/.test(value);
+  return looksLikePhone ? "the organizer" : value;
+}
+
+// The answer did not look like a place, so nothing was written. Re-asks
+// rather than confirming: "got it: X" only ever appears when X came from
+// them, never from a resolver guessing at the nearest-sounding city.
+export function destinationUnreadableLine(question: string): string {
+  return `didn't catch a place in that 😅\n${question}`;
+}
+
+// A question or a correction arrived while a setup question was pending. It
+// is answered and the question re-asked, rather than being eaten as the
+// answer, which is also the only way somebody can correct a wrong one.
+export function setupAsideLine(aside: string, question: string): string {
+  return `${aside}\n\n${question}`;
+}
+
+// Where a stored setup value came from, in plain terms, when someone asks.
+export function setupValueSourceLine(field: string, value: string | null): string {
+  return value
+    ? `${field} is set to ${value} right now, from what was said in this chat.`
+    : `${field} isn't set yet.`;
+}
+
 export function organizerOnlySetupLine(name: string): string {
-  return `👑 ${name} is organizing this trip and controls the shared setup.\nthey can change it with “japlan setup.”\nyour personal survey answers stay private.`;
+  return `👑 ${name} is setting up the shared trip here. only they should answer these questions; they can reply in plain text or change settings later with “japlan setup.” your private survey comes by dm after setup.`;
 }
 
 export function groupSetupPendingDmLine(name: string): string {
@@ -139,7 +183,7 @@ export function surveyLaunchGroupLine(sent: string[], failed: string[]): string 
 }
 
 export function surveyProgressGroupLine(name: string, waiting: string[]): string {
-  if (waiting.length === 0) return `✅ ${name} finished their private survey. everyone is in — first boards are next.`;
+  if (waiting.length === 0) return `✅ ${name} finished their private survey. everyone's in — say “japlan show” in your board chat whenever you want today's tasks.`;
   return `✅ ${name} finished their private survey.\n⏳ still waiting on: ${waiting.join(", ")}. preferences stay private.`;
 }
 
@@ -172,7 +216,7 @@ export function provisionalBoard(board: string): string {
 
 export const BOARD_IN_DM_LINE = "board's in your dms 📩";
 export const BOARD_IN_GROUP_LINE = "the shared board is in the group chat 📣";
-export const GROUP_BOARD_CLEARED_LINE = "the group cleared today's shared board 🫡 more tasks land tomorrow.";
+export const GROUP_BOARD_CLEARED_LINE = "nothing left on today's shared board 🫡 ask me for a fresh round whenever you want more.";
 export const PRIVATE_BOARD_CLAIM_IN_DM_LINE =
   "your board lives in your dm 📩 send its code to me there; i'll update the group leaderboard here.";
 export const SHARED_BOARD_CLAIM_IN_GROUP_LINE =
@@ -198,7 +242,7 @@ export function refillLimitLine(label: string, count: number): string {
 
 // REAL, for the asker only: their tasks need their allergies and limits.
 export function finishYourSurveyLine(): string {
-  return "your tasks drop once u answer your questions in the dm, so nothing clashes with your allergies or limits.";
+  return "finish your private survey first so your tasks fit your allergies and limits. then say “japlan show” in your board chat whenever you want them.";
 }
 
 // REAL: a board needs a place and dates.
@@ -213,7 +257,7 @@ export const BOARD_MAKE_FAILED_LINE = "couldn't make that board rn, that's on me
 
 // "japlan board time 7am"
 export function boardTimeSetLine(time: string): string {
-  return `boards now land at ${time} every morning 🫡`;
+  return `got it — i'll use ${time} as the start of your trip day when planning tasks 🫡`;
 }
 
 export const BOARD_TIME_UNREADABLE_LINE = `couldn't read that time lol. try "japlan board time 7am" or "japlan board time 10:30".`;
@@ -314,6 +358,53 @@ export function multiplierDayAnnouncement(opts: {
   return `⚡ it's ${opts.label}, so ${worth}.`;
 }
 
+// One show, once a trip, for whoever said the trip is a waste without one.
+// The attribution is what makes it land: it is somebody's own words coming
+// back at them, not a recommendation from nowhere.
+//
+// The URL goes in THIS message, last and alone on its line, so iMessage
+// renders the link preview card. One link per message or the preview
+// suppresses, and one message rather than two so the text and the card stay
+// together.
+//
+// The price is not stated. Ticketmaster's priceRanges was 0% filled in every
+// market tested, so there is nothing to check a budget against; saying so is
+// honest and a human looks before buying anyway.
+export function showSuggestionLine(opts: {
+  who: string;
+  mustHave: string;
+  title: string;
+  venue?: string | null;
+  startsAt?: string | null;
+  priceNote?: string | null;
+  url: string;
+}): string {
+  const where = opts.venue ? ` at ${opts.venue}` : "";
+  const when = opts.startsAt ? eventWhen(opts.startsAt) : null;
+  return [
+    `${opts.who} said the trip's a waste without ${opts.mustHave}.`,
+    `found this: ${opts.title}${where}${when ? `, ${when}` : ""}`,
+    opts.priceNote ?? "no idea what tickets cost, have a look 👀",
+    opts.url,
+  ].join("\n");
+}
+
+// "saturday 8pm" from a stored timestamp. Only ever from a real clock time:
+// a date with no time would invent the hour, which is the one thing a
+// suggestion must not do.
+function eventWhen(startsAt: string): string | null {
+  const at = new Date(startsAt);
+  if (Number.isNaN(at.getTime())) return null;
+  const day = at.toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" }).toLowerCase();
+  const hour = at.getUTCHours();
+  const minute = at.getUTCMinutes();
+  const suffix = hour < 12 ? "am" : "pm";
+  const twelve = hour % 12 === 0 ? 12 : hour % 12;
+  const clock = minute === 0 ? `${twelve}${suffix}` : `${twelve}:${String(minute).padStart(2, "0")}${suffix}`;
+  return `${day} ${clock}`;
+}
+
+
 // A link someone dropped resolved into a real place. ONE line, and only ever
 // on a hit: a link that resolves to nothing says nothing at all, because
 // "couldn't read that tiktok" on every link is worse than silence.
@@ -346,8 +437,8 @@ export function boardSlotLabel(slot: string): string {
   return `${slot} · `;
 }
 
-// One line per task, tier before points so people can pick by effort:
-//   A1 · find a bench in yoyogi park · light (13)
+// Keep the claim code and the useful scan-first details on the same line;
+// put the full instruction below so long titles do not bury the point value.
 export function dailyBoardTaskLine(
   code: string,
   title: string,
@@ -356,7 +447,26 @@ export function dailyBoardTaskLine(
   slot?: string | null,
 ): string {
   void slot;
-  return `${code} · ${title}\n   ${tier.toLowerCase()} · ${points} pts`;
+  const lower = title.toLowerCase();
+  const tags: string[] = [];
+  if (/\b(ask|talk|chat|tell|someone|stranger|worker|bartender|staff|local)\b/.test(lower)) tags.push("🤝 PEOPLE");
+  if (/\b(order|eat|food|meal|dish|ramen|curry|bento|cafe|café|restaurant|drink|bar|dining)\b/.test(lower)) tags.push("🍜 FOOD");
+  if (/\b(photo|photograph|picture|capture|reflection)\b/.test(lower)) tags.push("📸 PHOTO");
+  if (/\b(train|route|walk|street|neighbou?rhood|find|explore|market|museum|temple|park|highest|oldest|tower|port|square|landmark)\b/.test(lower)) tags.push("🗺️ EXPLORE");
+  const category = (tags.length > 0 ? tags.slice(0, 2) : ["✨ CHALLENGE"]).join(" / ");
+  const questName =
+    tags.includes("🍜 FOOD") && tags.includes("🤝 PEOPLE")
+      ? "Let the Local Pick"
+      : tags.includes("🍜 FOOD")
+        ? "Menu Roulette"
+        : tags.includes("🤝 PEOPLE")
+          ? "Local Intel"
+          : tags.includes("📸 PHOTO")
+            ? "Frame Hunt"
+            : tags.includes("🗺️ EXPLORE")
+              ? "City Scout"
+              : "Wild Card";
+  return `${category} · ${points} pts · ${tier.toUpperCase()}\n   ${code} · ${questName}: ${title}`;
 }
 
 export function standingsLine(
@@ -375,7 +485,7 @@ export function standingsLine(
 // and the board itself never get one.
 
 export function nextStepClause(openCodes: string[]): string {
-  if (openCodes.length === 0) return "next board lands in the morning, hang tight.";
+  if (openCodes.length === 0) return "say “japlan show” whenever you want another round.";
   if (openCodes.length === 1) return `${openCodes[0]} is still open btw.`;
   return `still open: ${openCodes.join(", ")}.`;
 }
@@ -390,7 +500,6 @@ export function claimConfirmedLine(opts: {
   photoBonus: number;
   total: number;
   capped?: boolean;
-  invitePhoto?: boolean;
   // The claimant's last open personal task; a refill is on its way by DM.
   boardCleared?: boolean;
   // "2x golden week" when the day is worth more. The points already include
@@ -398,18 +507,16 @@ export function claimConfirmedLine(opts: {
   multiplier?: string | null;
 }): string {
   if (opts.capped) {
-    return `✅ ${opts.code} · ${opts.name} · ${opts.total} · ${DAILY_CAP_CLAUSE}`;
+    return `✅ ${opts.code} · ${opts.name}\nNo points added; today's cap is reached. Current score: ${opts.total} pts.`;
   }
-  const boost = opts.multiplier ? ` 🔥 ${opts.multiplier}` : "";
-  const first =
-    opts.photoBonus > 0
-      ? `✅ ${opts.code} · ${opts.name} +${opts.base} +${opts.photoBonus} photo${boost} · ${opts.total}`
-      : `✅ ${opts.code} · ${opts.name} +${opts.base}${boost} · ${opts.total}`;
+  const awarded = opts.base + opts.photoBonus;
+  const boost = opts.multiplier ? ` (includes ${opts.multiplier})` : "";
+  const breakdown = opts.photoBonus > 0
+    ? `+${opts.base} task pts${boost}\n+${opts.photoBonus} photo bonus = +${awarded} pts`
+    : `+${opts.base} task pts${boost}`;
+  const first = `✅ ${opts.code} · ${opts.name}\n${breakdown}\n🏆 Total score: ${opts.total} pts`;
   if (opts.boardCleared) {
-    return `${first} · that's your whole board cleared 🔥 new tasks coming by dm.`;
-  }
-  if (opts.invitePhoto && opts.photoBonus === 0) {
-    return `${first}\nphoto for bonus points? 👀`;
+    return `${first}\nThat's your whole board cleared 🔥`;
   }
   return first;
 }
@@ -421,9 +528,9 @@ export function photoBonusLine(opts: {
   capped?: boolean;
 }): string {
   if (opts.capped) {
-    return `📸 ${opts.code} · ${opts.total} · ${DAILY_CAP_CLAUSE}`;
+    return `📸 ${opts.code} photo checked · +0 bonus pts (daily cap reached)\n🏆 Total score: ${opts.total} pts`;
   }
-  return `📸 ${opts.code} · +${opts.bonus} bonus · ${opts.total}`;
+  return `📸 ${opts.code} photo bonus · +${opts.bonus} pts\n🏆 New total score: ${opts.total} pts`;
 }
 
 export function alreadyClaimedLine(code: string, next?: string): string {
@@ -455,7 +562,7 @@ export function photoCheckFailedLine(code: string): string {
 }
 
 export function photoOutsideTripLine(code: string): string {
-  return `that photo's from outside the trip so no bonus on ${code}, sry. a new shot still counts.`;
+  return `I couldn't award a photo bonus for ${code} because this photo is outside the trip dates. Any group validation still counts.`;
 }
 
 export function photoAlreadyBonusedLine(code: string, next: string): string {
@@ -485,7 +592,7 @@ export function surveyDoneLine(waitingOn: number, setupPending = false): string 
   if (waitingOn > 0 || setupPending) {
     return `${SURVEY_DONE_DM} ${setupPending ? "the organizer is still finishing shared trip setup" : waiting}. i'll post the group status without sharing anyone's answers.`;
   }
-  return `${SURVEY_DONE_DM} everyone's in. first boards drop in the morning.`;
+  return `${SURVEY_DONE_DM} when you want tasks, say “japlan show” in the chat where your board lives. it shows the current part of the day; “japlan show all” shows the whole board.`;
 }
 
 export function sidequestClarificationLine(question: "sidequest_level" | "sidequest_red_lines"): string {
@@ -554,35 +661,87 @@ export function teamNameUnreadableLine(): string {
 }
 
 export const HELP_TEXT = {
-  group: `ok here's the whole deal 📋
+  group: `🧭 japlan quick guide · group chat
 
-· your play style is set in this chat: individual boards, daily interest-based teams, or one shared group board
-· the organizer controls trip-wide setup and can change it with “japlan setup”
-· private preference surveys stay in your dms; the group only sees who has finished
-· “japlan survey status” shows who has finished and who is still up
-· organizer: “japlan decide dinner | ramen | sushi” opens a group vote; react ❤️/👍 to an option or send “japlan vote 1”
-· “japlan vote status” shows the tally; the organizer can send “japlan remind vote” and make the final call with “japlan close vote 2”
-· claim the code where your board landed: here for full group, in your dm for individual/teams
-· send a photo after and u get bonus points
-· did something cool i didn't even ask for? just tell me, i'll score it
-· "japlan lb" or "japlan standings" for the leaderboard
-· "japlan settings" to see or change anything you told me
-· "japlan quiet" if i'm being too much lol
+📋 TASKS & SCORES
+1. japlan show
+   Shows the current period. In individual/teams, your board lands in your dm; in full group, it appears here.
+2. japlan show morning
+   Replace “morning” with “afternoon” or “evening” to pick another period. “night” works too.
+3. japlan show all
+   Shows the full day.
+4. japlan show next period
+   Shows the next time period. “japlan show tomorrow” shows this period tomorrow.
+5. japlan lb
+   Shows the leaderboard. “japlan standings” works too.
+6. Send a task code in the chat where its board arrived.
+   Follow Japlan’s prompt for a photo or group check.
 
-that's it. now go do something unhinged.`,
-  dm: `ok here's the whole deal 📋
+🗳️ GROUP VOTES · ORGANIZER STARTS & CLOSES
+7. japlan decide dinner | ramen | sushi
+   First part = question; add 2–5 choices. Select every acceptable option in the poll. If there’s no poll, tap ❤️ or 👍 on one option; reactions allow one choice.
+8. japlan vote status
+   Shows the tally and who hasn't voted.
+9. japlan remind vote
+   Organizer sends a reminder to people who haven't voted.
+10. japlan close poll
+    Organizer closes on a clear winner. A tie stays open.
+11. japlan close poll 2
+    Organizer chooses option 2 as the final call. “close vote” also works.
 
-· your private preferences shape your tasks; only you can see or change them
-· every morning your board lands here; full-group boards land in the trip chat
-· claim a code where that board landed: here for individual/teams, in the group for full group
-· group activity votes happen in the trip chat so everyone sees the choices
-· send a photo after and u get bonus points
-· did something cool i didn't even ask for? just tell me, i'll score it
-· "japlan lb" or "japlan standings" for the leaderboard
-· "japlan settings" to see or change anything you told me
-· "japlan quiet" if i'm being too much lol
+👑 TRIP SETUP · ORGANIZER
+12. japlan setup
+    Set city, dates, play style, task vibe, and loser stake. Answer follow-up questions directly in this chat.
+13. japlan board time 7am
+    Set when the morning period starts.
+14. japlan survey status
+    See who finished; private answers stay private.
+15. japlan share locations
+    Send optional Apple consent prompts during an active trip.
+16. japlan end trip
+    Confirm with “japlan end trip confirm” to close the trip.
+17. japlan new trip
+    Start a fresh trip after the current one ends.
 
-that's it. now go do something unhinged.`,
+🔒 YOUR PRIVATE INFO
+18. japlan my preferences
+    Sends your private summary to your dm. “japlan preferences” and “japlan settings” are aliases. Change answers in your dm in plain English.
+19. japlan help
+    Show this guide again. “japlan chill” makes me quiet until someone mentions me.`,
+  dm: `🧭 japlan quick guide · dm
+
+📋 YOUR TASKS
+1. japlan show
+   Shows the current period. In full-group mode, the shared board is in the trip chat.
+2. japlan show morning
+   Replace “morning” with “afternoon” or “evening” to pick another period. “night” works too.
+3. japlan show all
+   Shows the full day. “japlan show next period” gets the next one; “japlan show tomorrow” gets the same period tomorrow.
+4. Send a task code here if this is where your board arrived.
+   Follow Japlan’s prompt for a photo or group check.
+5. japlan lb
+   Shows the leaderboard. “japlan standings” works too.
+
+🔒 YOUR PRIVATE SETTINGS
+6. japlan my preferences
+   See what Japlan saved. “japlan preferences” and “japlan settings” are aliases. Change answers here in plain English, like “i prefer museums,” “keep my budget under $100 a day,” or “no shellfish.”
+7. japlan resurvey
+   Answer the questions again; saved answers stay until you replace or skip them.
+
+✨ OPTIONAL EXTRAS
+8. japlan sidequests off
+   Turn your private bonus challenges off.
+9. japlan sidequests on
+   Turn them back on.
+10. japlan share location
+    Start optional Apple location sharing during an active trip.
+11. japlan stop location
+    Stop Japlan using your location. Apple sharing may also need to be stopped in Messages.
+12. japlan help
+    Show this guide again. want more? just ask.
+
+🗳️ VOTES HAPPEN IN THE TRIP CHAT
+Use the poll there, or tap ❤️/👍 on an option if the chat has no poll.`,
 } as const;
 
 export function helpText(isDm: boolean): string {
@@ -625,8 +784,9 @@ facts come only from tools:
 - the recent chat is for following the conversation and catching callbacks, not a source of facts. if a tool did not give it to you, don't say it.
 
 tools:
+- get_live_nearby_options: only for an explicit group request about what to do right now, where people are, or nearby options. it reads locations on demand only for people who accepted Linq’s private iMessage prompt and returns approximate areas plus nearby candidates. never call it in a dm or for routine conversation. exact coordinates are never shared with the group.
 - get_standings: call this before stating anyone's score. never recall a score from memory or from the prompt.
-- get_open_tasks: existing tasks plus the board state. describe tasks from this list, do not make up a task yourself. if they want more or different tasks, call request_tasks. if there are no open tasks, "japlan plans" makes today's board right now, or say when next_board lands. never promise a board time it did not give you.
+- get_open_tasks: existing tasks plus the board state. describe tasks from this list, do not make up a task yourself. if they want more or different tasks, call request_tasks. For an explicit board view command, use the direct board-request route: “japlan show” means the current time-of-day section, “show all” means the full day, and a named period means only that section. Boards are delivered on request; never promise an automatic drop time.
 - request_tasks: they want more tasks, or a number of them ("7 attractions", "a packed day"). code adds as many as fit and replies.
 - update_my_setting: they want to change any of their own settings (pace, tasks per day, strangers, interests, budget, diet, anything). code saves it and replies.
 - update_trip_setting: destination, dates, difficulty, board time, stake. code handles who can.
@@ -638,7 +798,7 @@ tools:
 - add_suggestion: someone names a place or thing they want to do. code puts it on a day and sends the reply.
 - avoid_category: the group does not want a kind of thing (temples, museums). code sends the reply.
 - get_my_profile: the sender's own survey summary. in a group, code sends it to their dm. only ever for the sender: asked about someone else, say that's between them and you.
-- search_web: real, live results for a restaurant, cafe, attraction, ticket, or booking site. query in their words plus the destination ("teriyaki restaurants osaka", "universal studios japan tickets"). fold specific results and their links into a normal sentence, not a search-results readout.
+- search_web: real, live results for a restaurant, cafe, attraction, ticket, or booking site. query in their words plus the destination ("teriyaki restaurants osaka", "universal studios japan tickets"). name specific results from what it returns, with their links, not a generic category.
 - react_to_message: tapback their message with an emoji instead of, or alongside, texting back. good for something funny or hype-worthy, not a default, and not on every message.
 - no_action: ordinary chat that needs no game action.
 
@@ -810,15 +970,19 @@ export function settingUnclearLine(label: string, options: string[]): string {
     : `didn't catch the new ${label}. say it another way?`;
 }
 
-export const SETTING_UNKNOWN_LINE = `which setting? "japlan settings" lists them all.`;
+export const SETTING_UNKNOWN_LINE = `which preference should i change? say “japlan my preferences” to see what's saved, then tell me the change in your dm.`;
 
 export const SETTING_IN_DM_LINE = "done, details are in your dm.";
 
-export function settingsListLine(lines: string[]): string {
-  return `your settings:\n${lines.map((l) => `· ${l}`).join("\n")}\nchange any by saying it, like "japlan pace faster", "japlan budget 150" or "japlan i'm into museums now".`;
+export function settingsListLine(sections: { title: string; lines: string[] }[]): string {
+  const body = sections
+    .map((section) => `${section.title}\n${section.lines.map((line, index) => `${index + 1}. ${line}`).join("\n")}`)
+    .join("\n\n");
+  return `🔒 your private trip profile\nthese are the answers Japlan uses for your tasks. “not answered yet” means blank; “skipped” means you chose to skip it. only you see this.\n\n${body}\n\nchange anything by telling me in this dm, in your own words. for example: “i prefer museums,” “keep my budget under $100 a day,” “no shellfish,” or “fewer tasks.”\n“japlan resurvey” starts the questions again.`;
 }
 
-export const SETTINGS_IN_DM_LINE = "📩 your private preferences are in your dm; the group can't see them.";
+export const SETTINGS_IN_DM_LINE = "📩 sent your private preferences to your dm. your answers stay private.";
+export const SURVEY_IN_DM_LINE = "📩 sent the private survey to your dm. your answers stay private.";
 
 export function resurveyStartLine(prompt: string): string {
   return `starting over, one question at a time. skip keeps what you said before. ${prompt}`;
@@ -836,6 +1000,7 @@ export function tasksRequestedLine(opts: {
   want: number;
   got: number;
   minutesLeft: number;
+  period: "morning" | "afternoon" | "evening";
   board: string;
 }): string {
   const head =
@@ -843,8 +1008,8 @@ export function tasksRequestedLine(opts: {
       ? opts.minutesLeft < 90
         ? `${numberWord(opts.want)} it is. that's a full day, you'll be moving.`
         : `${numberWord(opts.want)} it is.`
-      : `${numberWord(opts.got)} is what fits in what's left of today, so that's ${numberWord(opts.got)}.\nask for tomorrow if you want more.`;
-  return `${head}\n${opts.board}`;
+      : `${numberWord(opts.got)} is what fits in what's left of today, so that's ${numberWord(opts.got)}. ask for tomorrow if you want more.`;
+  return `${head}\n\n📋 showing ${opts.period} tasks. say “japlan show all” for the full day.\n\n${opts.board}`;
 }
 
 export const EVERYONE_REDONE_LINE = "redone for everyone, new boards are in your dms.";

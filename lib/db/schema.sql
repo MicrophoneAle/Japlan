@@ -52,6 +52,9 @@ create table trips (
   -- When this trip's holidays were last fetched (lib/handlers/holidays.ts).
   -- Not in TRIP_COLS on purpose: only the holiday refresh selects it.
   multipliers_checked_at timestamptz,
+  -- One show suggestion per trip, ever (lib/handlers/show-suggestion.ts).
+  -- Also deliberately out of TRIP_COLS.
+  show_suggested_at timestamptz,
   created_at timestamptz not null default now()
 );
 
@@ -74,6 +77,8 @@ create table participants (
   profile_md text,
   -- Last local day this person got a "your next question" DM at board time.
   survey_nudged_on date,
+  -- The group-setup-pending DM notice is said once, not on every message.
+  setup_pending_told_at timestamptz,
   consented_at timestamptz,
   created_at timestamptz not null default now(),
   unique (trip_id, phone)
@@ -85,8 +90,25 @@ alter table trips add constraint trips_organizer_participant_id_fkey
 create index participants_phone_idx on participants (phone);
 create index participants_trip_id_idx on participants (trip_id);
 
--- Shared group choices. Only option-message tapbacks and explicit vote
--- commands are counted; silence is an abstention. The organizer closes ties.
+-- Consent and the one-to-one Linq chat needed for on-demand location reads.
+-- Coordinates and provider location responses are never persisted.
+create table trip_location_shares (
+  trip_id uuid not null references trips (id) on delete cascade,
+  participant_id uuid not null references participants (id) on delete cascade,
+  direct_chat_id text not null,
+  share_status text not null check (
+    share_status in ('requested', 'active', 'stopped', 'expired', 'unsupported')
+  ),
+  expires_at timestamptz not null,
+  primary key (trip_id, participant_id)
+);
+
+create index trip_location_shares_active_idx
+  on trip_location_shares (trip_id, share_status, expires_at);
+
+-- Shared group choices. Native polls allow several selections per person;
+-- unsupported chats use one-choice option-message tapbacks. Silence is an
+-- abstention, and the organizer makes the final call.
 create table group_decisions (
   id uuid primary key default gen_random_uuid(),
   trip_id uuid not null references trips (id) on delete cascade,
@@ -94,6 +116,9 @@ create table group_decisions (
   status text not null default 'open' check (status in ('open', 'closed')),
   created_by uuid not null references participants (id) on delete cascade,
   selected_option integer,
+  poll_message_id text,
+  voting_mode text not null default 'reactions'
+    constraint group_decisions_voting_mode_check check (voting_mode in ('reactions', 'native_poll')),
   created_at timestamptz not null default now(),
   closed_at timestamptz,
   last_reminded_at timestamptz
@@ -101,6 +126,8 @@ create table group_decisions (
 
 create unique index group_decisions_one_open_per_trip
   on group_decisions (trip_id) where status = 'open';
+create unique index group_decisions_poll_message_id_key
+  on group_decisions (poll_message_id) where poll_message_id is not null;
 
 create table group_decision_options (
   id uuid primary key default gen_random_uuid(),
@@ -108,11 +135,14 @@ create table group_decision_options (
   option_index integer not null check (option_index > 0),
   label text not null,
   message_id text,
+  poll_option_id text,
   unique (decision_id, option_index)
 );
 
 create unique index group_decision_options_message_id_key
   on group_decision_options (message_id) where message_id is not null;
+create unique index group_decision_options_poll_option_id_key
+  on group_decision_options (poll_option_id) where poll_option_id is not null;
 
 create table group_decision_votes (
   id uuid primary key default gen_random_uuid(),
@@ -121,7 +151,7 @@ create table group_decision_votes (
   option_index integer not null check (option_index > 0),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  unique (decision_id, participant_id)
+  unique (decision_id, participant_id, option_index)
 );
 
 create table teams (
@@ -318,7 +348,13 @@ create table events (
 
 create index events_unprocessed_received
   on events (created_at)
-  where processed_at is null and retried_at is null and type = 'message.received';
+  where processed_at is null and retried_at is null and type in (
+    'message.received',
+    'poll.vote.added',
+    'poll.vote.removed',
+    'location.sharing.started',
+    'location.sharing.stopped'
+  );
 
 -- Every message in and out, per chat: the conversation's context.
 create table chat_messages (
@@ -348,6 +384,9 @@ create table sidequests (
   won_at timestamptz,
   created_at timestamptz not null default now()
 );
+
+create unique index sidequests_one_open_per_trip
+  on sidequests (trip_id) where status = 'open';
 create index sidequests_trip_date on sidequests (trip_id, local_date);
 
 create table sidequest_offers (
@@ -449,6 +488,29 @@ create table social_links (
   unique (trip_id, url)
 );
 create index social_links_queue on social_links (trip_id, status, created_at);
+
+-- Ticketable events for a trip, in the shape a Discovery result arrives in.
+-- The matcher reads this table and never an API, so matching, attribution and
+-- copy are the same whether a row came from Ticketmaster or a seed. Japan has
+-- no usable Discovery inventory (no purchase URLs), hence source='seed'.
+create table trip_events (
+  id uuid primary key default gen_random_uuid(),
+  trip_id uuid not null references trips (id) on delete cascade,
+  leg_id uuid references trip_legs (id) on delete set null,
+  name text not null,
+  venue text,
+  lat double precision,
+  lng double precision,
+  starts_at timestamptz not null,
+  category text,
+  url text not null,
+  -- A note, not a number: priceRanges is 0% filled in every Discovery market.
+  price_note text,
+  source text not null default 'seed' check (source in ('seed', 'discovery')),
+  created_at timestamptz not null default now(),
+  unique (trip_id, url)
+);
+create index trip_events_trip_starts on trip_events (trip_id, starts_at);
 
 -- Credential smoke test only. Not part of the game data model.
 create table if not exists smoke_scratch (
