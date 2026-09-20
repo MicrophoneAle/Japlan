@@ -542,35 +542,29 @@ export function teamNameUnreadableLine(): string {
 }
 
 export const HELP_TEXT = {
-  group: `ok here's the whole deal 📋
-
-· your play style is set in this chat: individual boards, daily interest-based teams, or one shared group board
-· the organizer controls trip-wide setup and can change it with “japlan setup”
-· private preference surveys stay in your dms; the group only sees who has finished
-· “japlan survey status” shows who has finished and who is still up
-· organizer: “japlan decide dinner | ramen | sushi” opens a group vote; react ❤️/👍 to an option or send “japlan vote 1”
-· “japlan vote status” shows the tally; the organizer can send “japlan remind vote” and make the final call with “japlan close vote 2”
-· claim the code where your board landed: here for full group, in your dm for individual/teams
-· send a photo after and u get bonus points
-· did something cool i didn't even ask for? just tell me, i'll score it
-· "japlan lb" or "japlan standings" for the leaderboard
-· "japlan settings" to see or change anything you told me
-· "japlan quiet" if i'm being too much lol
-
-that's it. now go do something unhinged.`,
-  dm: `ok here's the whole deal 📋
-
-· your private preferences shape your tasks; only you can see or change them
-· every morning your board lands here; full-group boards land in the trip chat
-· claim a code where that board landed: here for individual/teams, in the group for full group
-· group activity votes happen in the trip chat so everyone sees the choices
-· send a photo after and u get bonus points
-· did something cool i didn't even ask for? just tell me, i'll score it
-· "japlan lb" or "japlan standings" for the leaderboard
-· "japlan settings" to see or change anything you told me
-· "japlan quiet" if i'm being too much lol
-
-that's it. now go do something unhinged.`,
+  group: `🧭 japlan quick guide
+🎒 boards
+· “japlan show” sends the current period; add “morning”, “afternoon”, “night”, or “all”. “show tomorrow” gets the next day.
+· individual / teams: your board lands in your dm; full-group boards appear here. send the code where it landed; add a photo or ask for 👍 validation.
+🗳️ group choices
+· organizer: “japlan decide dinner | ramen | sushi” opens an iMessage poll. select every option you'd accept; organizer makes the final call.
+· “japlan vote status” shows the tally; organizer can “japlan remind vote” or “japlan close vote 2”. unsupported chats use reactions.
+📍 organizer: “japlan share locations” sends optional private apple prompts. ask “what should we do right now?” for nearby ideas; the group sees approximate areas only.
+🧭 trip and preferences
+· organizer: “japlan setup” changes shared settings. “japlan survey status” shows who has finished; answers stay private.
+· “japlan lb” or “japlan standings” shows scores; “japlan settings” shows your preferences.
+· sidequests are optional bonus challenges: “japlan sidequests off/on” or “japlan quiet” / “japlan chill”. “japlan help” repeats this guide.`,
+  dm: `🧭 japlan quick guide
+🎒 boards
+· “japlan show” sends the current period; add “morning”, “afternoon”, “night”, or “all”. “show tomorrow” gets the next day.
+· individual / teams: your board lands here; full-group boards appear in the trip chat. send the code where it landed; add a photo or ask for 👍 validation.
+🗳️ group choices
+· vote in the trip chat; select every poll option you'd accept. “japlan vote status” shows the tally.
+📍 “japlan share location” asks apple for optional consent; “japlan stop location” stops japlan reading it. turn it off in Messages too if sharing still appears active.
+🧭 trip and preferences
+· only you can see or change your preferences with “japlan settings”.
+· “japlan lb” or “japlan standings” shows scores.
+· sidequests are optional bonus challenges: “japlan sidequests off/on” or “japlan quiet” / “japlan chill”. “japlan help” repeats this guide; want more? just ask.`,
 } as const;
 
 export function helpText(isDm: boolean): string {
@@ -613,8 +607,10 @@ facts come only from tools:
 - the recent chat is for following the conversation and catching callbacks, not a source of facts. if a tool did not give it to you, don't say it.
 
 tools:
+- get_live_nearby_options: only for an explicit group request about what to do right now, where people are, or nearby options. it reads locations on demand only for people who accepted Linq’s private iMessage prompt and returns approximate areas plus nearby candidates. never call it in a dm or for routine conversation. exact coordinates are never shared with the group.
 - get_standings: call this before stating anyone's score. never recall a score from memory or from the prompt.
 - get_open_tasks: existing tasks plus the board state. describe tasks from this list, do not make up a task yourself. if they want more or different tasks, call request_tasks. if there are no open tasks, "japlan plans" makes today's board right now, or say when next_board lands. never promise a board time it did not give you.
+- get_live_nearby_options: use the returned nearby candidates as real places for a right-now group suggestion. mention only approximate areas; never disclose a person's precise location.
 - request_tasks: they want more tasks, or a number of them ("7 attractions", "a packed day"). code adds as many as fit and replies.
 - update_my_setting: they want to change any of their own settings (pace, tasks per day, strangers, interests, budget, diet, anything). code saves it and replies.
 - update_trip_setting: destination, dates, difficulty, board time, stake. code handles who can.

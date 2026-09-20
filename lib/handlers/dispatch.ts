@@ -7,7 +7,12 @@ import { DISPATCH_ERROR_LINE } from "@/lib/game/copy";
 import { handleBoardTimeCommand, handleTripCommand } from "@/lib/handlers/trip-lifecycle";
 import { handleTeamNameCommand } from "@/lib/handlers/teams";
 import { routeSoloDm, soloModeEnabled } from "@/lib/game/solo";
-import { bootstrapGroupIfNeeded } from "@/lib/handlers/bootstrap";
+import {
+  bootstrapGroupIfNeeded,
+  findOpenSurveyByPhone,
+  findParticipantOnTrip,
+  listParticipants,
+} from "@/lib/handlers/bootstrap";
 import {
   handleGroupClaim,
   handlePeerReaction,
@@ -27,8 +32,15 @@ import { handleSurveyDm } from "@/lib/handlers/survey";
 import { handleGroupSetupMessage } from "@/lib/handlers/setup";
 import {
   handleGroupDecisionMessage,
+  handleGroupDecisionPollVote,
   handleGroupDecisionReaction,
 } from "@/lib/handlers/group-decisions";
+import {
+  activateParticipantLocationSharing,
+  handleLocationSharingWebhook,
+  requestTripLocationSharing,
+  stopParticipantLocationSharing,
+} from "@/lib/handlers/live-location";
 import {
   chatIdFromData,
   isDirectChat,
@@ -320,6 +332,47 @@ async function onMessageReceivedInner(
     return;
   }
 
+  const locationRequest = text.trim().match(/^japlan\s+(?:request|share|turn on)\s+locations?(?:\s+sharing)?[.!?]*$/i);
+  if (locationRequest && !isDm) {
+    const trip = await dispatchAwait("location_request.trip_lookup", { chatId }, () =>
+      getTripByChatId(chatId),
+    );
+    if (!trip || !phone) {
+      await sendText(chatId, "i couldn't match this chat to an active trip yet.");
+      return;
+    }
+    const [organizer, participants] = await Promise.all([
+      findParticipantOnTrip(trip.id, phone),
+      listParticipants(trip.id),
+    ]);
+    if (!organizer) {
+      await sendText(chatId, "i couldn't match you to this trip's member list.");
+      return;
+    }
+    const result = await dispatchAwait("location_request.send_consent", { tripId: trip.id }, () =>
+      requestTripLocationSharing({ trip, organizer, participants }),
+    );
+    if (result.status === "organizer_only") {
+      const owner = participants.find((person) => person.id === trip.organizer_participant_id);
+      await sendText(chatId, `👑 ${owner?.display_name ?? "the organizer"} controls shared trip settings. ask them to request location sharing.`);
+      return;
+    }
+    if (result.status === "not_active") {
+      await sendText(chatId, "location sharing is available during the active trip. finish setup and start the trip first.");
+      return;
+    }
+    const requested = result.people.filter((person) => person.status === "requested").length;
+    const alreadyPending = result.people.filter((person) => person.status === "already_pending").length;
+    const alreadyActive = result.people.filter((person) => person.status === "already_active").length;
+    const unsupported = result.people.filter((person) => person.status === "unsupported").length;
+    const failed = result.people.filter((person) => person.status === "failed").length;
+    await sendText(
+      chatId,
+      `📍 sent private consent prompts to ${requested} ${requested === 1 ? "person" : "people"}.${alreadyPending ? ` ${alreadyPending} ${alreadyPending === 1 ? "person already has" : "people already have"} an open request.` : ""}${alreadyActive ? ` ${alreadyActive} ${alreadyActive === 1 ? "person is" : "people are"} already sharing.` : ""} sharing is optional; when someone accepts, i'll use a fresh location only when the group asks for a live plan. exact locations stay private.${unsupported ? ` ${unsupported} chat${unsupported === 1 ? "" : "s"} can't use Apple's location prompt.` : ""}${failed ? ` ${failed} prompt${failed === 1 ? "" : "s"} couldn't be sent.` : ""}`,
+    );
+    return;
+  }
+
   const decisionHandled = await dispatchAwait("group_decision_command", { chatId, isDm }, () =>
     handleGroupDecisionMessage({ chatId, isDm, phone, text }),
   );
@@ -344,6 +397,54 @@ async function onMessageReceivedInner(
         engaged: engagement?.engaged ?? false,
         photoOnly: engagement?.photoOnly ?? false,
       }),
+    );
+    return;
+  }
+
+  const dmTrip = await findOpenSurveyByPhone(phone, chatId);
+  if (/^(?:japlan\s+)?(?:share|turn on)\s+(?:my\s+)?location(?:\s+sharing)?[.!?]*$/i.test(text.trim())) {
+    if (!dmTrip) {
+      await sendText(chatId, "location sharing is available during an active trip. finish setup and start the trip first.");
+      return;
+    }
+    const status = await dispatchAwait("location_request.self", { tripId: dmTrip.trip.id }, () =>
+      activateParticipantLocationSharing({
+        trip: dmTrip.trip,
+        participant: dmTrip.participant,
+        directChatId: chatId,
+      }),
+    );
+    const replies = {
+      requested: "📍 accept Apple's prompt if you're comfortable. i'll check your location only when the group asks for a live plan, and share only your approximate area.",
+      already_pending: "📍 there's already a location request waiting in this chat. accept it if you're comfortable.",
+      already_active: "📍 you're already sharing. i'll only check when the group asks for a live plan; say “japlan stop location” to stop.",
+      not_active: "location sharing is available during the active trip.",
+      not_participant: "i couldn't match this direct chat to your trip profile.",
+      failed: "i couldn't send the Apple location prompt just now. try again in a moment.",
+      unsupported: "location sharing needs a 1:1 iMessage chat. you can still tell me your neighborhood for nearby ideas.",
+    } as const;
+    await sendText(chatId, replies[status]);
+    return;
+  }
+  if (/^(?:japlan\s+)?stop\s+location(?:\s+sharing)?[.!?]*$/i.test(text.trim())) {
+    if (!dmTrip) {
+      await sendText(chatId, "there's no trip location sharing to stop here.");
+      return;
+    }
+    const stopped = await dispatchAwait("location_request.stop", { tripId: dmTrip.trip.id }, () =>
+      stopParticipantLocationSharing({
+        tripId: dmTrip.trip.id,
+        participantId: dmTrip.participant.id,
+        phone,
+      }),
+    );
+    await sendText(
+      chatId,
+      stopped === "stopped"
+        ? "📍 done. i stopped using your location for Japlan. Apple may still show sharing until you turn it off in Messages too."
+        : stopped === "unavailable"
+          ? "📍 i've stopped using your location in Japlan across your trips, but couldn't confirm Apple's share ended. turn it off in Messages too."
+          : "you're not sharing a location with Japlan right now.",
     );
     return;
   }
@@ -417,6 +518,11 @@ async function onMessageReceivedInner(
 }
 
 export async function dispatchLinqEvent(envelope: LinqEnvelope): Promise<void> {
+  const retryableLiveEvent =
+    envelope.event_type === "poll.vote.added" ||
+    envelope.event_type === "poll.vote.removed" ||
+    envelope.event_type === "location.sharing.started" ||
+    envelope.event_type === "location.sharing.stopped";
   dispatchStep("dispatchLinqEvent.enter", {
     type: envelope.event_type ?? null,
     eventId: envelope.event_id ?? null,
@@ -433,12 +539,39 @@ export async function dispatchLinqEvent(envelope: LinqEnvelope): Promise<void> {
 
     if (envelope.event_type === "message.received") {
       await onMessageReceived(envelope.data);
-    } else if (envelope.event_type === "reaction.added") {
+    } else if (
+      envelope.event_type === "poll.vote.added" ||
+      envelope.event_type === "poll.vote.removed"
+    ) {
+      if (!isRecord(envelope.data)) {
+        dispatchIdle("poll_vote_not_a_record");
+      } else {
+        const action = envelope.event_type === "poll.vote.added" ? "added" : "removed";
+        await dispatchAwait("group_decision_poll_vote", { eventType: envelope.event_type }, () =>
+          handleGroupDecisionPollVote(action, envelope.data as Record<string, unknown>),
+        );
+      }
+    } else if (
+      envelope.event_type === "location.sharing.started" ||
+      envelope.event_type === "location.sharing.stopped"
+    ) {
+      if (!isRecord(envelope.data)) {
+        dispatchIdle("location_event_not_a_record");
+      } else {
+        await dispatchAwait("location_sharing_webhook", { eventType: envelope.event_type }, () =>
+          handleLocationSharingWebhook(envelope.event_type!, envelope.data as Record<string, unknown>),
+        );
+      }
+    } else if (
+      envelope.event_type === "reaction.added" ||
+      envelope.event_type === "reaction.removed"
+    ) {
       // Never seen in a real capture. Log the shape (not phone numbers or
       // text) so the first live tapback confirms or corrects the field names.
       const reaction = isRecord(envelope.data) ? envelope.data : null;
       console.info("[japlan.reaction] observed", {
         eventId: envelope.event_id ?? null,
+        eventType: envelope.event_type,
         keys: reaction ? Object.keys(reaction) : null,
         reactionType: reaction?.reaction_type ?? null,
         hasMessageId: typeof reaction?.message_id === "string",
@@ -451,9 +584,12 @@ export async function dispatchLinqEvent(envelope: LinqEnvelope): Promise<void> {
       });
       if (isRecord(envelope.data)) {
         const decisionHandled = await dispatchAwait("group_decision_reaction", {}, () =>
-          handleGroupDecisionReaction(envelope.data as Record<string, unknown>),
+          handleGroupDecisionReaction(
+            envelope.data as Record<string, unknown>,
+            envelope.event_type === "reaction.removed" ? "removed" : "added",
+          ),
         );
-        if (!decisionHandled) {
+        if (!decisionHandled && envelope.event_type === "reaction.added") {
           await dispatchAwait("peer_reaction", {}, () =>
             handlePeerReaction(envelope.data as Record<string, unknown>),
           );
@@ -474,10 +610,17 @@ export async function dispatchLinqEvent(envelope: LinqEnvelope): Promise<void> {
       message: error.message,
       stack: error.stack ?? null,
     });
-    // It failed but it ran (an addressed message already got "that's on me"):
-    // marked, so the stalled-event sweep retries only dispatches that never
-    // finished at all.
-    await markProcessed(envelope.event_id).catch(() => {});
+    // Addressed inbound messages get a user-facing error reply and are marked
+    // processed. Poll and location webhooks have no reply path, so leave a
+    // failed event unprocessed for the stalled-event sweep to retry once.
+    if (!retryableLiveEvent) {
+      await markProcessed(envelope.event_id).catch(() => {});
+    } else {
+      console.warn("[japlan.dispatch] live webhook left unprocessed for retry", {
+        eventId: envelope.event_id ?? null,
+        type: envelope.event_type ?? null,
+      });
+    }
   } finally {
     dispatchStep("dispatchLinqEvent.exit", {
       type: envelope.event_type ?? null,
