@@ -10,12 +10,14 @@ import {
 import { isOpenTask, tasksClaimableBy } from "@/lib/game/claims";
 import {
   BOARD_IN_DM_LINE,
+  BOARD_IN_GROUP_LINE,
   BOARD_MAKE_FAILED_LINE,
   boardRefillLine,
   dayNotInTripLine,
   pastDayNoBoardLine,
   provisionalBoard,
   finishYourSurveyLine,
+  GROUP_BOARD_CLEARED_LINE,
   refillLimitLine,
   waitingOnSetupLine,
   UNDER_AGE_LINE,
@@ -131,6 +133,11 @@ export async function answerBoardRequest(
   const trip = miss.trip;
   const today = localDateString(now, trip.timezone);
   const reply = async (text: string, opts: { board?: boolean } = {}) => {
+    if (opts.board && trip.play_mode === "full_group") {
+      await miss.send(trip.linq_chat_id, `📣 ${miss.claimant.display_name} asked for the shared board:\n\n${text}`);
+      if (miss.isDm) await miss.send(miss.chatId, BOARD_IN_GROUP_LINE);
+      return;
+    }
     // A board is personal: in a group it goes to the DM, with one line here.
     if (opts.board && !miss.isDm) {
       await sendDM(miss.claimant.phone, text);
@@ -184,7 +191,9 @@ export async function answerBoardRequest(
     board = await waitWhileGenerating(trip.id, day);
   }
   const dayTasks = board ? await tasksForDay(trip.id, day) : miss.tasks.filter((t) => t.day === day);
-  const mine = tasksClaimableBy(dayTasks, miss.claimant.id, miss.claimantTeamIds);
+  const mine = trip.play_mode === "full_group"
+    ? dayTasks.filter((task) => !task.participant_id)
+    : tasksClaimableBy(dayTasks, miss.claimant.id, miss.claimantTeamIds);
   const open = mine.filter((task) => isOpenTask(task.id, miss.claims));
   const provisional = Boolean(board?.provisional);
 
@@ -194,6 +203,11 @@ export async function answerBoardRequest(
     boardStep("list", { path: "served_existing", tripId: trip.id, day, open: open.length, provisional });
     const text = boardText(day, open, await dayAnchorsForBoard(trip, day));
     await reply(provisional ? provisionalBoard(text) : text, { board: true });
+    return;
+  }
+
+  if (trip.play_mode === "full_group" && dayTasks.length > 0) {
+    await reply(GROUP_BOARD_CLEARED_LINE);
     return;
   }
 
@@ -294,11 +308,13 @@ export async function answerBoardRequest(
     boardStep("delivered_to_others", { tripId: trip.id, day });
   }
 
-  const myRows = tasksClaimableBy(
-    built.rows.map((row, i) => ({ ...row, id: `new-${i}` })),
-    miss.claimant.id,
-    miss.claimantTeamIds,
-  );
+  const myRows = trip.play_mode === "full_group"
+    ? built.rows.filter((row) => !row.participant_id)
+    : tasksClaimableBy(
+        built.rows.map((row, i) => ({ ...row, id: `new-${i}` })),
+        miss.claimant.id,
+        miss.claimantTeamIds,
+      );
   if (myRows.length === 0) {
     await reply(BOARD_MAKE_FAILED_LINE);
     return;

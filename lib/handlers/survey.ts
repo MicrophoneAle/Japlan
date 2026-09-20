@@ -1,11 +1,15 @@
 import { sendText } from "@/lib/linq/send";
+import { getServiceClient } from "@/lib/db/client";
 import {
   applyReply,
+  isSidequestClarificationRequest,
   isSidequestQuestion,
+  startSurvey,
   type SurveyAnswers,
   type SurveyAwaiting,
 } from "@/lib/game/survey";
-import { defaultWakeKeyword, findTaskCode, wakeKeywordRe } from "@/lib/game/addressing";
+import { defaultWakeKeyword, findTaskCode, stripWakeKeyword } from "@/lib/game/addressing";
+import { isStandingsRequest } from "@/lib/game/commands";
 import { isBoardRequest } from "@/lib/game/board-schedule";
 import { interpretSurveyReply } from "@/lib/llm/gemini";
 import { checkReply } from "@/lib/game/reply-check";
@@ -17,6 +21,10 @@ import {
   dmUnknownPersonLine,
   surveyDoneLine,
   UNDER_AGE_LINE,
+  groupSetupPendingDmLine,
+  surveyProgressGroupLine,
+  sidequestClarificationLine,
+  ONBOARDING_ACK_LINE,
 } from "@/lib/game/copy";
 import type { LLMProvider } from "@/lib/llm";
 import {
@@ -67,7 +75,19 @@ export async function handleSurveyDm(opts: {
   const state = participant.survey_state;
   const surveyInProgress = Boolean(state && state !== "done" && state !== "not_started");
 
-  if (isOrganizer && isSetupQuestion(trip.setup_state)) {
+  if (!trip.is_solo && isSetupQuestion(trip.setup_state)) {
+    const { data: organizerRow, error } = await getServiceClient()
+      .from("participants")
+      .select("display_name")
+      .eq("id", trip.organizer_participant_id ?? "")
+      .maybeSingle();
+    if (error) throw error;
+    const organizerName = (organizerRow as { display_name?: string } | null)?.display_name ?? "the organizer";
+    await sendText(opts.chatId, groupSetupPendingDmLine(organizerName));
+    return;
+  }
+
+  if (isOrganizer && trip.is_solo && isSetupQuestion(trip.setup_state)) {
     const reply = await answerSetup({
       trip,
       organizer: participant,
@@ -85,7 +105,25 @@ export async function handleSurveyDm(opts: {
     return;
   }
 
-  if (!state || state === "done") {
+  if (!state || state === "not_started") {
+    const started = startSurvey();
+    if (started.prompt === null) {
+      throw new Error("initial survey step must include a prompt");
+    }
+    await persistSurveyProgress({
+      participantId: participant.id,
+      awaiting: started.state.awaiting,
+      answers: started.state.answers,
+    });
+    await sendText(opts.chatId, started.prompt);
+    return;
+  }
+
+  if (state === "done") {
+    if (isSimpleAcknowledgement(opts.text)) {
+      await sendText(opts.chatId, ONBOARDING_ACK_LINE);
+      return;
+    }
     // Survey done: this DM is a claim, a board request, or conversation about
     // their trip. Handle it here rather than sending them to the group chat.
     // Replies stay in this DM; a claim confirmation also posts to the group.
@@ -110,11 +148,23 @@ export async function handleSurveyDm(opts: {
     return;
   }
 
-  // Mid-onboarding is not a lock: a task code, a board request or anything
-  // addressed with the keyword goes to the game, and the question waits.
+  // Mid-onboarding is not a lock: clear task codes, board requests, and
+  // standings requests go to the game. A prefixed survey answer stays here.
   if (opts.data && isGameMessage(opts.text) && trip.state === "active") {
     const miss = await handleGroupClaim(opts.data, { tripChatId: trip.linq_chat_id });
     if (miss) await handleConversation(miss);
+    return;
+  }
+
+  if (
+    (state === "sidequest_level" || state === "sidequest_red_lines") &&
+    isSidequestClarificationRequest(opts.text)
+  ) {
+    const question = QUESTIONS[state];
+    await sendText(
+      opts.chatId,
+      `${sidequestClarificationLine(state)}\n${question.prompt}`,
+    );
     return;
   }
 
@@ -179,6 +229,17 @@ export async function handleSurveyDm(opts: {
     } catch (err) {
       console.error("[japlan.suggest] survey import failed", err);
     }
+    if (!trip.is_solo) {
+      const peopleRes = await getServiceClient()
+        .from("participants")
+        .select("id, display_name, survey_state")
+        .eq("trip_id", trip.id);
+      if (peopleRes.error) throw peopleRes.error;
+      const waiting = (peopleRes.data ?? [])
+        .filter((row) => (row as { survey_state: string | null }).survey_state !== "done")
+        .map((row) => (row as { display_name: string }).display_name);
+      await sendText(trip.linq_chat_id, surveyProgressGroupLine(participant.display_name, waiting));
+    }
     if (isUnderAge(answers)) {
       await sendText(opts.chatId, `${SURVEY_DONE_DM} ${UNDER_AGE_LINE}`);
       if (!trip.is_solo) await maybeActivateTrip(trip, { quietFor: participant.id });
@@ -229,9 +290,17 @@ function surveyStep(step: string, fields: Record<string, unknown>): void {
   console.log("[japlan.survey] step", { step, ...fields });
 }
 
-// A message that is for the game, not an answer: a task code, a board
-// request, or the wake keyword.
+// Clear game requests can interrupt the survey. A wake keyword on its own
+// cannot: people naturally use it when replying to Japlan's question.
 function isGameMessage(text: string): boolean {
   const code = findTaskCode(text);
-  return Boolean(code?.strict) || isBoardRequest(text) || wakeKeywordRe(defaultWakeKeyword()).test(text);
+  return Boolean(code?.strict) || isBoardRequest(text) || isStandingsRequest(text);
+}
+
+function isSimpleAcknowledgement(text: string): boolean {
+  const body = stripWakeKeyword(text, defaultWakeKeyword())
+    .trim()
+    .replace(/[.!?]+$/, "")
+    .trim();
+  return /^(?:ok(?:ay)?|k|got it|thanks|thank you|cool|nice|sounds good|yep|yeah|👍|👌)$/i.test(body);
 }

@@ -25,7 +25,7 @@ export type ConstraintParse = {
   followUp: "allergy_strictness" | "diet_strictness" | null;
 };
 
-const NONE_RE = /^(none|nothing|nope|no|nah|n\/?a|all good|not really|nothing really|i'?m easy|no restrictions?|none at all)[.!]*$/i;
+const NONE_RE = /^(?:(?:none|nothing|nope|no|nah|n\/?a)(?:[ ,]+(?:all good|nothing|no restrictions?|i'?m easy))?|all good|not really|nothing really|i'?m easy|no restrictions?|none at all)[.!]*$/i;
 const VAGUE_RE = /^(some stuff|a few things|a couple things|some things|yes|yeah|maybe|kind of|sort of|a bit|depends|not sure)[.!]*$/i;
 const ALLERGY_WORD = /allerg|anaphyla|epipen|intoleran|celiac|coeliac/i;
 const PREFERENCE_WORD = /prefer|not (?:that |super |too )?strict|flexible|on vacation|mostly|try to|ish\b|when i can|loosely/i;

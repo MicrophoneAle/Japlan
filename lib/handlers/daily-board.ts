@@ -1,4 +1,4 @@
-import { formatMorningStandings, formatPersonalBoard } from "@/lib/game/board";
+import { formatDailyBoard, formatMorningStandings, formatPersonalBoard } from "@/lib/game/board";
 import {
   assembleDestinationProfile,
   type DestinationProfile,
@@ -48,13 +48,13 @@ import {
   isUnderAge,
   promptPreferences,
 } from "@/lib/game/preferences";
-import { dayGroups, type DayTeam } from "@/lib/game/split";
+import { type DayTeam } from "@/lib/game/split";
 import { groupProfile, personProfile } from "@/lib/game/profile";
 import { prefsOf } from "@/lib/game/prefs";
 import { isSidequestQuestion } from "@/lib/game/survey";
 import { boardTemplates } from "@/lib/game/templates";
 import { peerLapsedLine } from "@/lib/game/copy";
-import { answerValue, type SurveyAnswers } from "@/lib/game/survey";
+import { answerValue, interestPicksOf, type SurveyAnswers } from "@/lib/game/survey";
 import {
   clampPhotoBonusMax,
   pointsForBoard,
@@ -80,11 +80,13 @@ import {
 } from "@/lib/game/time";
 import { buildStandingsRows } from "@/lib/game/standings";
 import { teamsWithMembers } from "@/lib/handlers/teams";
+import { pairBySharedInterests } from "@/lib/game/teams";
 
 import { TRIP_COLS } from "@/lib/db/columns";
 import { missingRequiredSetup, type SetupFields } from "@/lib/game/setup";
 import { recordTasksChanged } from "./stats";
 import { boardDueNow, tripDayForDate } from "@/lib/game/board-schedule";
+import { remindOpenGroupDecisions } from "@/lib/handlers/group-decisions";
 
 // Matches tasks_owner_code_key: codes are unique per owner per day, not per trip.
 const TASK_CODE_CONFLICT = "trip_id,day,participant_id,team_id,code";
@@ -276,6 +278,7 @@ export type Assignee = {
   kind: "group" | "team";
   id: string;
   teamId: string | null;
+  shared?: boolean;
   people: ParticipantRow[];
   label: string;
   startAt: number | null;
@@ -314,19 +317,169 @@ export async function dayTeams(tripId: string, day: number): Promise<DayTeam[]> 
   return out;
 }
 
-export async function loadAssignees(tripId: string, people: ParticipantRow[], day: number): Promise<Assignee[]> {
-  const teams = await dayTeams(tripId, day);
-  return dayGroups(people.map((p) => p.id), teams).map((g) => ({
-    kind: g.teamId ? ("team" as const) : ("group" as const),
-    id: g.key,
-    teamId: g.teamId,
-    people: people.filter((p) => g.memberIds.includes(p.id)),
-    label: g.label,
-    startAt: g.startAt,
-    endAt: g.endAt,
-    startNear: g.startNear,
-    endNear: g.endNear,
-  }));
+function sharedInterests(person: ParticipantRow): string[] {
+  const answers = (person.survey_json ?? {}) as SurveyAnswers;
+  const interests = new Set<string>();
+  for (const pick of interestPicksOf(answers)) interests.add(pick);
+  const add = (question: "ab_food_outdoors" | "ab_discover_iconic" | "ab_culture_nightlife", a: string, b: string) => {
+    const value = answerValue(answers, question);
+    if (value === "a" || value === "both") interests.add(a);
+    if (value === "b" || value === "both") interests.add(b);
+  };
+  add("ab_food_outdoors", "food", "outdoors");
+  add("ab_discover_iconic", "neighbourhoods", "landmarks");
+  add("ab_culture_nightlife", "culture", "nightlife");
+  const mustHave = answerValue(answers, "must_have")?.toLowerCase() ?? "";
+  if (/food|restaurant|eat|ramen|snack/.test(mustHave)) interests.add("food");
+  if (/party|bar|club|nightlife|dance/.test(mustHave)) interests.add("nightlife");
+  if (/museum|art|history|temple|architecture/.test(mustHave)) interests.add("culture");
+  if (/hike|kayak|nature|outdoor|beach|mountain/.test(mustHave)) interests.add("outdoors");
+  return [...interests];
+}
+
+async function createPreferenceTeamsForDay(
+  tripId: string,
+  day: number,
+  people: ParticipantRow[],
+): Promise<DayTeam[]> {
+  const existing = await dayTeams(tripId, day);
+  if (existing.length > 0) return existing;
+  const pairs = pairBySharedInterests(people.map((person) => ({
+    id: person.id,
+    interests: sharedInterests(person),
+  })));
+  const byId = new Map(people.map((person) => [person.id, person]));
+  for (let index = 0; index < pairs.length; index++) {
+    const name = `day ${day} pair ${index + 1}`;
+    const { data, error } = await getServiceClient()
+      .from("teams")
+      .insert({
+        trip_id: tripId,
+        name,
+        color: ["blue", "green", "purple", "orange", "teal"][index % 5],
+        formed_at: new Date().toISOString(),
+        day,
+      })
+      .select("id, name")
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) throw new Error("daily preference team insert returned no row");
+    const members = pairs[index].filter((id) => byId.has(id));
+    const { error: memberError } = await getServiceClient()
+      .from("team_members")
+      .insert(members.map((participant_id) => ({ team_id: data.id, participant_id })));
+    if (memberError) throw memberError;
+  }
+  return dayTeams(tripId, day);
+}
+
+async function createFullGroupTeamForDay(
+  tripId: string,
+  day: number,
+  people: ParticipantRow[],
+): Promise<DayTeam> {
+  const name = `everyone · day ${day}`;
+  const { data: existing, error: lookupError } = await getServiceClient()
+    .from("teams")
+    .select("id")
+    .eq("trip_id", tripId)
+    .eq("day", day)
+    .eq("name", name)
+    .maybeSingle();
+  if (lookupError) throw lookupError;
+  if (existing) {
+    const team = (await dayTeams(tripId, day)).find((row) => row.id === (existing as { id: string }).id);
+    if (team) return team;
+  }
+  const { data, error } = await getServiceClient()
+    .from("teams")
+    .insert({
+      trip_id: tripId,
+      name,
+      color: "teal",
+      formed_at: new Date().toISOString(),
+      day,
+    })
+    .select("id")
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) throw new Error("full group team insert returned no row");
+  const { error: memberError } = await getServiceClient()
+    .from("team_members")
+    .insert(people.map((person) => ({ team_id: data.id, participant_id: person.id })));
+  if (memberError) throw memberError;
+  const team = (await dayTeams(tripId, day)).find((row) => row.id === (data as { id: string }).id);
+  if (!team) throw new Error("full group team could not be reloaded");
+  return team;
+}
+
+function personAssignee(person: ParticipantRow): Assignee {
+  return {
+    kind: "group",
+    id: `person:${person.id}`,
+    teamId: null,
+    people: [person],
+    label: person.display_name,
+    startAt: null,
+    endAt: null,
+    startNear: null,
+    endNear: null,
+  };
+}
+
+export async function loadAssignees(trip: TripRow, people: ParticipantRow[], day: number): Promise<Assignee[]> {
+  if (people.length === 0) return [];
+  if (trip.play_mode === "full_group") {
+    const team = await createFullGroupTeamForDay(trip.id, day, people);
+    return [{
+      kind: "team",
+      id: "full-group",
+      teamId: team.id,
+      people,
+      label: team.name,
+      startAt: null,
+      endAt: null,
+      startNear: null,
+      endNear: null,
+    }];
+  }
+
+  if (trip.play_mode === "individual") return people.map(personAssignee);
+
+  if (trip.play_mode === "teams") {
+    const teams = await createPreferenceTeamsForDay(trip.id, day, people);
+    const assigned = new Set<string>();
+    const assignees: Assignee[] = teams.map((team) => {
+      const members = people.filter((person) => team.memberIds.includes(person.id));
+      members.forEach((person) => assigned.add(person.id));
+      return {
+        kind: "team",
+        id: `team:${team.id}`,
+        teamId: team.id,
+        people: members,
+        label: team.name,
+        startAt: team.startsAt,
+        endAt: team.rejoinAt,
+        startNear: team.area,
+        endNear: team.rejoinPlace,
+      };
+    });
+    assignees.push(...people.filter((person) => !assigned.has(person.id)).map(personAssignee));
+    return assignees;
+  }
+
+  // Legacy trips retain the former shared-plan behavior.
+  return [{
+    kind: "group",
+    id: "together",
+    teamId: null,
+    people,
+    label: "everyone",
+    startAt: null,
+    endAt: null,
+    startNear: null,
+    endNear: null,
+  }];
 }
 
 export function scoreGapText(people: ParticipantRow[]): string {
@@ -626,7 +779,7 @@ export async function generateValidatedBoard(opts: {
   const date = opts.date ?? localDateString(now, opts.trip.timezone || "UTC");
   const day = tripDayOn(opts.trip, date, now);
   const expiresAt = endOfLocalDay(date, opts.trip.timezone || "UTC");
-  const assignees = await loadAssignees(opts.trip.id, opts.people, day);
+  const assignees = await loadAssignees(opts.trip, opts.people, day);
   const ratings = await yesterdayRatings(opts.people);
   const gap = scoreGapText(opts.people);
   const boardTitles = await tripBoardTitles(opts.trip.id);
@@ -683,6 +836,8 @@ export async function generateValidatedBoard(opts: {
     }
     if (assignee.teamId) {
       kept.push(...planned.tasks.map((task) => ({ ...task, participantId: null, teamId: assignee.teamId })));
+    } else if (assignee.shared) {
+      kept.push(...planned.tasks.map((task) => ({ ...task, participantId: null, teamId: null })));
     } else {
       // Together: one plan, a copy per person. Same schedule, same codes,
       // each claimed and scored individually.
@@ -693,7 +848,7 @@ export async function generateValidatedBoard(opts: {
   }
 
   const trailer = trailingPlayer(opts.people);
-  if (trailer) {
+  if (trailer && opts.trip.play_mode !== "full_group") {
     const trailerDone = await completedTitles(opts.trip.id, [trailer.id]);
     const bounty = pickBounty({
       profile: opts.profile,
@@ -1343,6 +1498,32 @@ async function deliverMorningBoards(opts: {
   standings?: boolean;
 }): Promise<void> {
   const anchors = await dayAnchorsForBoard(opts.trip, opts.day);
+  if (opts.trip.play_mode === "full_group" && !opts.trip.is_solo) {
+    const people = opts.allPeople ?? opts.people;
+    const sharedTasks = opts.rows.filter((row) => !row.participant_id);
+    const board = formatDailyBoard({
+      day: opts.day,
+      weatherLine: opts.weatherLine,
+      tasks: sharedTasks.map((row) => ({
+        code: row.code,
+        title: row.title,
+        base_points: row.base_points,
+        slot: row.slot ?? null,
+        neighborhood: row.neighborhood,
+      })),
+      standings: people.map((person) => ({
+        display_name: person.display_name,
+        score: person.score,
+      })),
+    });
+    const reopened = [...new Set([...(opts.lapsed?.values() ?? [])].flat())];
+    await sendText(
+      opts.trip.linq_chat_id,
+      `${board}${reopened.length > 0 ? `\n\n♻️ reopened: ${reopened.join(", ")}` : ""}`,
+    );
+    return;
+  }
+
   const byPerson = new Map<string, Omit<TaskRow, "id">[]>();
   for (const person of opts.people) {
     byPerson.set(person.id, []);
@@ -1378,11 +1559,29 @@ async function deliverMorningBoards(opts: {
     for (const list of byPerson.values()) list.push(...shared);
   }
 
+  const teamLabelByParticipant = new Map<string, string>();
+  const tripPeople = opts.allPeople ?? opts.people;
+  for (const teamId of [...new Set(teamRows.map((row) => row.team_id!))]) {
+    const { data, error } = await getServiceClient()
+      .from("team_members")
+      .select("participant_id")
+      .eq("team_id", teamId);
+    if (error) throw error;
+    const memberIds = (data ?? []).map((row) => (row as { participant_id: string }).participant_id);
+    const label = memberIds
+      .map((id) => tripPeople.find((person) => person.id === id)?.display_name)
+      .filter((name): name is string => Boolean(name))
+      .join(" + ");
+    for (const id of memberIds) teamLabelByParticipant.set(id, label);
+  }
+
   for (const person of opts.people) {
     const tasks = byPerson.get(person.id) ?? [];
     const lapsedCodes = opts.lapsed?.get(person.id) ?? [];
     if (tasks.length === 0 && lapsedCodes.length === 0) continue;
     const parts: string[] = [];
+    const teamLabel = teamLabelByParticipant.get(person.id);
+    if (teamLabel) parts.push(`🤝 today's shared tasks: ${teamLabel}.`);
     // One DM: the lapsed-claim line (which names the reopened code) rides on
     // top of the board instead of arriving as a second message.
     if (lapsedCodes.length > 0) parts.push(peerLapsedLine(lapsedCodes));
@@ -1665,6 +1864,14 @@ export async function runDailyBoards(opts: {
     skipped.push(trip.id);
   }
   for (const trip of trips) {
+    try {
+      await remindOpenGroupDecisions(trip, now);
+    } catch (err) {
+      console.error("[japlan.group_decision] reminder failed", {
+        tripId: trip.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
     if (!trip.destination) {
       console.error("[japlan.generate] skip; trip.destination is empty", {
         tripId: trip.id,

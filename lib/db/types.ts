@@ -7,6 +7,7 @@ export type TripRow = {
   destination: string | null;
   start_date: string | null;
   end_date: string | null;
+  play_mode?: "individual" | "teams" | "full_group" | null;
   state: string;
   difficulty: string | null;
   stake_text: string | null;

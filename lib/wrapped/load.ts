@@ -9,14 +9,16 @@ export async function loadWrapped(tripId: string): Promise<LiveWrappedData | nul
   if (tripResult.error) throw tripResult.error;
   if (!tripResult.data) return null;
   const trip = tripResult.data as TripRow;
-  const [peopleResult, tasksResult, itineraryResult] = await Promise.all([
+  const [peopleResult, tasksResult, itineraryResult, placesResult] = await Promise.all([
     db.from("participants").select("*").eq("trip_id", tripId),
     db.from("tasks").select("*").eq("trip_id", tripId),
     db.from("itinerary").select("place_id, places(name)").eq("trip_id", tripId).order("day").order("anchor_order"),
+    db.from("places").select("id, name").eq("trip_id", tripId).order("created_at"),
   ]);
   if (peopleResult.error) throw peopleResult.error;
   if (tasksResult.error) throw tasksResult.error;
   if (itineraryResult.error) throw itineraryResult.error;
+  if (placesResult.error) throw placesResult.error;
   const tasks = (tasksResult.data ?? []) as TaskRow[];
   const claims = tasks.length
     ? await db.from("claims").select("*").in("task_id", tasks.map((task) => task.id))
@@ -26,9 +28,13 @@ export async function loadWrapped(tripId: string): Promise<LiveWrappedData | nul
     const place = (row as { places: { name: string } | { name: string }[] | null }).places;
     return { place_id: (row as { place_id: string }).place_id, name: Array.isArray(place) ? place[0]?.name ?? null : place?.name ?? null };
   });
+  const savedPlaces = (placesResult.data ?? []).map((place) => ({
+    place_id: (place as { id: string }).id,
+    name: (place as { name: string }).name,
+  }));
   const people = (peopleResult.data ?? []) as ParticipantRow[];
   const claimRows = (claims.data ?? []) as ClaimRow[];
-  const wrapped = buildLiveWrapped({ trip, people, tasks, claims: claimRows, itinerary });
+  const wrapped = buildLiveWrapped({ trip, people, tasks, claims: claimRows, itinerary, savedPlaces });
   const provider = new GeminiProvider();
   await Promise.all(wrapped.people.map(async (person) => {
     const source = people.find((row) => row.id === person.id);
@@ -47,7 +53,10 @@ export async function loadWrapped(tripId: string): Promise<LiveWrappedData | nul
 
 export async function wrappedPhotoRedirect(claimId: string): Promise<string | null> {
   const db = getServiceClient();
-  const claimResult = await db.from("claims").select("task_id, storage_path, evidence_url, photo_claimed_at, status").eq("id", claimId).maybeSingle();
+  // `storage_path` was added after initial Wrapped photos existed. Use `*` so
+  // old live databases can still serve their evidence_url fallback before the
+  // storage migration is applied.
+  const claimResult = await db.from("claims").select("*").eq("id", claimId).maybeSingle();
   if (claimResult.error) throw claimResult.error;
   const claim = claimResult.data as Pick<ClaimRow, "task_id" | "storage_path" | "evidence_url" | "photo_claimed_at" | "status"> | null;
   if (!claim || claim.status !== "awarded" || !claim.photo_claimed_at) return null;

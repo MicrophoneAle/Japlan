@@ -1,17 +1,24 @@
 import { clockLabel } from "./time";
 
 export const GROUP_INTRO =
-  "heyyyy i'm japlan 🔥 i turn this trip into a whole points game: every morning u each get a few tasks and doing them scores points, no cap. sliding into everyone's dms rn with a few quick questions. i read this chat to catch claims but i only clap back when someone says japlan, sends a task code, or dms me 🫡";
+  "🗺️ i'm japlan. i turn your trip into daily tasks and points. claim a task code when you do one; i'll post the leaderboard here.\n\n🧭 first, we set the city, dates, and play style in this chat. then i'll DM each person a short private preference survey. i'll share who has finished, never their answers.\n\n👑 the organizer controls shared trip settings and makes the final call if the group gets stuck on an activity. i'll post shared choices here so everyone can vote; silence counts as abstaining. change settings with “japlan setup.” personal preferences stay private.";
 
 // Kept for tests and older callers; setupCompleteLine carries the next board.
 export const SETUP_COMPLETE =
   "we're live 🔥 every morning your tasks land in your dms, and a code like A1 claims one.";
 
-export function setupCompleteLine(nextBoard: string | null): string {
-  return nextBoard ? `${SETUP_COMPLETE} first board drops ${nextBoard}.` : SETUP_COMPLETE;
+export function setupCompleteLine(nextBoard: string | null, mode?: string | null): string {
+  const intro = mode === "full_group"
+    ? "we're live 🔥 the shared daily board lands in this group chat; claim a code here when you do a task."
+    : mode === "teams"
+      ? "we're live 🔥 daily boards land in your dms. i'll pair people for the day when their interests overlap."
+      : mode === "individual"
+        ? "we're live 🔥 everyone gets their own daily board in their dms, with separate tasks and points."
+        : SETUP_COMPLETE;
+  return nextBoard ? `${intro} first board drops ${nextBoard}.` : intro;
 }
 
-export const SURVEY_DONE_DM = "done. you're less mysterious than you think.";
+export const SURVEY_DONE_DM = "saved 🔒 your private preference survey is complete.";
 
 export function surveyReaskLine(options: string[]): string {
   return `didn't catch that lol. reply ${options.join(" / ")}, or skip.`;
@@ -21,6 +28,8 @@ export function surveyReaskLine(options: string[]): string {
 export const SETUP_QUESTIONS = {
   destination: "ok where we headed? a city is plenty.",
   dates: `when's this happening? something like "march 14-19" or "next weekend" works.`,
+  play_mode:
+    "how should we play?\n1 · individual — everyone gets their own board and separate tasks\n2 · teams — each day i'll pair people whose task interests overlap; no match means solo tasks\n3 · full group — one shared board lands here; decisions happen in this chat, and the organizer breaks ties",
   difficulty: "how unhinged should the tasks be? chill / normal / unhinged",
   stake: "real talk, what's the loser doing at the end of this 💀",
 } as const;
@@ -33,7 +42,7 @@ export function setupPrompt(
   opts: { first?: boolean; isSolo?: boolean } = {},
 ): string {
   // Solo trips skip the stake question (no loser), so three, not four.
-  const lead = opts.first ? `trip setup, ${opts.isSolo ? 3 : 4} quick ones. ` : "";
+  const lead = opts.first ? `trip setup, ${opts.isSolo ? 3 : 5} quick ones. ` : "";
   const tail = current
     ? ` (rn: ${current}. skip keeps it)`
     : SETUP_REQUIRED.has(id)
@@ -86,6 +95,50 @@ export function setupFinishedLine(missing: ("destination" | "dates")[]): string 
   return `setup's paused rq. still need ${what} before the game can start, i'll ask again next time you text.`;
 }
 
+export function organizerOnlySetupLine(name: string): string {
+  return `👑 ${name} is organizing this trip and controls the shared setup. they can change it with “japlan setup.” your personal survey answers stay private.`;
+}
+
+export function groupSetupPendingDmLine(name: string): string {
+  return `👑 ${name} is setting the shared city, dates, and play style in the group chat first. i'll send your private preference survey once that's done.`;
+}
+
+export function groupSetupCompleteLine(opts: {
+  destination: string | null;
+  dates: string | null;
+  mode: string;
+  organizer: string;
+}): string {
+  return [
+    "✅ shared trip setup is locked in:",
+    `📍 ${opts.destination ?? "destination not set"}`,
+    `📅 ${opts.dates ?? "dates not set"}`,
+    `🎮 ${opts.mode}`,
+    `👑 ${opts.organizer} controls shared trip settings and makes the final call if the group gets stuck on an activity. update settings with “japlan setup.”`,
+  ].join("\n");
+}
+
+export function surveyLaunchGroupLine(sent: string[], failed: string[]): string {
+  const lines = ["📩 private preference surveys are ready."];
+  if (sent.length > 0) lines.push(`sent to: ${sent.join(", ")}.`);
+  if (failed.length > 0) lines.push(`couldn't DM: ${failed.join(", ")} — check that they can receive Japlan messages.`);
+  lines.push("reply in your own Japlan DM. i'll post only who's finished, not what anyone said.");
+  return lines.join("\n");
+}
+
+export function surveyProgressGroupLine(name: string, waiting: string[]): string {
+  if (waiting.length === 0) return `✅ ${name} finished their private survey. everyone is in — first boards are next.`;
+  return `✅ ${name} finished their private survey.\n⏳ still waiting on: ${waiting.join(", ")}. preferences stay private.`;
+}
+
+export function surveyStatusLine(completed: string[], pending: string[], setupPending = false): string {
+  if (setupPending) return "🧭 the organizer is still setting up the trip here. private surveys go out after the shared setup is done.";
+  const lines = ["🔒 private survey status (answers stay private):"];
+  lines.push(completed.length > 0 ? `✅ finished: ${completed.join(", ")}` : "✅ finished: nobody yet");
+  lines.push(pending.length > 0 ? `⏳ still needed: ${pending.join(", ")}` : "🎉 everyone has finished");
+  return lines.join("\n");
+}
+
 // The survey's first question already introduces itself.
 export function setupNowAboutYouLine(finished: string, surveyPrompt: string): string {
   return `${finished} ${surveyPrompt}`;
@@ -106,6 +159,12 @@ export function provisionalBoard(board: string): string {
 }
 
 export const BOARD_IN_DM_LINE = "board's in your dms 📩";
+export const BOARD_IN_GROUP_LINE = "the shared board is in the group chat 📣";
+export const GROUP_BOARD_CLEARED_LINE = "the group cleared today's shared board 🫡 more tasks land tomorrow.";
+export const PRIVATE_BOARD_CLAIM_IN_DM_LINE =
+  "your board lives in your dm 📩 send its code to me there; i'll update the group leaderboard here.";
+export const SHARED_BOARD_CLAIM_IN_GROUP_LINE =
+  "📣 that's the shared group board — claim its code in this chat so everyone sees the update.";
 
 // REAL: the day is outside the trip.
 export function dayNotInTripLine(start: string, end: string): string {
@@ -210,7 +269,7 @@ export function boardRouteLabel(first: string, last: string): string {
 // Rough time of day, never clock times: nobody is actually on a schedule.
 // Padded so the codes line up where the font allows.
 export function boardSlotLabel(slot: string): string {
-  return slot.padEnd(11);
+  return `${slot} · `;
 }
 
 // One line per task, tier before points so people can pick by effort:
@@ -222,14 +281,18 @@ export function dailyBoardTaskLine(
   tier: string,
   slot?: string | null,
 ): string {
-  const line = `${code} · ${title} · ${tier.toLowerCase()} (${points})`;
-  return slot ? `${boardSlotLabel(slot)}${line}` : line;
+  void slot;
+  return `${code} · ${title}\n   ${tier.toLowerCase()} · ${points} pts`;
 }
 
 export function standingsLine(
   rows: { display_name: string; score: number }[],
 ): string {
-  return rows.map((row) => `${row.display_name} ${row.score}`).join(" · ");
+  if (rows.length === 0) return "🏆 no scores yet";
+  return [
+    "🏆 leaderboard",
+    ...rows.map((row, index) => `${index + 1}. ${row.display_name} · ${row.score} pts`),
+  ].join("\n");
 }
 
 // Next steps. A message that CLOSES something (an error, a refusal, a cleared
@@ -340,14 +403,20 @@ export const DISPATCH_ERROR_LINE =
   "something broke on my end 😭 send that again in a minute.";
 
 export function surveyDoneLine(waitingOn: number, setupPending = false): string {
-  const waits: string[] = [];
-  if (waitingOn > 0) waits.push(waitingOn === 1 ? "1 more person" : `${waitingOn} more people`);
-  if (setupPending) waits.push("the trip setup");
-  if (waits.length > 0) {
-    return `${SURVEY_DONE_DM} waiting on ${waits.join(" and ")}, then your first board drops in the morning.`;
+  const waiting = waitingOn === 1 ? "1 person still needs to answer" : `${waitingOn} people still need to answer`;
+  if (waitingOn > 0 || setupPending) {
+    return `${SURVEY_DONE_DM} ${setupPending ? "the organizer is still finishing shared trip setup" : waiting}. i'll post the group status without sharing anyone's answers.`;
   }
-  return `${SURVEY_DONE_DM} your first board drops in the morning.`;
+  return `${SURVEY_DONE_DM} everyone's in. first boards drop in the morning.`;
 }
+
+export function sidequestClarificationLine(question: "sidequest_level" | "sidequest_red_lines"): string {
+  return question === "sidequest_level"
+    ? "sidequests are optional, quick bonus challenges separate from your main tasks. pick how bold or silly they can get."
+    : "red lines are anything you want me to avoid in those bonus challenges, like strangers, public embarrassment, physical stuff, or spending money. say “none” if you have no limits.";
+}
+
+export const ONBOARDING_ACK_LINE = "👍 all set — i saved your answers.";
 
 export function peerLapsedLine(codes: string[]): string {
   const list = codes.join(", ");
@@ -409,11 +478,15 @@ export function teamNameUnreadableLine(): string {
 export const HELP_TEXT = {
   group: `ok here's the whole deal 📋
 
-· every morning your board lands in your dm, one plan for the group
-· send the code (like A1) to claim one
+· your play style is set in this chat: individual boards, daily interest-based teams, or one shared group board
+· the organizer controls trip-wide setup and can change it with “japlan setup”
+· private preference surveys stay in your dms; the group only sees who has finished
+· “japlan survey status” shows who has finished and who is still up
+· organizer: “japlan decide dinner | ramen | sushi” opens a group vote; react ❤️/👍 to an option or send “japlan vote 1”
+· “japlan vote status” shows the tally; the organizer can send “japlan remind vote” and make the final call with “japlan close vote 2”
+· claim the code where your board landed: here for full group, in your dm for individual/teams
 · send a photo after and u get bonus points
 · did something cool i didn't even ask for? just tell me, i'll score it
-· on a team? "japlan we're team <name>" names urselves
 · "japlan lb" or "japlan standings" for the leaderboard
 · "japlan settings" to see or change anything you told me
 · "japlan chill" if i'm being too much lol
@@ -421,8 +494,10 @@ export const HELP_TEXT = {
 that's it. now go do something unhinged.`,
   dm: `ok here's the whole deal 📋
 
-· every morning you get a board that fits your day. want more? just ask
-· send the code (like A1) to claim one
+· your private preferences shape your tasks; only you can see or change them
+· every morning your board lands here; full-group boards land in the trip chat
+· claim a code where that board landed: here for individual/teams, in the group for full group
+· group activity votes happen in the trip chat so everyone sees the choices
 · send a photo after and u get bonus points
 · did something cool i didn't even ask for? just tell me, i'll score it
 · "japlan lb" or "japlan standings" for the leaderboard
@@ -436,13 +511,27 @@ export function helpText(isDm: boolean): string {
   return isDm ? HELP_TEXT.dm : HELP_TEXT.group;
 }
 
-export const CONVERSATION_SYSTEM_PROMPT = `you are japlan, the trip's group-chat game and planning bot. be relaxed and direct, like a person texting, without performing a character.
+export const CONVERSATION_SYSTEM_PROMPT = `you are japlan: a witty, socially sharp friend embedded in this trip's group chat, who also happens to be extremely good at running the game and helping people figure out what to do next. you are not a customer-support bot, not a hype machine, not a motivational coach, not a meme generator, and not "an ai assistant that also knows slang." you have real opinions, you notice what's actually happening in the chat, and you're genuinely useful, not just entertaining.
 
-voice: lowercase always, no exceptions (use emoji or a stretched letter for emphasis, never caps). contractions always. casual, like a real text, not a performance of one: a little slang fits naturally here and there (fr, ngl, lowkey, no cap, lol, bet), but don't cram it into every line, and don't reach for the same word twice in a row. vary your openers and sentence shape from message to message so you don't fall into a pattern. emoji are a light touch, not a requirement: most replies want zero or one, never a row of them, and don't reuse the same one every time.
+look at the recent chat above before you write anything, your own past lines included. notice how you opened your last couple of replies, which words you leaned on, whether you already made a joke this exchange. don't reuse that opener, that word, or that joke shape again. two replies in a row should never sound like they came from the same template.
 
-length is not fixed, it depends on the message. reacting to something funny can be three words. a real question deserves a real answer. explaining or handing someone something worth detail can run a few sentences. read the message in front of you instead of defaulting to one length.
+voice:
+- lowercase always (stretch a letter or use an emoji for emphasis, never caps). contractions always.
+- slang is seasoning, not the base. plenty of good replies use none at all: "yeah, i'd do that." "i'd skip it." "that's actually solid." mix in things like fr, ngl, lowkey, no cap, bet, say less sometimes, never as a reflex, never more than one per message, and never the same one twice in a row.
+- some words have turned into tics from overuse: bro, nahhh, lmao, fr fr, 💀, "that's crazy", "you're cooked", "not gonna lie", "honestly...", "absolute cinema". any one of those is fine on the rare message where it's genuinely the funniest option. none of them are a default, and this chat has more range than five recurring jokes.
+- vary sentence length and shape on purpose: some replies are three words, some run a few sentences, most are one or two. vary whether you open with a reaction, a direct answer, a question, or nothing at all. don't settle into one length or one shape.
+- emoji are occasional seasoning, not punctuation. most replies want zero. reach for one, rarely two, only when something is genuinely funny, dramatic, or worth marking, and don't reuse the one you used last time.
+- never open with "absolutely", "of course", "great question", "i'd be happy to", "here's the thing", "as an ai", or anything that reads like a support ticket. say the actual thing instead.
 
-answer the message in front of you. if someone asks a genuine question, especially something concrete like "where's good ramen near here" or "what's a good teriyaki spot in osaka", call search_web and give a real, specific answer with actual names and links rather than a shrug or a guess. for a greeting, test, joke, or simple personal question, respond to that message briefly if a reply feels natural. if asked whether you're AI, ChatGPT, Claude, or a robot, answer honestly and directly: "i'm japlan, an ai trip bot." don't joke-deny being a robot. don't turn casual chat into a planning prompt: avoid generic follow-ups like "what are we getting into today?" unless they asked what to do next. don't pad a reply with an acknowledgement, question, or game reminder just to keep the conversation going. don't lecture, never say let's get back to the game, and never sound like a corporate assistant ("i'd be happy to help" is banned forever).
+be direct and have opinions. when someone asks a real question, answer it. never dodge a genuine question with a joke that doesn't answer it, "idk", "not my thing", "you tell me", or a vague hype reaction instead of substance. when there's a real choice on the table, pick one and give the actual reason in half a sentence ("dotonbori, everyone's tired and hungry and it's one train") instead of listing five options like a travel blog. for a real tradeoff, name both sides briefly instead of pretending there is one right answer. it is fine to be wrong or get argued out of it.
+
+use context without narrating that you're using it. you can see the recent chat, the sender's own settings, and whatever a tool just told you this turn. if someone mentioned they're vegetarian a few messages ago, factor that into a restaurant pick without saying "per your dietary preferences." if the group just said they're exhausted, don't propose a 40 minute train ride. notice group dynamics when they're actually there: someone's been quiet, someone's clearly ahead, two people are bickering, someone keeps declining challenges. you can comment on it once, briefly, when it's actually funny or useful, not every time it happens.
+
+once a tool answers you, just talk from what it told you, the way you'd already know it. never narrate the mechanism: no "i checked", "according to get_standings", "let me look that up", "the tool says". the fact becomes something you know, not something you're reporting back.
+
+humor comes from what actually just happened: a contradiction, a callback, a running bit, a bad decision, bad timing. a callback to something earlier in the trip ("didn't you say you were done with sidequests 20 minutes ago") beats a generic joke from nowhere. reference specifics instead of manufacturing a bit because a laugh feels due.
+
+follow-up questions and suggestions are earned, not automatic. ask one only when it actually narrows something down ("food or something to do first?", "how far are you willing to go?"). never close with "let me know if you need anything", "anything else?", "would you like me to...", or a reflex "what are we getting into today?" when nobody asked what's next. don't lecture, and never say let's get back to the game. most replies just end when the answer is done, and that's fine.
 
 you do not enforce rules:
 - if something is not possible, the tools will fail and you report that. never tell someone they cannot do something because of a rule you believe exists.
@@ -453,9 +542,9 @@ you do not enforce rules:
 facts come only from tools:
 - never state anything about the score, the tasks, the schedule, a place or a person that you did not read from a tool call in this turn. scores: get_standings. tasks, codes and the day's plan: get_open_tasks. a specific restaurant, shop, ticket, or booking site not already on the trip: search_web.
 - what you know about the sender: get_my_profile, in this turn. without it you have not read their profile, so never claim to know nothing about them.
-- never name a specific restaurant, cafe, attraction, or send a link unless search_web returned it this turn. if search_web comes back empty or fails, say so plainly and offer a general area or vibe instead of inventing a name.
+- never name a specific restaurant, cafe, attraction, or send a link unless search_web returned it this turn. if search_web comes back empty or fails, say so plainly, in your own words, and offer a general area or vibe instead of inventing a name.
 - never recall a number, a task code or a plan from the recent chat. that is where invented facts come from. if you need it, call the tool.
-- the recent chat is for following the conversation, not a source of facts. if a tool did not give it to you, don't say it.
+- the recent chat is for following the conversation and catching callbacks, not a source of facts. if a tool did not give it to you, don't say it.
 
 tools:
 - get_standings: call this before stating anyone's score. never recall a score from memory or from the prompt.
@@ -464,14 +553,14 @@ tools:
 - update_my_setting: they want to change any of their own settings (pace, tasks per day, strangers, interests, budget, diet, anything). code saves it and replies.
 - update_trip_setting: destination, dates, difficulty, board time, stake. code handles who can.
 - redo_today: they want a DIFFERENT board ("different tasks", "these are boring", "something else", "new ones", "redo today"), or say yes to a redo after a settings change. claimed tasks stay, the rest is replaced with new ones. never answer a request for a different board by describing or resending the current one.
-- propose_freeform_claim: call only when they clearly say they already completed an activity that is not on the board. Never call for a future plan, intention, or activity still in progress; the server checks the original message and scores it.
+- propose_freeform_claim: call only when they clearly say they already completed an activity that is not on the board. never call for a future plan, intention, or activity still in progress; the server checks the original message and scores it.
 - request_photo_bonus: a photo might add bonus to a recent claim.
 - record_split: the group says it is splitting up (who is going where, who is sleeping in, splitting after lunch). code works out who is where, re-plans their day and sends the reply.
 - record_regroup: the group says it is back together.
 - add_suggestion: someone names a place or thing they want to do. code puts it on a day and sends the reply.
 - avoid_category: the group does not want a kind of thing (temples, museums). code sends the reply.
 - get_my_profile: the sender's own survey summary. in a group, code sends it to their dm. only ever for the sender: asked about someone else, say that's between them and you.
-- search_web: real, live results for a restaurant, cafe, attraction, ticket, or booking site. query in their words plus the destination ("teriyaki restaurants osaka", "universal studios japan tickets"). name specific results from what it returns, with their links, not a generic category.
+- search_web: real, live results for a restaurant, cafe, attraction, ticket, or booking site. query in their words plus the destination ("teriyaki restaurants osaka", "universal studios japan tickets"). fold specific results and their links into a normal sentence, not a search-results readout.
 - react_to_message: tapback their message with an emoji instead of, or alongside, texting back. good for something funny or hype-worthy, not a default, and not on every message.
 - no_action: ordinary chat that needs no game action.
 
@@ -479,11 +568,8 @@ hard rules:
 - never a point value: do not award, set, or return one. scoring is code's job.
 - never reveal another person's survey answers (budget, diet, allergies, who they wanted to be with). that stays in dm.
 - unsafe, illegal, or permanent-harm ideas: refuse in character, one line.
-- a reply is optional when you have nothing useful to add. don't invent filler to keep the chat moving.
-
-next steps:
-- only when they seem to be looking for something to do ("what now", "bored", "anything nearby"), end with one short clause naming something specific: an open code from get_open_tasks, the score gap from get_standings, or a named nearby place. same message.
-- otherwise add no suggestion. never generic encouragement, never "let me know if you need anything".`;
+- if asked directly whether you're ai, a bot, chatgpt, or claude: say so plainly ("i'm japlan, an ai trip bot") and move on in the same breath. don't joke-deny it, and don't bring it up unprompted.
+- always give a real reply to what's in front of you: never leave the actual message unanswered. the shortest genuine reaction beats padding, but it still has to respond to this message, not stand in for one.`;
 
 export const CONVERSATION_FALLBACK = "yeah?";
 
@@ -493,7 +579,7 @@ export function profileLine(profile: string | null): string {
   return `here's what i've learned about you so far:\n${profile}\nif something's off, tell me what you'd change.`;
 }
 
-export const PROFILE_IN_DM_LINE = "that's in your dm.";
+export const PROFILE_IN_DM_LINE = "📩 check your dm — that's your private profile, you sneaky thing 😏";
 
 // Asked what the bot knows, before finishing the questions: say so, and
 // offer the next one right here.
@@ -654,7 +740,7 @@ export function settingsListLine(lines: string[]): string {
   return `your settings:\n${lines.map((l) => `· ${l}`).join("\n")}\nchange any by saying it, like "japlan pace faster", "japlan budget 150" or "japlan i'm into museums now".`;
 }
 
-export const SETTINGS_IN_DM_LINE = "your settings are in your dm.";
+export const SETTINGS_IN_DM_LINE = "📩 your private preferences are in your dm; the group can't see them.";
 
 export function resurveyStartLine(prompt: string): string {
   return `starting over, one question at a time. skip keeps what you said before. ${prompt}`;
