@@ -108,6 +108,27 @@ export function personLabel(name: string | null | undefined): string {
   return looksLikePhone ? "the organizer" : value;
 }
 
+// The answer did not look like a place, so nothing was written. Re-asks
+// rather than confirming: "got it: X" only ever appears when X came from
+// them, never from a resolver guessing at the nearest-sounding city.
+export function destinationUnreadableLine(question: string): string {
+  return `didn't catch a place in that 😅\n${question}`;
+}
+
+// A question or a correction arrived while a setup question was pending. It
+// is answered and the question re-asked, rather than being eaten as the
+// answer, which is also the only way somebody can correct a wrong one.
+export function setupAsideLine(aside: string, question: string): string {
+  return `${aside}\n\n${question}`;
+}
+
+// Where a stored setup value came from, in plain terms, when someone asks.
+export function setupValueSourceLine(field: string, value: string | null): string {
+  return value
+    ? `${field} is set to ${value} right now, from what was said in this chat.`
+    : `${field} isn't set yet.`;
+}
+
 export function organizerOnlySetupLine(name: string): string {
   return `👑 ${name} is organizing this trip and controls the shared setup.\nthey can change it with “japlan setup.”\nyour personal survey answers stay private.`;
 }
