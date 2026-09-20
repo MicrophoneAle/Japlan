@@ -245,6 +245,8 @@ export type GenerationInput = {
   // The bank the model may build from: main-task templates only (sidequests
   // never go on the board), no group templates on a solo trip.
   templates?: TaskTemplate[];
+  // Solo claims have no other trip member available for validation.
+  solo?: boolean;
   plan?: GenerationPlan;
   // A holiday or a festival changes what is worth doing, not only what it
   // scores: the day's own events are the best tasks available, and a national
@@ -419,11 +421,14 @@ export function buildGenerationPrompt(input: GenerationInput): string {
         ]
       : []),
     ...(input.avoid?.length ? [`The group asked to avoid: ${input.avoid.join(", ")}.`] : []),
+    input.solo
+      ? "Proof requirement: This is a solo trip, so every task must have a clear visual result a phone photo can plausibly show. Do not generate an activity that needs another person to confirm it or that has no photo evidence; code-only claims never score."
+      : "Proof requirement: Every task needs either a photo that plausibly matches it or a 👍 validation from another trip participant in the group. Make tasks concrete enough for a picture or another participant to recognize what was done; code-only claims never score.",
     ...(input.curveball ? [CURVEBALL_GUIDANCE] : []),
     "title: the full instruction as the player reads it, lowercase, one short sentence (\"ask a stranger in koenji for their single best recommendation, then actually do it\"), not a headline.",
     "places: the specific spots the task happens at, named as in the neighborhoods or landmarks above where possible; a route task names its start then its end; a task that can happen anywhere has none.",
     `Return exactly ${count} tasks as JSON matching the schema, best first. Fill slots from the destination profile. Axes are integers 1-5. Never include a point value.`,
-    "Verification is not a photo gate. honor and photo are both claimable by code immediately; photo_bonus_max is the optional bonus ceiling for a matching photo. Only peer requires someone else's tapback.",
+    "Verification describes the natural proof route: photo for tasks with a visible result, peer for tasks another participant can best witness, and honor when either route works. It never waives proof. Every claim is held until a matching photo or another trip member's 👍; photo_bonus_max controls extra points on top of the base award, not whether the photo is required as proof.",
   ].join("\n");
 }
 
@@ -433,7 +438,7 @@ export async function generateTasksForAssignee(
 ): Promise<ProposedTask[]> {
   const raw = await provider.complete({
     system:
-      "You generate daily scavenger-hunt tasks. Propose axes only, never points. Classification of difficulty is the six axes. JSON only. A photo is a bonus, never a requirement; only peer verification needs another person.",
+      "You generate daily scavenger-hunt tasks. Propose axes only, never points. Classification of difficulty is the six axes. JSON only. Every task must be verifiable by either a plausibly matching photo or another trip participant's group reaction; solo tasks must be photo-verifiable. Code-only claims do not score. photo_bonus_max is optional extra points after photo proof.",
     messages: [{ role: "user", content: buildGenerationPrompt(input) }],
     schema: GENERATED_TASK_SCHEMA,
     tier: "smart",

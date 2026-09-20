@@ -58,7 +58,7 @@ import {
   startTripSurveys,
 } from "./bootstrap";
 import { sendText } from "@/lib/linq/send";
-import { defaultWakeKeyword, stripWakeKeyword } from "@/lib/game/addressing";
+import { defaultWakeKeyword, stripWakeKeyword, wakeKeywordRe } from "@/lib/game/addressing";
 
 export type SetupDeps = { provider?: LLMProvider; now?: Date };
 
@@ -84,8 +84,7 @@ function currentValue(trip: TripRow, id: SetupQuestionId): string | null {
 }
 
 export function setupPromptFor(trip: TripRow, id: SetupQuestionId, first = false): string {
-  const prompt = setupPrompt(id, currentValue(trip, id), { first, isSolo: Boolean(trip.is_solo) });
-  return trip.is_solo ? prompt : `${prompt} Reply here with “japlan” + your answer.`;
+  return setupPrompt(id, currentValue(trip, id), { first, isSolo: Boolean(trip.is_solo) });
 }
 
 async function saveTrip(tripId: string, patch: Record<string, unknown>): Promise<void> {
@@ -324,7 +323,18 @@ async function setupChange(
       break;
     }
     case "stake": {
-      patch.stake_text = text.slice(0, 200);
+      const answer = text.trim();
+      const custom = answer.match(/^d(?:[.)]\s*|\s+)(.+)$/i);
+      if (/^d[.)]?$/i.test(answer)) {
+        return { retry: "For D, type the dare itself. Or choose A, B, or C; say skip for no forfeit." };
+      }
+      const choice = answer.match(/^(?:option\s+)?([abc])(?:[.)]|\s|$)/i)?.[1]?.toLowerCase();
+      const preset: Record<string, string> = {
+        a: "wear a ridiculous shirt on the flight home",
+        b: "give the winner a dramatic 20-second airport send-off",
+        c: "buy the winner dessert, within your normal budget",
+      };
+      patch.stake_text = (custom?.[1] ?? (choice ? preset[choice] : answer)).slice(0, 200);
       said = STAKE_SET_LINE;
       break;
     }
@@ -466,11 +476,14 @@ export async function handleGroupSetupMessage(opts: {
   senderPhone: string | null;
   text: string;
   deps?: SetupDeps;
+  allowPlainOrganizerReply?: boolean;
 }): Promise<boolean> {
   const trip = await getTripByChatId(opts.chatId);
   if (!trip || trip.is_solo || !isSetupQuestion(trip.setup_state)) return false;
 
-  const answer = stripWakeKeyword(opts.text, defaultWakeKeyword());
+  const hasWakeKeyword = wakeKeywordRe(defaultWakeKeyword()).test(opts.text);
+  if (!hasWakeKeyword && !opts.allowPlainOrganizerReply) return false;
+  const answer = hasWakeKeyword ? stripWakeKeyword(opts.text, defaultWakeKeyword()) : opts.text;
   if (!answer.trim()) return true;
   if (/^(?:help|commands?|menu|lb|leaders?|leaderboards?|standings?|scores?|rankings?|board|plans?|today|day\s+\d+|setup|settings|preferences|profile)\??$/i.test(answer)) {
     return false;
@@ -481,6 +494,8 @@ export async function handleGroupSetupMessage(opts: {
     : null;
   const organizer = sender && sender.id === trip.organizer_participant_id ? sender : null;
   if (!organizer) {
+    // Keep another participant's message out of the shared setup, and tell
+    // them who is answering while the setup prompt is active.
     const people = await getServiceClient()
       .from("participants")
       .select("id, display_name")

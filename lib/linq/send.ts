@@ -110,13 +110,19 @@ async function outbound<T>(
 export async function sendText(
   chatId: string,
   text: string,
-  opts?: { effect?: MessageEffect },
+  opts?: { effect?: MessageEffect; mediaUrl?: string },
 ): Promise<SentText> {
   await typeBeforeSending(chatId, text);
-  const attempt = (effect?: MessageEffect) =>
+  const attempt = (effect?: MessageEffect, mediaUrl?: string) =>
     outbound({ op: "sendText", chatId, text }, async () => {
       const res = await getLinqClient().chats.messages.send(chatId, {
-        message: { ...textParts(text), ...(effect ? { effect } : {}) },
+        message: {
+          parts: [
+            { type: "text", value: text },
+            ...(mediaUrl ? [{ type: "media" as const, url: mediaUrl, sticker: true }] : []),
+          ],
+          ...(effect ? { effect } : {}),
+        },
       });
       return { chatId: res.chat_id, messageId: res.message.id };
     });
@@ -124,7 +130,37 @@ export async function sendText(
   // separate call to fail independently. If the effect-carrying send throws,
   // retry once, plain, so a decoration never costs the confirmation itself.
   let sent: SentText;
-  if (opts?.effect) {
+  if (opts?.mediaUrl) {
+    try {
+      sent = await attempt(opts.effect, opts.mediaUrl);
+    } catch (err) {
+      console.error("[linq.outbound] media send failed, retrying without media", {
+        chatId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+      // If Linq rejected the combination of media and an iMessage effect,
+      // preserve the GIF and drop only the optional effect.
+      try {
+        sent = await attempt(undefined, opts.mediaUrl);
+      } catch (mediaErr) {
+        console.error("[linq.outbound] media-only send failed, retrying with text", {
+          chatId,
+          err: mediaErr instanceof Error ? mediaErr.message : String(mediaErr),
+        });
+        if (!opts.effect) throw mediaErr;
+        try {
+          sent = await attempt(opts.effect);
+        } catch (effectErr) {
+          console.error("[linq.outbound] effect failed, retrying without", {
+            chatId,
+            effect: opts.effect,
+            err: effectErr instanceof Error ? effectErr.message : String(effectErr),
+          });
+          sent = await attempt(undefined);
+        }
+      }
+    }
+  } else if (opts?.effect) {
     try {
       sent = await attempt(opts.effect);
     } catch (err) {

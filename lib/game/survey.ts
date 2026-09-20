@@ -1,5 +1,6 @@
 import {
   GROUP_INTRO,
+  GROUP_INTRO_MESSAGES,
   SETUP_COMPLETE,
   SURVEY_DONE_DM,
   surveyReaskLine,
@@ -543,6 +544,17 @@ export function buildIntroGroupPost(trip: PublicTripFields): string {
   return trip.organizerName
     ? `👑 ${trip.organizerName} is the organizer for this trip.\n\n${GROUP_INTRO}`
     : GROUP_INTRO;
+}
+
+export function buildIntroGroupMessages(trip: PublicTripFields): string[] {
+  const [overview, setup, organizer] = GROUP_INTRO_MESSAGES;
+  return [
+    trip.organizerName
+      ? `👑 ${trip.organizerName} is the organizer for this trip.\n\n${overview}`
+      : overview,
+    setup,
+    organizer,
+  ];
 }
 
 export function buildSetupCompleteGroupPost(trip: PublicTripFields): string {

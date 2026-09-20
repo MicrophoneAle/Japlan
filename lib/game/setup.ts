@@ -65,6 +65,9 @@ export function isSetupSkip(text: string): boolean {
 export function matchDifficulty(text: string): Difficulty | null {
   const t = text.trim().toLowerCase().replace(/[.!]+$/, "");
   if (DIFFICULTIES.includes(t as Difficulty)) return t as Difficulty;
+  if (t === "1") return "chill";
+  if (t === "2") return "normal";
+  if (t === "3") return "unhinged";
   if (/^(easy|chilled|relaxed|low)$/.test(t)) return "chill";
   if (/^(medium|regular|mid|standard)$/.test(t)) return "normal";
   if (/^(hard|chaos|chaotic|wild|insane|max)$/.test(t)) return "unhinged";

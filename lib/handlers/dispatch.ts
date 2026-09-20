@@ -1,9 +1,9 @@
 import { getServiceClient } from "@/lib/db/client";
 import { captureLinks } from "./social-links";
 import { findUrls } from "@/lib/game/urls";
-import { defaultWakeKeyword, evaluateAddress, findTaskCode, wakeKeywordRe } from "@/lib/game/addressing";
-import { detectBoardTimeCommand, detectTeamNameCommand, detectTripCommand } from "@/lib/game/commands";
-import { DISPATCH_ERROR_LINE } from "@/lib/game/copy";
+import { defaultWakeKeyword, evaluateAddress, findTaskCode, stripWakeKeyword, wakeKeywordRe } from "@/lib/game/addressing";
+import { detectBoardTimeCommand, detectLocationSharingRequest, detectTeamNameCommand, detectTripCommand } from "@/lib/game/commands";
+import { DISPATCH_ERROR_LINE, STOP_LINE } from "@/lib/game/copy";
 import { handleBoardTimeCommand, handleTripCommand } from "@/lib/handlers/trip-lifecycle";
 import { handleTeamNameCommand } from "@/lib/handlers/teams";
 import { routeSoloDm, soloModeEnabled } from "@/lib/game/solo";
@@ -11,6 +11,7 @@ import {
   bootstrapGroupIfNeeded,
   findOpenSurveyByPhone,
   findParticipantOnTrip,
+  getTripByChatId,
   listParticipants,
 } from "@/lib/handlers/bootstrap";
 import {
@@ -38,8 +39,10 @@ import {
 import {
   activateParticipantLocationSharing,
   handleLocationSharingWebhook,
+  locationUnavailableReason,
   requestTripLocationSharing,
   stopParticipantLocationSharing,
+  type LocationUnavailableReason,
 } from "@/lib/handlers/live-location";
 import {
   chatIdFromData,
@@ -55,8 +58,7 @@ import {
 import { markRead, sendText } from "@/lib/linq/send";
 import { recordMessage } from "@/lib/chat/transcript";
 import { engagementFor, type EngagementDecision } from "@/lib/handlers/engagement";
-import { getTripByChatId } from "@/lib/handlers/bootstrap";
-import { STOP_LINE } from "@/lib/game/copy";
+import { handleSidequestMessage, setSidequestsEnabled } from "@/lib/handlers/sidequests";
 
 // Set once a message is known to be addressed, so a later failure can still
 // answer it. Addressed means answered, even when something breaks.
@@ -64,6 +66,29 @@ type AddressedMarker = { chatId: string | null };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isTripInitCommand(text: string): boolean {
+  const body = stripWakeKeyword(text, defaultWakeKeyword())
+    .replace(/^[,;:\s-]+/, "")
+    .replace(/[.!?]+$/, "")
+    .trim();
+  return /^(?:init|initialize)$/i.test(body);
+}
+
+function locationUnavailableLine(reason: LocationUnavailableReason, tripState: string): string {
+  switch (reason) {
+    case "trip_complete":
+      return "this trip is marked complete, so location sharing is off. start a new trip with “japlan new trip” if you're traveling again.";
+    case "trip_not_live":
+      return tripState === "surveying"
+        ? "the trip isn't live yet. once someone finishes their private survey, try again; “japlan survey status” shows progress."
+        : "the trip isn't active yet. finish the shared setup and have someone complete their private survey, then try again.";
+    case "before_start":
+      return "the trip dates haven't started yet, so location sharing is still off. check “japlan setup” if the dates look wrong.";
+    case "after_end":
+      return "the trip dates have passed, so location sharing is off for this trip.";
+  }
 }
 
 function dispatchStep(step: string, fields: Record<string, unknown> = {}): void {
@@ -173,21 +198,26 @@ async function onMessageReceivedInner(
     return;
   }
 
+  const text = textFromParts(data.parts);
+  const nonText = describeNonTextParts(data.parts);
+  const media = photoPartsFrom(data.parts);
   const isGroup = isGroupChat(data);
+  let justBootstrappedGroup = false;
   if (isGroup) {
+    const beforeBootstrap = await getTripByChatId(chatId);
     const bootstrapSender = senderFromData(data);
-    await dispatchAwait("bootstrap_group", { chatId }, () =>
+    const trip = await dispatchAwait("bootstrap_group", { chatId }, () =>
       bootstrapGroupIfNeeded(chatId, {
         isGroup,
         senderPhone: bootstrapSender?.handle ?? null,
         senderName: bootstrapSender?.display_name ?? null,
       }),
     );
+    justBootstrappedGroup =
+      (!beforeBootstrap || beforeBootstrap.state === "bootstrapping") &&
+      (trip?.state === "setup" || trip?.state === "bootstrapping");
   }
 
-  const text = textFromParts(data.parts);
-  const nonText = describeNonTextParts(data.parts);
-  const media = photoPartsFrom(data.parts);
   if (nonText.length > 0) {
     // No real photo capture exists yet; this confirms the live media shape.
     dispatchStep("photo.detect", {
@@ -216,6 +246,46 @@ async function onMessageReceivedInner(
     await dispatchAwait("capture_links", { chatId }, () => captureLinksFor(chatId, phone, text)).catch(
       (err) => dispatchStep("capture_links.failed", { chatId, error: err instanceof Error ? err.message : String(err) }),
     );
+  }
+
+  // `init` is the command that wakes onboarding. Linq can deliver a repeated
+  // message after bootstrap has created the trip; never reinterpret that same
+  // command as the organizer's destination answer.
+  if (isGroup && isTripInitCommand(text)) {
+    const messageId = typeof data.id === "string" ? data.id : null;
+    if (messageId) await markRead(messageId).catch((err) => console.error("[japlan.dispatch] markRead failed", err));
+    dispatchStep("group_setup.init_command_consumed", { chatId });
+    return;
+  }
+
+  // The first message wakes Japlan and starts onboarding. It arrived before
+  // anyone saw the setup question, so don't mistake it for the destination or
+  // reply to it as casual group conversation.
+  if (justBootstrappedGroup) {
+    const messageId = typeof data.id === "string" ? data.id : null;
+    if (messageId) await markRead(messageId).catch((err) => console.error("[japlan.dispatch] markRead failed", err));
+    dispatchStep("group_setup.bootstrap_message_consumed", { chatId });
+    return;
+  }
+
+  // During shared setup, let the organizer answer naturally without a wake
+  // word; explain the organizer-only rule when someone else replies.
+  if (isGroup && !isDm && phone && text.trim() && !wakeKeywordRe(defaultWakeKeyword()).test(text)) {
+    addressed.chatId = chatId;
+    const handled = await dispatchAwait("group_setup_plain_answer", { chatId }, () =>
+      handleGroupSetupMessage({
+        chatId,
+        senderPhone: phone,
+        text,
+        allowPlainOrganizerReply: true,
+      }),
+    );
+    if (handled) {
+      const messageId = typeof data.id === "string" ? data.id : null;
+      if (messageId) await markRead(messageId).catch((err) => console.error("[japlan.dispatch] markRead failed", err));
+      return;
+    }
+    addressed.chatId = null;
   }
 
   // Groups: is the bot part of this conversation? (DMs always are.)
@@ -332,8 +402,12 @@ async function onMessageReceivedInner(
     return;
   }
 
+<<<<<<< Updated upstream
   const locationRequest = text.trim().match(/^japlan\s+(?:request|share|turn on)\s+locations?(?:\s+sharing)?[.!?]*$/i);
   if (locationRequest && !isDm) {
+=======
+  if (detectLocationSharingRequest(text) && !isDm) {
+>>>>>>> Stashed changes
     const trip = await dispatchAwait("location_request.trip_lookup", { chatId }, () =>
       getTripByChatId(chatId),
     );
@@ -358,7 +432,11 @@ async function onMessageReceivedInner(
       return;
     }
     if (result.status === "not_active") {
+<<<<<<< Updated upstream
       await sendText(chatId, "location sharing is available during the active trip. finish setup and start the trip first.");
+=======
+      await sendText(chatId, locationUnavailableLine(result.reason, trip.state));
+>>>>>>> Stashed changes
       return;
     }
     const requested = result.people.filter((person) => person.status === "requested").length;
@@ -401,7 +479,13 @@ async function onMessageReceivedInner(
     return;
   }
 
+<<<<<<< Updated upstream
   const dmTrip = await findOpenSurveyByPhone(phone, chatId);
+=======
+  const dmTrip = await dispatchAwait("sidequest.trip_lookup", { chatId }, () =>
+    findOpenSurveyByPhone(phone, chatId),
+  );
+>>>>>>> Stashed changes
   if (/^(?:japlan\s+)?(?:share|turn on)\s+(?:my\s+)?location(?:\s+sharing)?[.!?]*$/i.test(text.trim())) {
     if (!dmTrip) {
       await sendText(chatId, "location sharing is available during an active trip. finish setup and start the trip first.");
@@ -423,7 +507,16 @@ async function onMessageReceivedInner(
       failed: "i couldn't send the Apple location prompt just now. try again in a moment.",
       unsupported: "location sharing needs a 1:1 iMessage chat. you can still tell me your neighborhood for nearby ideas.",
     } as const;
+<<<<<<< Updated upstream
     await sendText(chatId, replies[status]);
+=======
+    if (status === "not_active") {
+      const reason = locationUnavailableReason(dmTrip.trip, new Date());
+      await sendText(chatId, reason ? locationUnavailableLine(reason, dmTrip.trip.state) : replies[status]);
+    } else {
+      await sendText(chatId, replies[status]);
+    }
+>>>>>>> Stashed changes
     return;
   }
   if (/^(?:japlan\s+)?stop\s+location(?:\s+sharing)?[.!?]*$/i.test(text.trim())) {
@@ -448,6 +541,32 @@ async function onMessageReceivedInner(
     );
     return;
   }
+<<<<<<< Updated upstream
+=======
+  if (dmTrip?.trip.state === "active") {
+    const sidequestSetting = text.trim().match(/^(?:japlan\s+)?sidequests?\s+(on|off)[.!?]*$/i);
+    if (sidequestSetting) {
+      const line = await dispatchAwait("sidequest.toggle", { tripId: dmTrip.trip.id }, () =>
+        setSidequestsEnabled({
+          participantId: dmTrip.participant.id,
+          enabled: sidequestSetting[1].toLowerCase() === "on",
+        }),
+      );
+      await sendText(chatId, line);
+      return;
+    }
+    const sidequest = await dispatchAwait("sidequest.message", { tripId: dmTrip.trip.id }, () =>
+      handleSidequestMessage({
+        tripId: dmTrip.trip.id,
+        participantId: dmTrip.participant.id,
+        text,
+        chatId,
+        messageId: typeof data.id === "string" ? data.id : null,
+      }),
+    );
+    if (sidequest.handled) return;
+  }
+>>>>>>> Stashed changes
 
   dispatchStep("dm_branch.enter", { chatId, textPreview: text.slice(0, 80) });
   const soloModeRaw = process.env.JAPLAN_SOLO_MODE ?? null;
@@ -547,7 +666,14 @@ export async function dispatchLinqEvent(envelope: LinqEnvelope): Promise<void> {
         dispatchIdle("poll_vote_not_a_record");
       } else {
         await dispatchAwait("group_decision_poll_vote", { eventType: envelope.event_type }, () =>
+<<<<<<< Updated upstream
           handleGroupDecisionPollVote(envelope.event_type!, envelope.data as Record<string, unknown>),
+=======
+          handleGroupDecisionPollVote(
+            envelope.event_type!,
+            envelope.data as Record<string, unknown>,
+          ),
+>>>>>>> Stashed changes
         );
       }
     } else if (
@@ -558,15 +684,25 @@ export async function dispatchLinqEvent(envelope: LinqEnvelope): Promise<void> {
         dispatchIdle("location_event_not_a_record");
       } else {
         await dispatchAwait("location_sharing_webhook", { eventType: envelope.event_type }, () =>
+<<<<<<< Updated upstream
           handleLocationSharingWebhook(envelope.event_type!, envelope.data as Record<string, unknown>),
+=======
+          handleLocationSharingWebhook(
+            envelope.event_type!,
+            envelope.data as Record<string, unknown>,
+          ),
+>>>>>>> Stashed changes
         );
       }
     } else if (
       envelope.event_type === "reaction.added" ||
       envelope.event_type === "reaction.removed"
     ) {
+<<<<<<< Updated upstream
       // Never seen in a real capture. Log the shape (not phone numbers or
       // text) so the first live tapback confirms or corrects the field names.
+=======
+>>>>>>> Stashed changes
       const reaction = isRecord(envelope.data) ? envelope.data : null;
       console.info("[japlan.reaction] observed", {
         eventId: envelope.event_id ?? null,
