@@ -28,7 +28,12 @@ import {
   liveDashboardLine,
   standingsLine,
 } from "@/lib/game/copy";
-import { isDashboardRequest, isStandingsRequest } from "@/lib/game/commands";
+import { isCarRentalRequest, isDashboardRequest, isStandingsRequest } from "@/lib/game/commands";
+import { isUnderAge } from "@/lib/game/preferences";
+import {
+  enterpriseRentalReply,
+  findEnterpriseRentals,
+} from "@/lib/handlers/enterprise-rentals";
 import { liveUrlFor } from "@/lib/urls";
 import {
   isOpenTask,
@@ -250,6 +255,20 @@ export const CONVERSATION_TOOL_DEFS = [
     },
   },
   {
+    name: "find_car_rental",
+    description:
+      "Find Enterprise Rent-A-Car for the trip city (or another city they named). Code sends a real booking/search link. Never invent prices or claim a reservation. city: optional override. pickup_date / return_date: optional yyyy-mm-dd from trip dates or what they said.",
+    parameters: {
+      type: "object",
+      properties: {
+        city: { type: "string" },
+        pickup_date: { type: "string" },
+        return_date: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: "no_action",
     description: "Talk without changing game state.",
     parameters: { type: "object", properties: {}, additionalProperties: false },
@@ -410,6 +429,10 @@ export async function handleConversation(
   // the standings request above.
   if (isDashboardRequest(miss.text)) {
     await sendDashboardReply(miss);
+    return;
+  }
+  if (isCarRentalRequest(miss.text)) {
+    await executeConversationTool("find_car_rental", {}, miss);
     return;
   }
   // No hourly reply cap: it refused people who had addressed the bot, which
@@ -841,6 +864,36 @@ async function executeConversationTool(
       return { result: { ok: false, reason: outcome.reason }, sent: false };
     }
     return { result: { ok: true, results: outcome.results }, sent: false };
+  }
+  if (name === "find_car_rental") {
+    const city =
+      stringArg(args.city) ??
+      miss.trip.destination ??
+      null;
+    const pickup =
+      stringArg(args.pickup_date) ?? miss.trip.start_date ?? null;
+    const ret = stringArg(args.return_date) ?? miss.trip.end_date ?? null;
+    const underAge = isUnderAge(
+      (miss.claimant.survey_json ?? {}) as SurveyAnswers,
+    );
+    const outcome = await findEnterpriseRentals({
+      city,
+      pickupDate: pickup,
+      returnDate: ret,
+      underAge,
+    });
+    const reply = enterpriseRentalReply(outcome);
+    await (miss.send ?? sendText)(miss.chatId, reply);
+    return {
+      result: {
+        ok: outcome.ok,
+        reason: outcome.ok ? undefined : outcome.reason,
+        booking_url: outcome.bookingUrl,
+        links: outcome.ok ? outcome.links : [],
+        notes: outcome.notes,
+      },
+      sent: true,
+    };
   }
   if (name === "react_to_message") {
     const emoji = typeof args.emoji === "string" ? args.emoji.trim() : "";

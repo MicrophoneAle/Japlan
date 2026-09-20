@@ -711,15 +711,17 @@ export const HELP_TEXT = {
     See who finished; private answers stay private.
 15. japlan share locations
     Send optional Apple consent prompts during an active trip.
-16. japlan end trip
+16. japlan rent a car
+    Enterprise Rent-A-Car link for the trip city (you finish booking on their site).
+17. japlan end trip
     Confirm with “japlan end trip confirm” to close the trip.
-17. japlan new trip
+18. japlan new trip
     Start a fresh trip after the current one ends.
 
 🔒 YOUR PRIVATE INFO
-18. japlan my preferences
+19. japlan my preferences
     Sends your private summary to your dm. “japlan preferences” and “japlan settings” are aliases. Change answers in your dm in plain English.
-19. japlan help
+20. japlan help
     Show this guide again. “japlan chill” makes me quiet until someone mentions me.`,
   dm: `🧭 japlan quick guide · dm
 
@@ -750,7 +752,9 @@ export const HELP_TEXT = {
     Start optional Apple location sharing during an active trip.
 11. japlan stop location
     Stop Japlan using your location. Apple sharing may also need to be stopped in Messages.
-12. japlan help
+12. japlan rent a car
+    Enterprise Rent-A-Car link for your trip city. “japlan car rental” works too.
+13. japlan help
     Show this guide again. want more? just ask.
 
 🗳️ VOTES HAPPEN IN THE TRIP CHAT
@@ -812,6 +816,7 @@ tools:
 - avoid_category: the group does not want a kind of thing (temples, museums). code sends the reply.
 - get_my_profile: the sender's own survey summary. in a group, code sends it to their dm. only ever for the sender: asked about someone else, say that's between them and you.
 - search_web: real, live results for a restaurant, cafe, attraction, ticket, or booking site. query in their words plus the destination ("teriyaki restaurants osaka", "universal studios japan tickets"). name specific results from what it returns, with their links, not a generic category.
+- find_car_rental: enterprise rent-a-car for the trip city (or a city they named). code sends a real booking/search link; never invent a price or claim you reserved anything. for under-18 senders the tool refuses. prefer this over search_web when they ask to rent a car / enterprise.
 - react_to_message: tapback their message with an emoji instead of, or alongside, texting back. good for something funny or hype-worthy, not a default, and not on every message.
 - no_action: ordinary chat that needs no game action.
 

@@ -127,6 +127,24 @@ export function isDashboardRequest(
   return DASHBOARD_RE.test(body);
 }
 
+// "rent a car", "car rental", "enterprise", with the usual filler prefixes.
+const CAR_RENTAL_WORDS =
+  "(?:rent(?:\\s+a)?\\s+cars?|car\\s+rentals?|rentals?\\s+cars?|enterprise(?:\\s+rentals?)?)";
+const CAR_RENTAL_RE = new RegExp(
+  `^(?:(?:please\\s+)?(?:what'?s|whats|show me|send|give me|find(?:\\s+me)?|look up|help(?:\\s+me)?(?:\\s+with)?)\\s+)*(?:an?\\s+|the\\s+)?${CAR_RENTAL_WORDS}[?.!]*$`,
+  "i",
+);
+
+export function isCarRentalRequest(
+  text: string,
+  keyword: string = defaultWakeKeyword(),
+): boolean {
+  const body = stripWakeKeyword(text, keyword)
+    .replace(/^[,:\-\s]+/, "")
+    .trim();
+  return CAR_RENTAL_RE.test(body);
+}
+
 // Lifecycle commands always need the keyword, in groups and DMs alike, so
 // "end trip" in ordinary chat or a survey answer can never end a trip.
 export function detectTripCommand(

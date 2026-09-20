@@ -239,8 +239,20 @@ describe("react_to_message", () => {
   });
 });
 
+describe("find_car_rental short-circuit", () => {
+  it("sends an enterprise link without calling the model", async () => {
+    seed();
+    await say("sam", "japlan rent a car");
+    expect(h.turnCalls).toBe(0);
+    const reply = lastIn(GROUP) ?? "";
+    expect(reply).toMatch(/enterprise/i);
+    expect(reply).toContain("https://www.enterprise.com/");
+    expect(h.searchPlaces).not.toHaveBeenCalled();
+  });
+});
+
 describe("runJaplanAgent chat tool surface", () => {
-  it("exposes exactly the original conversation tools to Gemini, nothing more", async () => {
+  it("exposes the conversation tools to Gemini, including find_car_rental", async () => {
     seed();
     h.reply = "same tools as before";
     await say("sam", "japlan hey");
@@ -252,6 +264,7 @@ describe("runJaplanAgent chat tool surface", () => {
     for (let i = 0; i < CONVERSATION_TOOL_DEFS.length; i += 1) {
       expect(h.declaredTools[i]?.parameters).toEqual(CONVERSATION_TOOL_DEFS[i]?.parameters);
     }
+    expect(h.declaredTools.some((t) => t.name === "find_car_rental")).toBe(true);
     expect(h.declaredTools.some((t) => t.name === "search_places")).toBe(false);
     expect(h.declaredTools.some((t) => t.name === "research_live_place")).toBe(false);
     expect(lastIn(GROUP)).toBe("same tools as before");
