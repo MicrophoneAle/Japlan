@@ -152,7 +152,9 @@ describe("photo with a code as the caption", () => {
     expect(String(claim?.image_hash)).toMatch(/^sha256:/); // HEIC: exact-hash fallback
     expect(h.vision).toHaveBeenCalledOnce();
     expect(h.vision.mock.calls[0][0].image.mime).toBe("image/heic");
-    expect(h.sent.map((m) => m.text)).toEqual(["✅ A1 · Mike +8 +2 photo · 10"]);
+    expect(h.sent.map((m) => m.text)).toEqual([
+      "✅ A1 · Mike\n+8 task pts +2 photo bonus = +10 pts\n🏆 Total score: 10 pts",
+    ]);
     expect(h.sent[0]?.effect).toBeUndefined();
   });
 
@@ -162,7 +164,9 @@ describe("photo with a code as the caption", () => {
 
     expect(a1Claim()?.awarded_points).toBe(8);
     expect(a1Claim()?.photo_claimed_at).toBeNull();
-    expect(h.sent.map((m) => m.text)).toEqual(["✅ A1 · Mike +8 · 8\nphoto for bonus points? 👀"]);
+    expect(h.sent.map((m) => m.text)).toEqual([
+      "✅ A1 · Mike\n+8 task pts\n🏆 Total score: 8 pts",
+    ]);
   });
 
   it("still awards the code when the photo cannot be fetched", async () => {
@@ -190,7 +194,7 @@ describe("photo with a code as the caption", () => {
     h.vision.mockResolvedValue(verdict(true, 2));
     await dispatchLinqEvent(message([photoPart, text("A1")]));
 
-    expect(h.sent[0]?.text).toContain("that's your cap for today");
+    expect(h.sent[0]?.text).toContain("daily cap is reached");
     expect(h.react).not.toHaveBeenCalled();
     expect(h.sent[0]?.effect).toBeUndefined();
   });
@@ -230,7 +234,7 @@ describe("screen effect on a high-value claim", () => {
     ]);
     await dispatchLinqEvent(message([text("A3")]));
 
-    expect(h.sent[0]?.text).toContain("that's your cap for today");
+    expect(h.sent[0]?.text).toContain("daily cap reached");
     expect(h.sent[0]?.effect).toBeUndefined();
   });
 });

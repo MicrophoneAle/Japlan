@@ -51,7 +51,7 @@ Routes:
 
 - `/api/linq/webhook` - verify, dedupe, 200 fast, enqueue
 - `/api/jobs/*` - async workers that do the slow work
-- `/api/cron/daily-board` - morning generation
+- `/api/cron/daily-board` - background maintenance for sidequests, vote reminders, surveys, and stalled events; boards are generated and delivered on request
 - `/api/cron/reminders` - nudges and standings posts
 
 Keep `lib/linq` and `lib/browserbase` as thin adapters with no game logic, and `lib/game` as pure logic with no network calls. Scoring is then unit-testable without a phone.

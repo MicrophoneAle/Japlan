@@ -186,12 +186,13 @@ describe("final standings", () => {
 describe("setup prompts", () => {
   it("shows the current value on a re-run and never asks for a timezone", () => {
     expect(setupPrompt("destination", null, { first: true })).toBe(
-      "trip setup, 4 quick ones. ok where we headed? a city is plenty. (skip and i'll ask again later)",
+      "🧭 let's set up this group trip (5 quick questions).\nWhere are you going? Send the city and country, for example “Kyoto, Japan.” I need the place to find local activities.\nI need this answer before I can start the trip.",
     );
-    expect(setupPrompt("destination", "tokyo, japan")).toContain("(rn: tokyo, japan. skip keeps it)");
-    expect(setupPrompt("stake", null)).toContain("(skip is fine)");
+    expect(setupPrompt("destination", "tokyo, japan")).toContain("Saved: tokyo, japan. Say “skip” to keep it.");
+    expect(setupPrompt("stake", null)).toContain("Say “skip” if you want to leave this unset.");
     for (const id of ["destination", "dates", "difficulty", "stake"] as const) {
-      expect(setupPrompt(id, null)).not.toMatch(/timezone|time zone|!/i);
+      expect(setupPrompt(id, null)).not.toMatch(/timezone|time zone/i);
+      expect(setupPrompt(id, null)).not.toContain("Reply here with");
     }
   });
 });

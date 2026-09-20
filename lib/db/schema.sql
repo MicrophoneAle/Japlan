@@ -385,6 +385,8 @@ create table sidequests (
   created_at timestamptz not null default now()
 );
 
+create unique index sidequests_one_open_per_trip
+  on sidequests (trip_id) where status = 'open';
 create index sidequests_trip_date on sidequests (trip_id, local_date);
 
 create table sidequest_offers (

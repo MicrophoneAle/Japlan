@@ -81,6 +81,7 @@ import {
 import { buildStandingsRows } from "@/lib/game/standings";
 import { teamsWithMembers } from "@/lib/handlers/teams";
 import { pairBySharedInterests } from "@/lib/game/teams";
+import { randomFireTimes } from "@/lib/game/sidequests";
 
 import { TRIP_COLS } from "@/lib/db/columns";
 import { missingRequiredSetup, type SetupFields } from "@/lib/game/setup";
@@ -92,6 +93,11 @@ import { resolveQueuedLinks } from "@/lib/handlers/social-links";
 import { suggestShowOnce } from "@/lib/handlers/show-suggestion";
 import { multiplierHeaderPart, multiplierDayAnnouncement } from "@/lib/game/copy";
 import { multiplierLabel, taskMultiplierFor, type TaskMultiplier } from "@/lib/game/multipliers";
+import {
+  boardPeriodForDate,
+  type BoardPeriod,
+  tripDayForDate,
+} from "@/lib/game/board-schedule";
 import { remindOpenGroupDecisions } from "@/lib/handlers/group-decisions";
 
 // When a travel day's board starts: late afternoon, once they have arrived and
@@ -675,6 +681,7 @@ async function planForAssignee(opts: {
         scoreGap: opts.gap,
         day: opts.day,
         difficulty: trip.difficulty,
+        solo,
         boardTitles: opts.boardTitles,
         rejectedTitles: opts.rejectedTitles,
         templates,
@@ -1175,6 +1182,8 @@ export async function runDailyBoardForTrip(
     weatherLine: built.weatherLine,
     specialDay: built.specialDay,
     lapsed,
+    period: boardPeriodForDate(trip, date, now),
+    now,
   });
   await upsertBoardRow(trip.id, built.day, date, {
     status: "ready",
@@ -1246,7 +1255,7 @@ export async function lockNewBoard(
 
 // Retake a board for regeneration: ready+provisional, or a stale generating
 // row. Conditional update, so two ticks cannot both retake it.
-async function relockBoard(board: BoardRow, now: Date): Promise<boolean> {
+export async function relockBoard(board: BoardRow, now: Date): Promise<boolean> {
   let query = getServiceClient()
     .from("boards")
     .update({ status: "generating", updated_at: now.toISOString() })
@@ -1302,17 +1311,14 @@ export async function tasksForDay(tripId: string, day: number): Promise<TaskRow[
 
 // Deliver a board that already exists (made on demand earlier) to everyone
 // who has not seen it. People who asked for it already got it in their reply.
-export async function deliverExistingBoard(trip: TripRow, day: number, date: string, now: Date) {
+export async function deliverExistingBoard(
+  trip: TripRow,
+  day: number,
+  date: string,
+  now: Date,
+  period: BoardPeriod = "morning",
+) {
   const people = await tripPeople(trip.id);
-  const asked = await getServiceClient()
-    .from("board_requests")
-    .select("participant_id")
-    .eq("trip_id", trip.id)
-    .eq("day", day);
-  if (asked.error) throw asked.error;
-  const seen = new Set(
-    (asked.data ?? []).map((row) => (row as { participant_id: string }).participant_id),
-  );
   const lapsed = await sweepLapsedPeerClaims(trip.id, now);
   const profile = await cachedProfileOf(trip);
   const weather = await weatherFor(profile, date, zoneFor(trip, date));
@@ -1323,7 +1329,7 @@ export async function deliverExistingBoard(trip: TripRow, day: number, date: str
   // Team or shared tasks already reach everyone; top-ups are for personal boards.
   const personalOnly = dayTasks.every((t) => t.participant_id);
   for (const person of personalOnly ? people : []) {
-    if (seen.has(person.id) || owners.has(person.id) || !constraintsKnown(person)) continue;
+    if (owners.has(person.id) || !constraintsKnown(person)) continue;
     const topUp = await refillPersonalTasksIfNeeded({
       trip,
       claimant: person,
@@ -1346,12 +1352,14 @@ export async function deliverExistingBoard(trip: TripRow, day: number, date: str
   });
   await deliverMorningBoards({
     trip,
-    people: people.filter((p) => !seen.has(p.id)),
+    people,
     allPeople: people,
     rows,
     day,
     weatherLine: formatWeatherLine(weather),
     lapsed,
+    period,
+    now,
   });
 }
 
@@ -1360,7 +1368,7 @@ async function cachedProfileOf(trip: TripRow): Promise<DestinationProfile | null
   return raw && typeof raw === "object" ? (raw as DestinationProfile) : null;
 }
 
-async function dayHasClaims(tripId: string, day: number): Promise<boolean> {
+export async function dayHasClaims(tripId: string, day: number): Promise<boolean> {
   return (await claimedTasksOnDay(tripId, day)).length > 0;
 }
 
@@ -1386,32 +1394,35 @@ function boardLog(step: string, fields: Record<string, unknown>) {
   console.info("[japlan.board] step", { step, ...fields });
 }
 
-// One cron tick for one trip whose board is due today:
-//  - no board: generate and deliver to everyone
-//  - provisional (made ahead on request): regenerate with today's weather and
-//    ratings unless something on it was claimed, then deliver
-//  - made on demand earlier today, not yet delivered: deliver it
-//  - delivered: nothing
-export async function tickBoard(trip: TripRow, date: string, day: number, now: Date) {
+// Administrative/test tick for one trip. User-facing task boards are served
+// on request; the normal background scheduler does not call this function.
+export async function tickBoard(
+  trip: TripRow,
+  date: string,
+  day: number,
+  now: Date,
+  period: BoardPeriod = "morning",
+) {
   let board = await getBoard(trip.id, day);
 
   if (!board) {
     if ((await tasksForDay(trip.id, day)).length > 0) {
-      // Tasks from before boards rows existed: treat as delivered.
+      // Recover a pre-existing task set which has no board row.
       await upsertBoardRow(trip.id, day, date, {
         status: "ready",
-        delivered_at: now.toISOString(),
       });
       boardLog("tick.legacy_tasks", { tripId: trip.id, day });
-      return "skipped";
+      board = await getBoard(trip.id, day);
     }
-    const locked = await lockNewBoard(trip.id, day, date, { provisional: false });
-    if (!locked) {
-      boardLog("tick.lock_lost", { tripId: trip.id, day });
-      return "skipped";
+    if (!board) {
+      const locked = await lockNewBoard(trip.id, day, date, { provisional: false });
+      if (!locked) {
+        boardLog("tick.lock_lost", { tripId: trip.id, day });
+        return "skipped";
+      }
+      await generateAndDeliver(trip, locked, date, now, period);
+      return "generated";
     }
-    await generateAndDeliver(trip, locked, date, now);
-    return "generated";
   }
 
   if (board.status === "generating") {
@@ -1420,7 +1431,7 @@ export async function tickBoard(trip: TripRow, date: string, day: number, now: D
       return "skipped";
     }
     await deleteUnclaimedTasksForDay(trip.id, day);
-    await generateAndDeliver(trip, board, date, now);
+    await generateAndDeliver(trip, board, date, now, period);
     return "generated";
   }
 
@@ -1429,27 +1440,30 @@ export async function tickBoard(trip: TripRow, date: string, day: number, now: D
       // Someone already claimed from the provisional board: it stands.
       await updateBoard(board.id, { provisional: false });
       board = { ...board, provisional: false };
-      boardLog("tick.provisional_kept", { tripId: trip.id, day, reason: "claimed" });
+      boardLog("tick.provisional_kept", { tripId: trip.id, day, reason: "already_used" });
     } else if (await relockBoard(board, now)) {
       await deleteUnclaimedTasksForDay(trip.id, day);
       boardLog("tick.provisional_regenerate", { tripId: trip.id, day });
-      await generateAndDeliver(trip, board, date, now);
+      await generateAndDeliver(trip, board, date, now, period);
       return "regenerated";
     } else {
       return "skipped";
     }
   }
 
-  if (!board.delivered_at) {
-    await deliverExistingBoard(trip, day, date, now);
-    await updateBoard(board.id, { delivered_at: now.toISOString() });
-    boardLog("tick.delivered_existing", { tripId: trip.id, day });
-    return "delivered";
-  }
-  return "skipped";
+  await deliverExistingBoard(trip, day, date, now, period);
+  await updateBoard(board.id, { delivered_at: now.toISOString() });
+  boardLog("tick.delivered_existing", { tripId: trip.id, day, period });
+  return "delivered";
 }
 
-async function generateAndDeliver(trip: TripRow, board: BoardRow, date: string, now: Date) {
+async function generateAndDeliver(
+  trip: TripRow,
+  board: BoardRow,
+  date: string,
+  now: Date,
+  period: BoardPeriod,
+) {
   try {
     const lapsed = await sweepLapsedPeerClaims(trip.id, now);
     const built = await buildBoardForDate(trip, { date, now });
@@ -1464,6 +1478,8 @@ async function generateAndDeliver(trip: TripRow, board: BoardRow, date: string, 
       weatherLine: built.weatherLine,
       specialDay: built.specialDay,
       lapsed,
+      period,
+      now,
     });
     await updateBoard(board.id, {
       status: "ready",
@@ -1480,6 +1496,28 @@ async function generateAndDeliver(trip: TripRow, board: BoardRow, date: string, 
     });
     throw err;
   }
+}
+
+async function maybeOfferScheduledSidequest(trip: TripRow, now: Date): Promise<void> {
+  if (!trip.start_date || !trip.end_date) return;
+  const date = localDateString(now, trip.timezone || "UTC");
+  if (date < trip.start_date || date > trip.end_date) return;
+  const start = parseClockMinutes(trip.board_time || "08:00");
+  const window = { startMinutes: start, endMinutes: 22 * 60 };
+  const dueCount = randomFireTimes(trip.id + ":" + date, window)
+    .filter((minute) => minute <= parseClockMinutes(localTimeHHMM(now, trip.timezone || "UTC")))
+    .length;
+  if (dueCount === 0) return;
+  const { data, error } = await getServiceClient()
+    .from("sidequests")
+    .select("id")
+    .eq("trip_id", trip.id)
+    .eq("local_date", date)
+    .eq("trigger", "random");
+  if (error) throw error;
+  if ((data ?? []).length >= dueCount) return;
+  const { offerTriggeredSidequest } = await import("./sidequests");
+  await offerTriggeredSidequest({ tripId: trip.id, trigger: "random", now });
 }
 
 // Tasks on this day that already have any claim row. A forced re-run must
@@ -1592,6 +1630,9 @@ async function deliverMorningBoards(opts: {
   standings?: boolean;
   // What the day is worth. Omitted (not null) means look it up.
   specialDay?: TaskMultiplier | null;
+  // When set, include only the requested time-of-day section.
+  period?: BoardPeriod;
+  now?: Date;
 }): Promise<void> {
   const anchors = await dayAnchorsForBoard(opts.trip, opts.day);
   // A holiday, a festival, a weekend: it rides in the board
@@ -1623,6 +1664,7 @@ async function deliverMorningBoards(opts: {
       weatherLine: opts.weatherLine,
       multiplierPart,
       place,
+      ...(opts.period ? { slot: opts.period } : {}),
       tasks: sharedTasks.map((row) => ({
         code: row.code,
         title: row.title,
@@ -1636,6 +1678,17 @@ async function deliverMorningBoards(opts: {
       })),
     });
     const reopened = [...new Set([...(opts.lapsed?.values() ?? [])].flat())];
+    if (opts.period) {
+      const hasPeriodTasks = sharedTasks.some((row) => (row.slot ?? "morning") === opts.period);
+      if (!hasPeriodTasks && opts.period !== "morning") return;
+      await sendText(
+        opts.trip.linq_chat_id,
+        board + (opts.period === "morning" && reopened.length > 0
+          ? "\n\n♻️ reopened: " + reopened.join(", ")
+          : ""),
+      );
+      return;
+    }
     await sendText(
       opts.trip.linq_chat_id,
       `${board}${reopened.length > 0 ? `\n\n♻️ reopened: ${reopened.join(", ")}` : ""}`,
@@ -1695,9 +1748,12 @@ async function deliverMorningBoards(opts: {
   }
 
   for (const person of opts.people) {
-    const tasks = byPerson.get(person.id) ?? [];
+    const tasks = (byPerson.get(person.id) ?? []).filter((task) =>
+      !opts.period || (task.slot ?? "morning") === opts.period,
+    );
     const lapsedCodes = opts.lapsed?.get(person.id) ?? [];
-    if (tasks.length === 0 && lapsedCodes.length === 0) continue;
+    if (tasks.length === 0 && (!opts.period || opts.period === "morning") && lapsedCodes.length === 0) continue;
+    if (tasks.length === 0 && (opts.period !== "morning" || lapsedCodes.length === 0)) continue;
     const parts: string[] = [];
     const teamLabel = teamLabelByParticipant.get(person.id);
     if (teamLabel) parts.push(`🤝 today's shared tasks: ${teamLabel}.`);
@@ -1712,6 +1768,7 @@ async function deliverMorningBoards(opts: {
           multiplierPart,
           place,
           anchors,
+          ...(opts.period ? { slot: opts.period } : {}),
           tasks: tasks.map((row) => ({
             code: row.code,
             title: row.title,
@@ -1735,7 +1792,7 @@ async function deliverMorningBoards(opts: {
 
   // A solo trip's chat IS the player's DM, which just got their board: a
   // one-person standings post would be a second message saying nothing.
-  if (opts.trip.is_solo || opts.standings === false) return;
+  if (opts.trip.is_solo || opts.standings === false || (opts.period && opts.period !== "morning")) return;
   const teams = await teamsWithMembers(opts.trip.id);
   // One group message on a multiplier day, in the morning, never one per
   // claim: the multiplier is collective, so it is news rather than a receipt.
@@ -1848,7 +1905,7 @@ export async function refillPersonalTasksIfNeeded(opts: {
     startNear: null,
     endNear: null,
   };
-  // Same planner as the morning board, over whatever is left of that day.
+  // Same planner as the daily board, over whatever is left of that day.
   const planned = await planForAssignee({
     trip: opts.trip,
     assignee,
@@ -1939,6 +1996,7 @@ export async function refillPersonalTasksIfNeeded(opts: {
   if (opts.deliver === false) return rows;
   const text = formatPersonalBoard({
     day,
+    slot: boardPeriodForDate(opts.trip, today, now),
     tasks: rows.map((row) => ({
       code: row.code,
       title: row.title,
@@ -1966,7 +2024,7 @@ export async function runDailyBoards(opts: {
   force?: boolean;
 }): Promise<{ ran: string[]; skipped: string[] }> {
   const now = opts.now ?? new Date();
-  // Surveying trips too: at board time one that has a finished survey goes
+  // Surveying trips too: at the first drop one that has a finished survey goes
   // live (a person gets a board once THEY are ready, whoever else is still
   // answering); one where nobody has finished tells the group once, and
   // nudges the people answering. Before, the cron skipped them silently.
@@ -2015,6 +2073,16 @@ export async function runDailyBoards(opts: {
       await remindOpenGroupDecisions(trip, now);
     } catch (err) {
       console.error("[japlan.group_decision] reminder failed", {
+        tripId: trip.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    try {
+      const { tickSidequests } = await import("./sidequests");
+      await tickSidequests(trip.id, now);
+      if (!opts.force) await maybeOfferScheduledSidequest(trip, now);
+    } catch (err) {
+      console.error("[japlan.sidequest] scheduled tick failed", {
         tripId: trip.id,
         error: err instanceof Error ? err.message : String(err),
       });
@@ -2074,9 +2142,8 @@ export async function runDailyBoards(opts: {
       ran.push(trip.id);
       continue;
     }
-    // Due when local time is at or after board_time, inside the trip's dates.
-    // Any tick after board_time posts a missing board, so a late or missed
-    // tick recovers instead of skipping the day.
+    // Boards are request-driven. The scheduler never pushes task sections;
+    // it only sends a once-a-day survey nudge after the morning start.
     const due = boardDueNow(trip, now);
     if (!due.due) {
       boardLog("tick.not_due", { tripId: trip.id, reason: due.reason });
@@ -2084,11 +2151,8 @@ export async function runDailyBoards(opts: {
       continue;
     }
     try {
-      const outcome = await tickBoard(trip, due.date, due.day, now);
-      (outcome === "skipped" ? skipped : ran).push(trip.id);
-      // Board time for people still answering: their next question instead
-      // of a board, once a day.
       await nudgeUnfinished(trip, due.date);
+      ran.push(trip.id);
     } catch (err) {
       // One trip failing must not stop the rest of the tick.
       console.error("[japlan.board] tick failed", {
@@ -2119,6 +2183,8 @@ export async function replanDay(trip: TripRow, date: string, now: Date): Promise
     weatherLine: built.weatherLine,
     specialDay: built.specialDay,
     standings: false,
+    period: boardPeriodForDate(trip, date, now),
+    now,
   });
   console.info("[japlan.split] replanned", { tripId: trip.id, day, rows: built.rows.length });
   return true;
