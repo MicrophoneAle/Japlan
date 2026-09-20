@@ -43,7 +43,16 @@ export const PRIVATE_SURVEY_IDS: QuestionId[] = [
   "social_couples",
 ];
 
-const PUBLIC_SURVEY_IDS: QuestionId[] = [
+// The ONLY survey answers that may reach a group prompt. An allowlist, not a
+// denylist: a question id in neither this nor PRIVATE_SURVEY_IDS is excluded
+// from every slice, so a new survey field is private until somebody decides
+// otherwise. conversation-privacy.test.ts pins that.
+//
+// must_have is here deliberately. "this trip is a waste if we don't ___" is
+// the one answer a person is making TO the group: it is their pitch, not a
+// fact about their body, their money or who they want to be with. Everything
+// in PRIVATE_SURVEY_IDS stays in DM.
+export const PUBLIC_SURVEY_IDS: QuestionId[] = [
   "first_name",
   "interests",
   "interest_picks",
@@ -52,6 +61,7 @@ const PUBLIC_SURVEY_IDS: QuestionId[] = [
   "nightlife",
   "competitiveness",
   "attractions",
+  "must_have",
 ];
 
 const GAME_TOOLS = new Set<string>([

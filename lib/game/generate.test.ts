@@ -471,3 +471,48 @@ describe("generation prompt: quality and time", () => {
     });
   });
 });
+
+// "this trip is a waste if we don't ___" is the highest signal answer in the
+// survey. It used to reach the model only as a sentence inside the
+// preferences paragraph, where it read like any other lean, and the only
+// structured use was four keyword buckets that "see a show" matches none of.
+describe("a must-have is a standing constraint, not a lean", () => {
+  const base = {
+    profile: {
+      assembled_at: "2026-09-19T00:00:00Z",
+      destination: "Tokyo",
+      neighborhoods: [],
+      transit_lines: [],
+      dishes: [],
+      landmarks: [],
+      price_bands: [],
+      center: null,
+    },
+    weather: { temperatureC: 18, precipitationChance: 0, summary: "clear", indoorPreferred: false },
+    preferenceText: "likes food",
+    completedTitles: [],
+    yesterdayRatings: "",
+    scoreGap: "",
+    day: 1,
+  };
+
+  it("puts it in the prompt verbatim, and says it outranks the interest leans", () => {
+    const prompt = buildGenerationPrompt({
+      ...base,
+      mustHaves: ["see a show"],
+      interests: [{ key: "food", share: 1 }],
+    });
+    expect(prompt).toContain("see a show");
+    expect(prompt).toMatch(/standing constraint/i);
+    expect(prompt).toMatch(/outranks the interest leans/i);
+    // And it comes before the interest leans it outranks.
+    expect(prompt.indexOf("see a show")).toBeLessThan(prompt.indexOf("top interests"));
+  });
+
+  it("carries every person's must-have, and says nothing when nobody named one", () => {
+    const both = buildGenerationPrompt({ ...base, mustHaves: ["see a show", "eat at a 7-eleven"] });
+    expect(both).toContain("see a show");
+    expect(both).toContain("eat at a 7-eleven");
+    expect(buildGenerationPrompt(base)).not.toMatch(/standing constraint/i);
+  });
+});

@@ -138,6 +138,19 @@ function groupPreferenceText(people: ParticipantRow[]): string {
   );
 }
 
+// "this trip is a waste if we don't ___", verbatim, deduplicated. Free text,
+// so it goes to the model rather than through a keyword bucket: the four
+// regexes in interestsFor only catch food, nightlife, culture and outdoors,
+// and "we should see a show" matches none of them.
+function mustHavesOf(answers: SurveyAnswers[]): string[] {
+  const seen = new Set<string>();
+  for (const a of answers) {
+    const value = answerValue(a, "must_have")?.trim().replace(/[.!]+$/, "");
+    if (value) seen.add(value);
+  }
+  return [...seen];
+}
+
 function preferenceText(answers: SurveyAnswers): string {
   // Free text the code cannot act on goes to the model, labelled.
   const bits = Object.entries(promptPreferences(answers)).map(([k, v]) => `${k}: ${v}`);
@@ -674,6 +687,7 @@ async function planForAssignee(opts: {
         specialDay: opts.specialDay
           ? { label: opts.specialDay.label, source: opts.specialDay.source }
           : null,
+        mustHaves: mustHavesOf(answers),
         travelDay: travelDay ? { city: legForDate(trip, opts.date).city } : null,
       });
     } catch (err) {

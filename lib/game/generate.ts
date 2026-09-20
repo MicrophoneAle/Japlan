@@ -251,6 +251,12 @@ export type GenerationInput = {
   // holiday shuts the ordinary ones. A board full of closed venues on a 3x day
   // is worse than an ordinary day.
   specialDay?: { label: string; source: string } | null;
+  // "this trip is a waste if we don't ___", in their own words. The highest
+  // signal answer in the survey: somebody naming the one thing that decides
+  // whether the trip worked. It used to reach the prompt only as a sentence
+  // buried in the preferences paragraph, reading like any other lean. It is
+  // its own line now, and it outranks an interest weight.
+  mustHaves?: string[];
   // The day they change cities. They arrive with bags, tired, knowing nothing
   // about where they are, so the board is a short evening near where they are
   // staying rather than a normal day that assumes they are already out.
@@ -393,6 +399,11 @@ export function buildGenerationPrompt(input: GenerationInput): string {
     input.sociability === "rather_not" ? NO_STRANGERS_GUIDANCE : TASK_QUALITY_GUIDANCE,
     ...(sociabilityLine(input.sociability) ? [sociabilityLine(input.sociability) as string] : []),
     `At least ${bold} of the ${count} tasks must honestly rate boldness 3 or more.`,
+    ...(input.mustHaves?.length
+      ? [
+          `Must-haves, in their own words: ${input.mustHaves.join("; ")}. Somebody said the trip is a waste without these. Treat each one as a standing constraint on the WHOLE trip, not a preference: it outranks the interest leans below. Build toward it across the days, and never let a board go by that makes it less likely to happen.`,
+        ]
+      : []),
     ...(input.interests?.length
       ? [
           `What this group picked as its top interests (lean the board toward these): ${input.interests
