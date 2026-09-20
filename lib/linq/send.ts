@@ -1,7 +1,7 @@
 import { recordMessage } from "@/lib/chat/transcript";
 import { getLinqClient } from "./client";
 
-export type OutboundOp = "sendText" | "sendTyping" | "markRead" | "sendDM" | "react";
+export type OutboundOp = "sendText" | "sendTyping" | "markRead" | "sendDM" | "react" | "shareContactCard";
 
 // The 6 standard iMessage tapbacks (Shared.ReactionType minus "custom"/"sticker").
 export type Tapback = "love" | "like" | "dislike" | "laugh" | "emphasize" | "question";
@@ -53,12 +53,13 @@ function textParts(text: string) {
 
 // Simulated typing time before a text goes out, so replies land like someone
 // actually typed them instead of arriving the instant the model finishes. A
-// short line lands around 3s, a full paragraph around 8s; jitter keeps two
-// replies of the same length from always taking the exact same beat.
-const TYPING_BASE_MS = 1500;
-const TYPING_MS_PER_CHAR = 28;
-const TYPING_MIN_MS = 1200;
-const TYPING_MAX_MS = 9500;
+// short line lands around 2.5s; jitter keeps two replies of the same length
+// from always taking the exact same beat. Ceiling capped at 5s (2026-10-02)
+// so even a long reply never feels like it's stalling.
+const TYPING_BASE_MS = 1250;
+const TYPING_MS_PER_CHAR = 24;
+const TYPING_MIN_MS = 1000;
+const TYPING_MAX_MS = 5000;
 
 function typingDelayMs(text: string): number {
   const raw = TYPING_BASE_MS + text.length * TYPING_MS_PER_CHAR;
@@ -173,6 +174,24 @@ export async function sendDM(phone: string, text: string): Promise<SentText> {
   });
   await recordMessage({ chatId: sent.chatId, role: "bot", text });
   return sent;
+}
+
+// Push the Name & Photo registered for LINQ_FROM_NUMBER (one-time setup:
+// scripts/setup-contact-card.ts) into a chat, so it shows "Japlan" and the
+// logo instead of a bare number. Fire-and-forget by design, same reasoning as
+// react(): a share failing must never block or fail the message it rides
+// along after, so callers do not need their own try/catch.
+export async function shareContactCardSafely(chatId: string): Promise<void> {
+  try {
+    await outbound({ op: "shareContactCard", chatId }, () =>
+      getLinqClient().chats.shareContactCard(chatId),
+    );
+  } catch (err) {
+    console.error("[linq.outbound] shareContactCard failed", {
+      chatId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 // Tapback a message with a standard iMessage reaction (love/like/dislike/

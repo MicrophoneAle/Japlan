@@ -9,6 +9,11 @@ import { fakeHeic } from "@/lib/test/images";
 // real race. The fake enforces schema.sql's unique indexes, including
 // claims_one_winner_per_task.
 
+// The trip deliberately starts on a THURSDAY. Weekends and friday nights carry
+// a points multiplier (lib/game/multipliers.ts), so a claim seeded on a
+// saturday awards 1.25x and every base-points assertion here would be about
+// the calendar instead of about ownership. The window also has to contain
+// fakeHeic's baked exif date, which a late photo bonus is checked against.
 const PHONES = { a: "+15550000001", b: "+15550000002" };
 const GROUP = "chat-group";
 
@@ -32,6 +37,7 @@ vi.mock("@/lib/linq/send", () => ({
   markRead: vi.fn(async () => {}),
   sendTyping: vi.fn(async () => {}),
   react: vi.fn(async () => {}),
+  shareContactCardSafely: vi.fn(async () => {}),
 }));
 vi.mock("@/lib/llm/gemini", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/llm/gemini")>();
@@ -111,7 +117,7 @@ function task(id: string, code: string, owner: { participant_id?: string | null;
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
-  vi.setSystemTime(new Date("2026-09-19T03:00:00Z")); // noon in Tokyo, day 1
+  vi.setSystemTime(new Date("2026-09-17T03:00:00Z")); // noon in Tokyo, day 1
   process.env.LINQ_FROM_NUMBER = "+15559999999";
   process.env.JAPLAN_SOLO_MODE = "false";
   h.sent.length = 0;
@@ -124,11 +130,11 @@ beforeEach(() => {
       linq_chat_id: GROUP,
       name: "tokyo",
       destination: "Tokyo",
-      start_date: "2026-09-19",
-      end_date: "2026-09-23",
+      start_date: "2026-09-17",
+      end_date: "2026-09-21",
       state: "active",
       timezone: "Asia/Tokyo",
-      intro_sent_at: "2026-09-18T00:00:00Z",
+      intro_sent_at: "2026-09-16T00:00:00Z",
       setup_state: "done",
       board_time: "08:00",
     },
@@ -137,7 +143,7 @@ beforeEach(() => {
     { id: "p-a", trip_id: "trip-1", phone: PHONES.a, display_name: "Ana", survey_state: "done", survey_json: {} },
     { id: "p-b", trip_id: "trip-1", phone: PHONES.b, display_name: "Ben", survey_state: "done", survey_json: {} },
   ]);
-  h.db.seed("teams", [{ id: "team-a", trip_id: "trip-1", name: "ana's team", color: "red", formed_at: "2026-09-19T00:00:00Z", day: 1 }]);
+  h.db.seed("teams", [{ id: "team-a", trip_id: "trip-1", name: "ana's team", color: "red", formed_at: "2026-09-17T00:00:00Z", day: 1 }]);
   h.db.seed("team_members", [{ team_id: "team-a", participant_id: "p-a" }]);
   h.db.seed("tasks", [
     // Everyone has an A1.

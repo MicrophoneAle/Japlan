@@ -246,6 +246,11 @@ export type GenerationInput = {
   // never go on the board), no group templates on a solo trip.
   templates?: TaskTemplate[];
   plan?: GenerationPlan;
+  // A holiday or a festival changes what is worth doing, not only what it
+  // scores: the day's own events are the best tasks available, and a national
+  // holiday shuts the ordinary ones. A board full of closed venues on a 3x day
+  // is worse than an ordinary day.
+  specialDay?: { label: string; source: string } | null;
   // One board in four also gets one task that fits no template.
   curveball?: boolean;
   // The group's answers that shape the board. Sociability is enforced in
@@ -311,6 +316,24 @@ function hoursText(minutes: number): string {
   return `${hours} hour${hours === 1 ? "" : "s"}`;
 }
 
+// What today being special should do to the board. Two different jobs: a
+// festival is an opportunity (go where it is), a national holiday is also a
+// warning (the ordinary city is shut and the trains are full).
+function specialDayGuidance(day: { label: string; source: string }): string {
+  const lean = `Today is ${day.label}. Tasks that use it beat tasks that ignore it: build at least two around what is actually happening in the city today, at the places it happens.`;
+  if (day.source === "holiday") {
+    return [
+      lean,
+      "It is a national public holiday: museums, galleries, government-run sites, small shops and many restaurants will be shut, and trains and famous spots will be packed.",
+      "Do not send anyone to a venue that is likely closed, and do not build the board out of ticketed indoor attractions. Prefer streets, parks, markets, shrines, festivals, food stalls and anywhere a crowd is the point.",
+    ].join(" ");
+  }
+  if (day.source === "festival") {
+    return `${lean} Expect crowds and street closures near it, so keep the day close to where it is rather than crossing the city.`;
+  }
+  return lean;
+}
+
 export function buildGenerationPrompt(input: GenerationInput): string {
   const count = input.count ?? TASKS_PER_CALL;
   const indoor = input.weather.indoorPreferred
@@ -336,6 +359,7 @@ export function buildGenerationPrompt(input: GenerationInput): string {
     `Transit: ${input.profile.transit_lines.join(", ") || "(unknown)"}`,
     `Price bands seen: ${input.profile.price_bands.join(", ") || "(unknown)"}`,
     `Weather: ${input.weather.summary}; ${indoor}`,
+    ...(input.specialDay ? [specialDayGuidance(input.specialDay)] : []),
     `Preferences: ${input.preferenceText}`,
     ...(difficultyGuidance(input.difficulty) ? [difficultyGuidance(input.difficulty) as string] : []),
     `Already completed (do not repeat): ${input.completedTitles.join("; ") || "(none)"}`,

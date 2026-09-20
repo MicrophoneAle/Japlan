@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "check:schema": "tsx scripts/check-schema.ts"
   },
   "dependencies": {
     "@browserbasehq/sdk": "^2.20.0",

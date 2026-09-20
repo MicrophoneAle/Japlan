@@ -2,18 +2,22 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
   send: vi.fn(),
+  shareContactCard: vi.fn(),
 }));
 
 vi.mock("@/lib/chat/transcript", () => ({ recordMessage: vi.fn(async () => {}) }));
 vi.mock("./client", () => ({
-  getLinqClient: () => ({ chats: { messages: { send: h.send } } }),
+  getLinqClient: () => ({
+    chats: { messages: { send: h.send }, shareContactCard: h.shareContactCard },
+  }),
 }));
 
-import { sendText } from "./send";
+import { sendText, shareContactCardSafely } from "./send";
 
 describe("sendText effects", () => {
   beforeEach(() => {
     h.send.mockReset();
+    h.shareContactCard.mockReset();
   });
 
   it("sends plain text with no effect field when none is given", async () => {
@@ -58,5 +62,22 @@ describe("sendText effects", () => {
       sendText("c1", "hey", { effect: { type: "screen", name: "confetti" } }),
     ).rejects.toThrow("down");
     expect(h.send).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("shareContactCardSafely", () => {
+  beforeEach(() => {
+    h.shareContactCard.mockReset();
+  });
+
+  it("shares the contact card into the chat", async () => {
+    h.shareContactCard.mockResolvedValue(undefined);
+    await shareContactCardSafely("c1");
+    expect(h.shareContactCard).toHaveBeenCalledWith("c1");
+  });
+
+  it("swallows a failure instead of throwing", async () => {
+    h.shareContactCard.mockRejectedValue(new Error("not configured yet"));
+    await expect(shareContactCardSafely("c1")).resolves.toBeUndefined();
   });
 });

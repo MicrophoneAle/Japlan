@@ -49,6 +49,11 @@ export type TaskRow = {
   // code's duration estimate. Null on tasks made before day planning.
   slot?: string | null;
   duration_minutes?: number | null;
+  // What the board promised on a special day: the factor on base_points and
+  // what to call it. Null on an ordinary day and on tasks made before day
+  // multipliers.
+  day_multiplier?: number | null;
+  multiplier_reason?: string | null;
   created_at?: string;
 };
 
@@ -150,5 +155,17 @@ export type SidequestOfferRow = {
   resolved_at: string | null;
   awarded_points: number | null;
   photo_bonus: number;
+  created_at?: string;
+};
+
+// A day worth more points for everyone on the trip. Only looked-up days are
+// stored; weekends are computed (lib/game/multipliers.ts).
+export type MultiplierDayRow = {
+  id: string;
+  trip_id: string;
+  local_date: string;
+  multiplier: number;
+  label: string;
+  source: "holiday" | "festival";
   created_at?: string;
 };

@@ -18,6 +18,7 @@ const h = vi.hoisted(() => ({
   near: vi.fn(),
   tz: vi.fn(),
   dates: vi.fn(),
+  shareContactCard: vi.fn(async () => {}),
 }));
 
 // No network in tests: board generation asks for the day's weather.
@@ -39,6 +40,7 @@ vi.mock("@/lib/linq/send", () => ({
   markRead: vi.fn(async () => {}),
   sendTyping: vi.fn(async () => {}),
   react: vi.fn(async () => {}),
+  shareContactCardSafely: h.shareContactCard,
 }));
 vi.mock("@/lib/linq/client", () => ({
   getLinqClient: () => ({
@@ -126,6 +128,7 @@ beforeEach(() => {
   });
   h.tz.mockReset().mockResolvedValue({ display: "tokyo, japan", timezone: "Asia/Tokyo" });
   h.dates.mockReset().mockResolvedValue({ start: "2026-10-17", end: "2026-10-20" });
+  h.shareContactCard.mockReset();
 });
 
 afterEach(() => {
@@ -154,6 +157,11 @@ describe("organizer setup", () => {
       "trip setup, 4 quick ones. ok where we headed? a city is plenty. (skip and i'll ask again later)",
     );
     expect(lastTo(SAM_DM)).toMatch(/^quick personality test.*what should i call you\?$/); // Sam gets the personal survey
+    // Every chat that just got its first message: the group intro, and each
+    // person's own DM, gets the Name & Photo pushed too.
+    expect(h.shareContactCard).toHaveBeenCalledWith(GROUP);
+    expect(h.shareContactCard).toHaveBeenCalledWith(MIKE_DM);
+    expect(h.shareContactCard).toHaveBeenCalledWith(SAM_DM);
 
     await send(MIKE, MIKE_DM, "tokyo");
     expect(openTrip()!.destination).toBe("tokyo, japan");

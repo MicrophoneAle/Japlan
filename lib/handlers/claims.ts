@@ -24,6 +24,12 @@ import {
 } from "@/lib/game/claims";
 import { evaluateAddress, findTaskCode } from "@/lib/game/addressing";
 import {
+  applyMultiplier,
+  capForMultiplier,
+  multiplierLabel,
+  taskMultiplierInForce,
+} from "@/lib/game/multipliers";
+import {
   alreadyClaimedLine,
   claimConfirmedLine,
   freeformPeerLine,
@@ -116,7 +122,7 @@ async function reactToClaim(messageId: string | null | undefined): Promise<void>
 }
 
 const TASK_COLS =
-  "id, trip_id, participant_id, team_id, code, title, tier, axes_json, base_points, photo_bonus_max, verification, day, expires_at, neighborhood, source, slot, duration_minutes";
+  "id, trip_id, participant_id, team_id, code, title, tier, axes_json, base_points, photo_bonus_max, verification, day, expires_at, neighborhood, source, slot, duration_minutes, day_multiplier, multiplier_reason";
 const PARTICIPANT_COLS =
   "id, trip_id, phone, display_name, score, survey_json, survey_state, sidequests_muted, consented_at";
 const CLAIM_COLS =
@@ -749,20 +755,35 @@ async function applyAwards(opts: {
         ]),
       )
     : [opts.claimant.id];
+  // Special days are worth more, for everyone on the trip: a national
+  // holiday, a festival, a weekend. The factor is read off the
+  // task, which stored what its board line promised, so a claim pays what
+  // people were shown even if the local day rolled over in between and no
+  // database round trip sits on the claim path. Applied here rather than baked
+  // into tasks.base_points, so a task keeps its own worth and its tier band
+  // stays readable. Multiplying the two components separately (rather than the
+  // total) keeps the confirmation's arithmetic honest.
+  const boost = taskMultiplierInForce(opts.task);
+  const awardBase = boost ? applyMultiplier(opts.task.base_points, boost.value) : opts.task.base_points;
+  const awardPhotoBonus = boost ? applyMultiplier(opts.photoBonus, boost.value) : opts.photoBonus;
   // Claimant's primary row goes first: if another claim already won the task,
   // claims_one_winner_per_task rejects it before any fanout row or score bump.
   const rows = awardFanout({
     teamId: opts.task.team_id,
     claimantId: opts.claimant.id,
     teamMemberIds: memberIds,
-    basePoints: opts.task.base_points,
-    photoBonus: opts.photoBonus,
+    basePoints: awardBase,
+    photoBonus: awardPhotoBonus,
   }).sort(
     (a, b) =>
       Number(b.participantId === opts.claimant.id) -
       Number(a.participantId === opts.claimant.id),
   );
-  const cap = opts.trip.daily_points_cap ?? DEFAULT_DAILY_POINTS_CAP;
+  // The cap rises with the day too: otherwise a 2x day only means hitting the
+  // ceiling in half the claims, which is the opposite of the incentive.
+  const cap = boost
+    ? capForMultiplier(opts.trip.daily_points_cap ?? DEFAULT_DAILY_POINTS_CAP, boost.value)
+    : opts.trip.daily_points_cap ?? DEFAULT_DAILY_POINTS_CAP;
   const confirmChatId = opts.trip.linq_chat_id;
 
   let claimantTotal = opts.claimant.score;
@@ -785,7 +806,9 @@ async function applyAwards(opts: {
         : { capped: capped.capped };
     // The bonus this claim's photo earned, on the row, so the stats (and
     // anyone reading a dispute) can see it.
-    if (opts.photoBonus > 0 && resolution.photo_bonus === undefined) resolution.photo_bonus = opts.photoBonus;
+    if (awardPhotoBonus > 0 && resolution.photo_bonus === undefined) resolution.photo_bonus = awardPhotoBonus;
+    // Why the award was bigger than the board line said.
+    if (boost) resolution.multiplier = { value: boost.value, label: boost.label };
     await insertClaim({
       task_id: opts.task.id,
       participant_id: row.participantId,
@@ -854,10 +877,12 @@ async function applyAwards(opts: {
       : claimConfirmedLine({
           code: opts.task.code,
           name,
-          base: opts.task.base_points,
-          photoBonus: claimantCapped ? 0 : opts.photoBonus,
+          base: awardBase,
+          photoBonus: claimantCapped ? 0 : awardPhotoBonus,
           total: claimantTotal,
           capped: claimantCapped,
+          multiplier:
+            boost && !claimantCapped ? `${multiplierLabel(boost.value)} ${boost.label}` : null,
           invitePhoto:
             !claimantCapped &&
             !opts.photoClaimedAt &&
@@ -872,7 +897,8 @@ async function applyAwards(opts: {
   console.info("[japlan.claim]", {
     task: opts.task.code,
     participant: opts.claimant.id,
-    points: claimantCapped ? 0 : opts.task.base_points + opts.photoBonus,
+    points: claimantCapped ? 0 : awardBase + awardPhotoBonus,
+    multiplier: boost?.value ?? 1,
     capped: claimantCapped,
     photo: Boolean(opts.evidenceUrl),
     at: new Date().toISOString(),
@@ -1517,8 +1543,15 @@ export async function applyLatePhotoBonus(opts: {
     );
     return;
   }
-  const incoming = clampPhotoBonus(bonus.bonus, photoBonusMaxFor(opts.task));
-  const cap = opts.trip.daily_points_cap ?? DEFAULT_DAILY_POINTS_CAP;
+  // A photo landing on a special day is worth the day too. Clamped to the
+  // task's ceiling first, multiplied after: the ceiling is about the task's
+  // own worth, the multiplier is about the day.
+  const boost = taskMultiplierInForce(opts.task);
+  const clamped = clampPhotoBonus(bonus.bonus, photoBonusMaxFor(opts.task));
+  const incoming = boost ? applyMultiplier(clamped, boost.value) : clamped;
+  const cap = boost
+    ? capForMultiplier(opts.trip.daily_points_cap ?? DEFAULT_DAILY_POINTS_CAP, boost.value)
+    : opts.trip.daily_points_cap ?? DEFAULT_DAILY_POINTS_CAP;
   const memberIds = opts.task.team_id
     ? Array.from(
         new Set([
