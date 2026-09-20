@@ -341,6 +341,15 @@ async function sendStandingsReply(miss: ClaimFallthrough): Promise<void> {
   await send(miss.chatId, standingsLine(rows));
 }
 
+// "japlan dashboard" / "live board": the link, nothing else. The live
+// dashboard only ever answers for an active trip (loadLiveTrip), which this
+// always is by the time anyone can ask.
+async function sendDashboardReply(miss: ClaimFallthrough): Promise<void> {
+  const send = miss.send ?? sendText;
+  const url = liveUrlFor(miss.trip.id);
+  await send(miss.chatId, url ? liveDashboardLine(url) : DASHBOARD_UNAVAILABLE_LINE);
+}
+
 export async function handleConversation(
   miss: ClaimFallthrough,
   deps: { provider?: LLMProvider } = {},
@@ -689,6 +698,7 @@ async function executeConversationTool(
       photo: miss.photo,
       send: miss.send,
       provider: miss.provider,
+      sourceMessageId: typeof miss.data.id === "string" ? miss.data.id : null,
     });
     return { result: { ok: true, code: task.code }, sent: true };
   }

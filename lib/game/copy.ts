@@ -18,6 +18,13 @@ export function setupCompleteLine(nextBoard: string | null, mode?: string | null
   return nextBoard ? `${intro}\n\nfirst board drops ${nextBoard}.` : intro;
 }
 
+// A link to the live trip dashboard (/live/[tripId]): standings, active
+// quests and proof, updating as the trip happens. Same "the recap: ..."
+// pattern as finalStandingsLine's Wrapped link.
+export function liveDashboardLine(url: string): string {
+  return `watch it live: ${url}`;
+}
+
 export const SURVEY_DONE_DM = "saved 🔒 your private preference survey is complete.";
 
 export function surveyReaskLine(options: string[]): string {

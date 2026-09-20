@@ -27,9 +27,10 @@ import {
   setupReadyToActivate,
   type SetupFields,
 } from "@/lib/game/setup";
-import { setupCompleteLine, setupPrompt, surveyLaunchGroupLine } from "@/lib/game/copy";
+import { setupCompleteLine, setupPrompt, surveyLaunchGroupLine, liveDashboardLine } from "@/lib/game/copy";
 import { describeBoardTime, nextBoardAt } from "@/lib/game/board-schedule";
 import { formTeamsForTrip, teamsAnnouncement } from "@/lib/handlers/teams";
+import { liveUrlFor } from "@/lib/urls";
 
 import { TRIP_COLS } from "@/lib/db/columns";
 import { withLegs } from "./legs";
@@ -414,6 +415,9 @@ export async function maybeActivateTrip(
     const announcement = teamsAnnouncement(teams);
     if (announcement) line = `${line}\n\n${announcement}`;
   }
+
+  const liveUrl = liveUrlFor(trip.id);
+  if (liveUrl) line = `${line}\n\n${liveDashboardLine(liveUrl)}`;
 
   if (opts.announce !== false) await sendText(trip.linq_chat_id, line);
   const { error } = await getServiceClient()

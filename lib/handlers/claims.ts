@@ -122,6 +122,22 @@ async function reactToClaim(messageId: string | null | undefined): Promise<void>
   }
 }
 
+// A submitted photo that actually shows the task: the real iMessage
+// thumbs-up tapback (not a custom emoji) on the photo message itself, same
+// swallow-on-failure rule as reactToClaim. A photo vision rejects (or fails
+// to check) already gets a text reply in the caller's own voice
+// (visionRejectedLine / photoCheckFailedLine) — this only covers the qualify
+// case, so the two together read as: thumbs up if it counts, a line if it
+// doesn't.
+async function reactToQualifyingPhoto(messageId: string | null | undefined): Promise<void> {
+  if (!messageId) return;
+  try {
+    await react(messageId, "like");
+  } catch (err) {
+    console.error("[japlan.claim] photo reaction failed", { messageId, err });
+  }
+}
+
 const TASK_COLS =
   "id, trip_id, participant_id, team_id, code, title, tier, axes_json, base_points, photo_bonus_max, verification, day, expires_at, neighborhood, source, slot, duration_minutes, day_multiplier, multiplier_reason";
 const PARTICIPANT_COLS =
@@ -1462,6 +1478,8 @@ export async function applyLatePhotoBonus(opts: {
   send: SendFn;
   provider?: LLMProvider;
   alsoConfirmTo?: string | null;
+  // The inbound photo message, if known: thumbs-up'd when it qualifies.
+  sourceMessageId?: string | null;
 }): Promise<void> {
   claimStep("photo_bonus.late", { code: opts.task.code, claimId: opts.claim.id });
   if (opts.claim.capped) {
@@ -1528,6 +1546,11 @@ export async function applyLatePhotoBonus(opts: {
     );
     return;
   }
+  // It's the right photo: a thumbs-up on it, independent of whatever the
+  // bonus math below actually pays out (capped, outside the trip window,
+  // fidelity scored 0). Those are about points, not about whether this was
+  // the right picture.
+  await reactToQualifyingPhoto(opts.sourceMessageId);
   const bonus = applyPhotoBonusRules({
     fidelity: vision.fidelity,
     hasExif: Boolean(takenAt),
@@ -1873,6 +1896,7 @@ async function handleGroupClaimInner(
           send,
           provider: deps.provider,
           alsoConfirmTo: chatId !== ctx.trip.linq_chat_id ? chatId : null,
+          sourceMessageId: typeof data.id === "string" ? data.id : null,
         });
         return null;
       }

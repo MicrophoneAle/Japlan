@@ -250,6 +250,7 @@ describe("photo sent alone after claiming", () => {
     expect(a1Claim()?.photo_claimed_at).toBeTruthy();
     expect(String(a1Claim()?.image_hash)).not.toMatch(/^sha256:/); // JPEG: perceptual
     expect(h.sent.at(-1)?.text).toBe("📸 A1 · +3 bonus · 11");
+    expect(h.react).toHaveBeenCalledWith(expect.any(String), "like");
   });
 
   it("stays silent for a bare photo that matches no open task", async () => {
@@ -278,6 +279,7 @@ describe("photo sent alone after claiming", () => {
     expect(h.sent.at(-1)?.text).toBe(
       "that doesn't really look like A1 ngl, so no photo bonus.\na clearer shot still counts.",
     );
+    expect(h.react).not.toHaveBeenCalledWith(expect.any(String), "like");
   });
   it("says the check failed, not 'doesn't look like', when the model answer is unreadable", async () => {
     h.vision.mockResolvedValue(null);
