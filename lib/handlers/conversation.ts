@@ -21,10 +21,13 @@ import {
   CONVERSATION_FALLBACK,
   CONVERSATION_PRIVACY_LINE,
   CONVERSATION_SYSTEM_PROMPT,
+  DASHBOARD_UNAVAILABLE_LINE,
   DISCARD_FALLBACK,
+  liveDashboardLine,
   standingsLine,
 } from "@/lib/game/copy";
-import { isStandingsRequest } from "@/lib/game/commands";
+import { isDashboardRequest, isStandingsRequest } from "@/lib/game/commands";
+import { liveUrlFor } from "@/lib/urls";
 import {
   isOpenTask,
   pickLatePhotoTarget,
@@ -391,6 +394,12 @@ export async function handleConversation(
   }
   if (isStandingsRequest(miss.text)) {
     await sendStandingsReply(miss);
+    return;
+  }
+  // "japlan dashboard" / "live board": just the link, same short-circuit as
+  // the standings request above.
+  if (isDashboardRequest(miss.text)) {
+    await sendDashboardReply(miss);
     return;
   }
   // No hourly reply cap: it refused people who had addressed the bot, which

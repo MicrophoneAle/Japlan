@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detectTeamNameCommand, isStandingsRequest } from "./commands";
+import { detectTeamNameCommand, isDashboardRequest, isStandingsRequest } from "./commands";
 
 describe("isStandingsRequest", () => {
   it("recognises the leaderboard command and its short forms", () => {
@@ -36,6 +36,41 @@ describe("isStandingsRequest", () => {
   it("works without the wake keyword too, for a DM already counted as addressed", () => {
     expect(isStandingsRequest("lb")).toBe(true);
     expect(isStandingsRequest("standings?")).toBe(true);
+  });
+});
+
+describe("isDashboardRequest", () => {
+  it("recognises the dashboard/live-board command and its short forms", () => {
+    for (const text of [
+      "japlan dashboard",
+      "japlan live board",
+      "japlan live link",
+      "japlan live dashboard",
+      "japlan live",
+      "dashboard",
+      "LIVE",
+      "japlan what's the dashboard",
+      "japlan show me the live board",
+      "japlan send the dashboard",
+      "japlan pull up the live link",
+    ]) {
+      expect(isDashboardRequest(text), text).toBe(true);
+    }
+  });
+
+  it("does not trigger on chatter that merely contains those words", () => {
+    for (const text of [
+      "japlan live it up tonight",
+      "japlan is the dashboard broken?",
+      "japlan we should live here honestly",
+    ]) {
+      expect(isDashboardRequest(text), text).toBe(false);
+    }
+  });
+
+  it("works without the wake keyword too, for a DM already counted as addressed", () => {
+    expect(isDashboardRequest("dashboard")).toBe(true);
+    expect(isDashboardRequest("live board?")).toBe(true);
   });
 });
 
