@@ -195,7 +195,7 @@ describe("at board time, for people still answering", () => {
     at("2026-09-19T08:05:00");
     await runDailyBoards({});
     expect(to(GROUP)).toEqual([
-      "boards start as soon as someone finishes the quick questions in their dm. waiting on Mike and Sam.",
+      "boards start as soon as someone finishes the quick questions in their dm.\nwaiting on Mike and Sam.",
     ]);
     expect(to(DM.mike)).toHaveLength(1);
     expect(to(DM.sam)).toHaveLength(1);

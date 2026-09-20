@@ -1,21 +1,21 @@
 import { clockLabel } from "./time";
 
 export const GROUP_INTRO =
-  "🗺️ i'm japlan. i turn your trip into daily tasks and points. claim a task code when you do one; i'll post the leaderboard here.\n\n🧭 first, we set the city, dates, and play style in this chat. then i'll DM each person a short private preference survey. i'll share who has finished, never their answers.\n\n👑 the organizer controls shared trip settings and makes the final call if the group gets stuck on an activity. i'll post shared choices here so everyone can vote; silence counts as abstaining. change settings with “japlan setup.” personal preferences stay private.";
+  "🗺️ i'm japlan.\ni turn your trip into daily tasks and points.\nclaim a task code when you do one; i'll post the leaderboard here.\n\n🧭 first, we set the city, dates, and play style in this chat.\nthen i'll DM each person a short private preference survey.\ni'll share who has finished, never their answers.\n\n👑 the organizer controls shared trip settings and makes the final call if the group gets stuck on an activity.\ni'll post shared choices here so everyone can vote; silence counts as abstaining.\nchange settings with “japlan setup.” personal preferences stay private.";
 
 // Kept for tests and older callers; setupCompleteLine carries the next board.
 export const SETUP_COMPLETE =
-  "we're live 🔥 every morning your tasks land in your dms, and a code like A1 claims one.";
+  "we're live 🔥\n\nevery morning your tasks land in your dms, and a code like A1 claims one.";
 
 export function setupCompleteLine(nextBoard: string | null, mode?: string | null): string {
   const intro = mode === "full_group"
-    ? "we're live 🔥 the shared daily board lands in this group chat; claim a code here when you do a task."
+    ? "we're live 🔥\n\nthe shared daily board lands in this group chat; claim a code here when you do a task."
     : mode === "teams"
-      ? "we're live 🔥 daily boards land in your dms. i'll pair people for the day when their interests overlap."
+      ? "we're live 🔥\n\ndaily boards land in your dms.\ni'll pair people for the day when their interests overlap."
       : mode === "individual"
-        ? "we're live 🔥 everyone gets their own daily board in their dms, with separate tasks and points."
+        ? "we're live 🔥\n\neveryone gets their own daily board in their dms, with separate tasks and points."
         : SETUP_COMPLETE;
-  return nextBoard ? `${intro} first board drops ${nextBoard}.` : intro;
+  return nextBoard ? `${intro}\n\nfirst board drops ${nextBoard}.` : intro;
 }
 
 export const SURVEY_DONE_DM = "saved 🔒 your private preference survey is complete.";
@@ -92,15 +92,15 @@ export function datesRetryLine(
 export function setupFinishedLine(missing: ("destination" | "dates")[]): string {
   if (missing.length === 0) return "setup's done, we're so back.";
   const what = missing.length === 2 ? "where and when" : missing[0] === "destination" ? "where" : "when";
-  return `setup's paused rq. still need ${what} before the game can start, i'll ask again next time you text.`;
+  return `setup's paused rq.\nstill need ${what} before the game can start, i'll ask again next time you text.`;
 }
 
 export function organizerOnlySetupLine(name: string): string {
-  return `👑 ${name} is organizing this trip and controls the shared setup. they can change it with “japlan setup.” your personal survey answers stay private.`;
+  return `👑 ${name} is organizing this trip and controls the shared setup.\nthey can change it with “japlan setup.”\nyour personal survey answers stay private.`;
 }
 
 export function groupSetupPendingDmLine(name: string): string {
-  return `👑 ${name} is setting the shared city, dates, and play style in the group chat first. i'll send your private preference survey once that's done.`;
+  return `👑 ${name} is setting the shared city, dates, and play style in the group chat first.\ni'll send your private preference survey once that's done.`;
 }
 
 export function groupSetupCompleteLine(opts: {
@@ -114,7 +114,7 @@ export function groupSetupCompleteLine(opts: {
     `📍 ${opts.destination ?? "destination not set"}`,
     `📅 ${opts.dates ?? "dates not set"}`,
     `🎮 ${opts.mode}`,
-    `👑 ${opts.organizer} controls shared trip settings and makes the final call if the group gets stuck on an activity. update settings with “japlan setup.”`,
+    `👑 ${opts.organizer} controls shared trip settings and makes the final call if the group gets stuck on an activity.\nupdate settings with “japlan setup.”`,
   ].join("\n");
 }
 
@@ -132,7 +132,7 @@ export function surveyProgressGroupLine(name: string, waiting: string[]): string
 }
 
 export function surveyStatusLine(completed: string[], pending: string[], setupPending = false): string {
-  if (setupPending) return "🧭 the organizer is still setting up the trip here. private surveys go out after the shared setup is done.";
+  if (setupPending) return "🧭 the organizer is still setting up the trip here.\nprivate surveys go out after the shared setup is done.";
   const lines = ["🔒 private survey status (answers stay private):"];
   lines.push(completed.length > 0 ? `✅ finished: ${completed.join(", ")}` : "✅ finished: nobody yet");
   lines.push(pending.length > 0 ? `⏳ still needed: ${pending.join(", ")}` : "🎉 everyone has finished");
@@ -181,7 +181,7 @@ export function pastDayNoBoardLine(label: string, cleared: boolean): string {
 
 // REAL (anti-abuse): endless regeneration of one day.
 export function refillLimitLine(label: string, count: number): string {
-  return `that's ${count} refills for ${label} already, plenty for one day. next day's board is yours whenever.`;
+  return `that's ${count} refills for ${label} already, plenty for one day.\nnext day's board is yours whenever.`;
 }
 
 // REAL, for the asker only: their tasks need their allergies and limits.
@@ -217,7 +217,7 @@ export function onlyOrganizerLine(
 
 // Trip lifecycle.
 export const END_TRIP_CONFIRM_LINE =
-  "this ends the trip and the scores are final. send 'japlan end trip confirm' if you mean it.";
+  "this ends the trip and the scores are final.\nsend 'japlan end trip confirm' if you mean it.";
 
 export const NO_TRIP_RUNNING_LINE = `no trip running here rn. "japlan new trip" starts one.`;
 
@@ -294,7 +294,7 @@ export function multiplierDayAnnouncement(opts: {
 }): string {
   const worth = `everything on the board is worth ${opts.multiplier} today, for everyone`;
   if (opts.source === "holiday") {
-    return `⚡ it's ${opts.label}, so ${worth}. a lot of museums and shops will be shut and the trains will be packed, so the streets are the better bet.`;
+    return `⚡ it's ${opts.label}, so ${worth}.\na lot of museums and shops will be shut and the trains will be packed, so the streets are the better bet.`;
   }
   if (opts.source === "festival") {
     return `⚡ ${opts.label} is on, so ${worth}. go be in it.`;
@@ -435,7 +435,7 @@ export function reusedPhotoLine(): string {
 }
 
 export function visionRejectedLine(code: string): string {
-  return `that doesn't really look like ${code} ngl, so no photo bonus. a clearer shot still counts.`;
+  return `that doesn't really look like ${code} ngl, so no photo bonus.\na clearer shot still counts.`;
 }
 
 export function photoCheckFailedLine(code: string): string {
@@ -478,8 +478,8 @@ export function surveyDoneLine(waitingOn: number, setupPending = false): string 
 
 export function sidequestClarificationLine(question: "sidequest_level" | "sidequest_red_lines"): string {
   return question === "sidequest_level"
-    ? "sidequests are optional, quick bonus challenges separate from your main tasks. pick how bold or silly they can get."
-    : "red lines are anything you want me to avoid in those bonus challenges, like strangers, public embarrassment, physical stuff, or spending money. say “none” if you have no limits.";
+    ? "sidequests are optional, quick bonus challenges separate from your main tasks.\npick how bold or silly they can get."
+    : "red lines are anything you want me to avoid in those bonus challenges, like strangers, public embarrassment, physical stuff, or spending money.\nsay “none” if you have no limits.";
 }
 
 export const ONBOARDING_ACK_LINE = "👍 all set — i saved your answers.";
@@ -641,7 +641,7 @@ export const CONVERSATION_FALLBACK = "yeah?";
 
 // "japlan what do you know about me": their profile, in their DM only.
 export function profileLine(profile: string | null): string {
-  if (!profile) return "i don't know much about your preferences yet. answer a few trip questions and i'll get a better read.";
+  if (!profile) return "i don't know much about your preferences yet.\nanswer a few trip questions and i'll get a better read.";
   return `here's what i've learned about you so far:\n${profile}\nif something's off, tell me what you'd change.`;
 }
 
@@ -650,7 +650,7 @@ export const PROFILE_IN_DM_LINE = "📩 check your dm — that's your private pr
 // Asked what the bot knows, before finishing the questions: say so, and
 // offer the next one right here.
 export function profileUnfinishedLine(nextQuestion: string): string {
-  return `you haven't finished the quick questions yet, so i only know the basics. want to keep going? next one: ${nextQuestion}`;
+  return `you haven't finished the quick questions yet, so i only know the basics.\nwant to keep going?\n\nnext one: ${nextQuestion}`;
 }
 
 // A stated preference, confirmed: "got it, more museums."
@@ -663,7 +663,7 @@ export const STOP_LINE = "ok, going quiet.";
 
 // Sidequests: DM out, group announce in. Optional, never chased.
 export function sidequestOfferLine(title: string, points: number, fuseMinutes: number): string {
-  return `sidequest, ${fuseMinutes} min: ${title}. worth ${points}. reply done when you have, or pass. ignoring it costs nothing, and "japlan no sidequests" turns them off.`;
+  return `sidequest, ${fuseMinutes} min: ${title}.\nworth ${points}.\n\nreply done when you have, or pass.\nignoring it costs nothing, and "japlan no sidequests" turns them off.`;
 }
 
 export function sidequestWonLine(points: number, bonus: number, total: number): string {
@@ -685,7 +685,7 @@ export const SIDEQUESTS_ON_CIVILIZED_LINE = "sidequests back on, the civilized o
 // Nobody has finished the questions yet, at board time: said once.
 export function waitingOnSurveysLine(names: string[]): string {
   const list = names.length <= 1 ? (names[0] ?? "everyone") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
-  return `boards start as soon as someone finishes the quick questions in their dm. waiting on ${list}.`;
+  return `boards start as soon as someone finishes the quick questions in their dm.\nwaiting on ${list}.`;
 }
 
 // Finished the survey on a day that is already under way: their board now.
@@ -773,10 +773,10 @@ export function suggestionLine(opts: {
       return `${already}added ${name} to day ${fit.day}.`;
     case "no_fit":
       return fit.bestDay
-        ? `${already}${name} is across town from every day so far. it'd work best on day ${fit.bestDay}: say "japlan put ${name} on day ${fit.bestDay}" and it's in.`
+        ? `${already}${name} is across town from every day so far.\nit'd work best on day ${fit.bestDay}: say "japlan put ${name} on day ${fit.bestDay}" and it's in.`
         : `${already}noted ${name}, it's on the ideas list.`;
     case "no_location":
-      return `${already}noted ${name}. couldn't pin it on a map, so it's on the ideas list and boards will work it in.`;
+      return `${already}noted ${name}.\ncouldn't pin it on a map, so it's on the ideas list and boards will work it in.`;
   }
 }
 
@@ -831,7 +831,7 @@ export function tasksRequestedLine(opts: {
       ? opts.minutesLeft < 90
         ? `${numberWord(opts.want)} it is. that's a full day, you'll be moving.`
         : `${numberWord(opts.want)} it is.`
-      : `${numberWord(opts.got)} is what fits in what's left of today, so that's ${numberWord(opts.got)}. ask for tomorrow if you want more.`;
+      : `${numberWord(opts.got)} is what fits in what's left of today, so that's ${numberWord(opts.got)}.\nask for tomorrow if you want more.`;
   return `${head}\n${opts.board}`;
 }
 
@@ -847,11 +847,11 @@ ${opts.board}`;
 }
 
 export function redoAllClaimedLine(label: string): string {
-  return `every task on ${label === "today" ? "today's" : `${label}'s`} board is already claimed, so there's nothing left to swap. want more on top? say how many.`;
+  return `every task on ${label === "today" ? "today's" : `${label}'s`} board is already claimed, so there's nothing left to swap.\nwant more on top? say how many.`;
 }
 
 export function redoLimitLine(label: string, count: number): string {
-  return `that's ${count} redos of ${label} already, so this one stays as it is. next day's board is fresh.`;
+  return `that's ${count} redos of ${label} already, so this one stays as it is.\nnext day's board is fresh.`;
 }
 
 export const REDO_NO_BOARD_LINE = `no board to swap for that day yet. "japlan plans" makes one.`;

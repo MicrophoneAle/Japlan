@@ -223,7 +223,7 @@ describe("japlan what do you know about me", () => {
     seed({ survey_state: "first_name", survey_json: {} });
     await say("sam", "japlan what do you know about me");
     expect(lastIn(dm("sam"))).toBe(
-      "you haven't finished the quick questions yet, so i only know the basics. want to keep going? next one: a few quick ones so the tasks fit you. skip any of them by saying skip. what should i call you?",
+      "you haven't finished the quick questions yet, so i only know the basics.\nwant to keep going?\n\nnext one: a few quick ones so the tasks fit you. skip any of them by saying skip. what should i call you?",
     );
     // The next DM answers that question.
     expect(h.db.table("participants").find((p) => p.id === "p-sam")!.survey_state).toBe("first_name");

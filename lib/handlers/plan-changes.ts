@@ -410,6 +410,15 @@ export async function addSuggestion(
   ctx: Ctx,
   args: { place: string; neighborhood?: string | null; day?: string | null },
 ): Promise<string> {
+  // One line per add_suggestion, start to finish: what was asked for, what
+  // locate() made of it, whether a row was written, whether anchoring ran and
+  // which day it landed on. The bug class this exists for is a reply that
+  // describes an action the code did not take.
+  const trace: Record<string, unknown> = {
+    tripId: ctx.trip.id,
+    by: ctx.sender.id,
+    args: { place: args.place, neighborhood: args.neighborhood ?? null, day: args.day ?? null },
+  };
   const profile = profileOf(ctx.trip);
   const located = await locate(
     args.place,
@@ -425,11 +434,14 @@ export async function addSuggestion(
     note: ctx.text,
     located,
   });
+  trace.located = { name: located.name, coords: located.coords, category: located.category };
+  trace.placeRow = { id: saved.id, duplicate: saved.duplicate };
   const days = await dayPoints(ctx, profile);
   const askedDay = args.day?.trim()
     ? tripDayOn(ctx.trip, dateFor(ctx, args.day), ctx.now)
     : null;
   const fit = fitSuggestion({ coords: located.coords, days, askedDay });
+  trace.fit = fit;
   // What someone asks for says what they are into.
   await learnFrom(ctx.trip, ctx.sender.id, {
     dims: prefDimsFor(`${located.name} ${located.category ?? ""} ${ctx.text}`),
@@ -438,15 +450,16 @@ export async function addSuggestion(
   }).catch((err) => console.error("[japlan.profile] learn failed", err));
   if (fit.kind === "near" || fit.kind === "open_day" || fit.kind === "asked_day") {
     await anchorOnDay(ctx.trip.id, fit.day, saved.id);
+    trace.anchored = { ran: true, day: fit.day };
+  } else {
+    // Not an error: with no coordinates it goes on the ideas list, and the
+    // reply says exactly that rather than sounding like it landed somewhere.
+    trace.anchored = { ran: false, day: null, why: fit.kind };
   }
-  console.info("[japlan.suggest] added", {
-    tripId: ctx.trip.id,
-    place: located.name,
-    located: Boolean(located.coords),
-    fit: fit.kind,
-    duplicate: saved.duplicate,
-  });
-  return suggestionLine({ name: located.name, fit, duplicate: saved.duplicate });
+  const line = suggestionLine({ name: located.name, fit, duplicate: saved.duplicate });
+  trace.reply = line;
+  console.info("[japlan.suggest] add_suggestion", JSON.stringify(trace));
+  return line;
 }
 
 // "we don't want to do temples": that category's weight drops for the trip,

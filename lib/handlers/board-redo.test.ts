@@ -217,7 +217,7 @@ describe("asking for a different board", () => {
     );
     await say("mike", "japlan these are boring, give me new ones", dmOf("mike"));
     expect(lastIn(dmOf("mike"))).toBe(
-      "every task on today's board is already claimed, so there's nothing left to swap. want more on top? say how many.",
+      "every task on today's board is already claimed, so there's nothing left to swap.\nwant more on top? say how many.",
     );
     expect(steps().some((s) => s.step === "redo.refused" && s.reason === "all_claimed")).toBe(true);
   });
@@ -229,7 +229,7 @@ describe("asking for a different board", () => {
       expect(lastIn(dmOf("mike"))).toMatch(/^fresh board:/);
     }
     await say("mike", "japlan redo today", dmOf("mike"));
-    expect(lastIn(dmOf("mike"))).toBe("that's 5 redos of today already, so this one stays as it is. next day's board is fresh.");
+    expect(lastIn(dmOf("mike"))).toBe("that's 5 redos of today already, so this one stays as it is.\nnext day's board is fresh.");
     expect(steps().some((s) => s.step === "redo.refused" && s.reason === "rate_limit")).toBe(true);
   });
 
