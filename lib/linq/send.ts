@@ -51,6 +51,40 @@ function textParts(text: string) {
   };
 }
 
+// Simulated typing time before a text goes out, so replies land like someone
+// actually typed them instead of arriving the instant the model finishes. A
+// short line lands around 3s, a full paragraph around 8s; jitter keeps two
+// replies of the same length from always taking the exact same beat.
+const TYPING_BASE_MS = 1500;
+const TYPING_MS_PER_CHAR = 28;
+const TYPING_MIN_MS = 1200;
+const TYPING_MAX_MS = 9500;
+
+function typingDelayMs(text: string): number {
+  const raw = TYPING_BASE_MS + text.length * TYPING_MS_PER_CHAR;
+  const jittered = raw * (0.85 + Math.random() * 0.3);
+  return Math.min(TYPING_MAX_MS, Math.max(TYPING_MIN_MS, Math.round(jittered)));
+}
+
+function sleep(ms: number): Promise<void> {
+  // Vitest sets this; real wall-clock waits have no place slowing down a
+  // unit test suite, so the simulated delay is skipped there.
+  if (process.env.VITEST) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Shows the typing bubble for the simulated duration. Best-effort: a failed
+// typing indicator should never hold up the actual reply.
+async function typeBeforeSending(chatId: string, text: string): Promise<void> {
+  const delay = typingDelayMs(text);
+  try {
+    await sendTyping(chatId, true);
+  } catch (err) {
+    console.error("[linq.outbound] typing indicator failed", { chatId, err });
+  }
+  await sleep(delay);
+}
+
 function fromNumber(): string {
   const from = process.env.LINQ_FROM_NUMBER;
   if (!from) throw new Error("missing LINQ_FROM_NUMBER");
@@ -77,6 +111,7 @@ export async function sendText(
   text: string,
   opts?: { effect?: MessageEffect },
 ): Promise<SentText> {
+  await typeBeforeSending(chatId, text);
   const attempt = (effect?: MessageEffect) =>
     outbound({ op: "sendText", chatId, text }, async () => {
       const res = await getLinqClient().chats.messages.send(chatId, {
@@ -125,6 +160,9 @@ export async function markRead(messageId: string): Promise<void> {
 }
 
 export async function sendDM(phone: string, text: string): Promise<SentText> {
+  // No chat exists yet to show a typing bubble in, so just hold for the same
+  // simulated duration before the DM (and its first message) goes out.
+  await sleep(typingDelayMs(text));
   const sent = await outbound({ op: "sendDM", phone, text }, async () => {
     const res = await getLinqClient().chats.create({
       from: fromNumber(),
