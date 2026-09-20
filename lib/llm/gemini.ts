@@ -676,10 +676,17 @@ ${opts.text}`,
 export const PLACE_TIMEZONE_SCHEMA = {
   type: "object",
   properties: {
+    // Asked first, and separately, for the same reason extractTripDates asks
+    // `understood`: a prompt that opens "given a travel destination" has
+    // already decided the answer is one, so the model goes looking for the
+    // nearest-sounding city in whatever it was handed. "where did you get
+    // that city from" came back as kronjo, indonesia, and the trip was
+    // written with it.
+    is_a_place: { type: "boolean" },
     display_name: { type: "string" },
     timezone: { type: "string" },
   },
-  required: ["display_name", "timezone"],
+  required: ["is_a_place", "display_name", "timezone"],
 };
 
 // Names the destination and its IANA timezone from what Foursquare resolved
@@ -703,7 +710,7 @@ export async function inferPlaceTimezone(opts: {
   const raw = await withTimeout(
     provider.complete({
       system:
-        "Given a travel destination, return a short lowercase display name (city, country) and the IANA timezone name, such as Asia/Tokyo. Never an abbreviation or UTC offset. If you cannot tell where it is, return empty strings. JSON only.",
+        "First decide whether the message names a real place someone could travel to. A question, a correction, a refusal, an opinion, a greeting or anything else is not a place: is_a_place is false and both strings are empty. Do not search the message for the nearest-sounding place name, and do not guess from a fragment. Only when it is a place, return a short lowercase display name (city, country) and the IANA timezone name, such as Asia/Tokyo. Never an abbreviation or UTC offset. If it is a place but you cannot tell which timezone, is_a_place is true and timezone is an empty string. JSON only.",
       messages: [{ role: "user", content: `destination: ${opts.text}\n${evidence}` }],
       schema: PLACE_TIMEZONE_SCHEMA,
       tier: "fast",
@@ -713,7 +720,10 @@ export async function inferPlaceTimezone(opts: {
     "gemini.place_timezone",
   );
   const parsed = raw ? parseJsonObject(raw) : null;
-  if (!parsed) return null;
+  // Fail closed: an absent or false flag is "not a place". A missing field
+  // must never read as a yes, because the caller writes trips.destination
+  // from this.
+  if (!parsed || parsed.is_a_place !== true) return null;
   const display = typeof parsed.display_name === "string" ? parsed.display_name.trim() : "";
   const timezone = typeof parsed.timezone === "string" ? parsed.timezone.trim() : "";
   if (!timezone) return null;

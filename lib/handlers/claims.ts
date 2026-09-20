@@ -70,6 +70,7 @@ import {
 import { imageFingerprint, imageTakenAt, prepareForVision, sniffImageMime } from "@/lib/game/image-hash";
 import { fetchWithTimeout, withTimeout } from "@/lib/timeout";
 import { nextFreeformCode } from "@/lib/game/generate";
+import { personLabel } from "@/lib/handle";
 import {
   applyDailyPointsCap,
   claimEarnsScreenEffect,
@@ -128,6 +129,22 @@ async function reactToClaim(
     // A tapback is flavor, never load-bearing: losing it must not touch the
     // claim, the score, or the text confirmation already sent.
     console.error("[japlan.claim] reaction failed", { messageId, err });
+  }
+}
+
+// A submitted photo that actually shows the task: the real iMessage
+// thumbs-up tapback (not a custom emoji) on the photo message itself, same
+// swallow-on-failure rule as reactToClaim. A photo vision rejects (or fails
+// to check) already gets a text reply in the caller's own voice
+// (visionRejectedLine / photoCheckFailedLine) — this only covers the qualify
+// case, so the two together read as: thumbs up if it counts, a line if it
+// doesn't.
+async function reactToQualifyingPhoto(messageId: string | null | undefined): Promise<void> {
+  if (!messageId) return;
+  try {
+    await react(messageId, "like");
+  } catch (err) {
+    console.error("[japlan.claim] photo reaction failed", { messageId, err });
   }
 }
 
@@ -230,7 +247,7 @@ function photoMismatchLine(code: string): string {
 }
 
 function photoOrPeerLine(code: string): string {
-  return `📸 that photo didn't match ${code}. no points yet — send a clearer photo, or another trip member can 👍 the validation message in the group.`;
+  return `📸 that photo didn't match ${code}. no points yet. send a clearer photo, or another trip member can 👍 the validation message in the group.`;
 }
 
 function peerPromptWithPhotoAlternative(line: string, claimantName: string, photoBonusMax: number): string {
@@ -893,9 +910,11 @@ async function applyAwards(opts: {
     remainingOpenPersonal = await countOpenPersonal(opts.trip.id, opts.claimant.id);
   }
 
-  const name =
+  const name = personLabel(
     opts.people.find((p) => p.id === opts.claimant.id)?.display_name ??
-    opts.claimant.display_name;
+      opts.claimant.display_name,
+    "someone",
+  );
   // Rare on purpose: only a claim that was genuinely worth it before the day
   // multiplier inflated it, and only when the claim actually paid out.
   const effect: MessageEffect | undefined =
@@ -1664,6 +1683,8 @@ export async function applyLatePhotoBonus(opts: {
   send: SendFn;
   provider?: LLMProvider;
   alsoConfirmTo?: string | null;
+  // The inbound photo message, if known: thumbs-up'd when it qualifies.
+  sourceMessageId?: string | null;
 }): Promise<void> {
   claimStep("photo_bonus.late", { code: opts.task.code, claimId: opts.claim.id });
   if (opts.claim.capped) {
@@ -1730,6 +1751,11 @@ export async function applyLatePhotoBonus(opts: {
     );
     return;
   }
+  // It's the right photo: a thumbs-up on it, independent of whatever the
+  // bonus math below actually pays out (capped, outside the trip window,
+  // fidelity scored 0). Those are about points, not about whether this was
+  // the right picture.
+  await reactToQualifyingPhoto(opts.sourceMessageId);
   const bonus = applyPhotoBonusRules({
     fidelity: vision.fidelity,
     hasExif: Boolean(takenAt),
@@ -2102,6 +2128,7 @@ async function handleGroupClaimInner(
           send,
           provider: deps.provider,
           alsoConfirmTo: chatId !== ctx.trip.linq_chat_id ? chatId : null,
+          sourceMessageId: typeof data.id === "string" ? data.id : null,
         });
         return null;
       }

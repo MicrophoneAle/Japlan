@@ -49,7 +49,7 @@ async function withTimeout<T>(work: Promise<T>, label: string): Promise<T> {
   } finally { if (timer) clearTimeout(timer); }
 }
 
-async function enrichWithBrowserbase(url: string, config: TripConfig, apiKey: string): Promise<CandidateActivity[]> {
+export async function enrichWithBrowserbase(url: string, config: TripConfig, apiKey: string): Promise<CandidateActivity[]> {
   const fetched = await withTimeout(browserbase.fetch({ apiKey, url, format: "markdown" }), "Browserbase Fetch");
   const markdown = typeof fetched.content === "string" ? fetched.content.slice(0, 14_000) : JSON.stringify(fetched.content);
   const provider = new GeminiProvider();

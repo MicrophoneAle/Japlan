@@ -279,25 +279,16 @@ async function onMessageReceivedInner(
     return;
   }
 
-  // During shared setup, let the organizer answer naturally without a wake
-  // word; explain the organizer-only rule when someone else replies.
-  if (isGroup && !isDm && phone && text.trim() && !wakeKeywordRe(defaultWakeKeyword()).test(text)) {
-    addressed.chatId = chatId;
-    const handled = await dispatchAwait("group_setup_plain_answer", { chatId }, () =>
-      handleGroupSetupMessage({
-        chatId,
-        senderPhone: phone,
-        text,
-        allowPlainOrganizerReply: true,
-      }),
-    );
-    if (handled) {
-      const messageId = typeof data.id === "string" ? data.id : null;
-      if (messageId) await markRead(messageId).catch((err) => console.error("[japlan.dispatch] markRead failed", err));
-      return;
-    }
-    addressed.chatId = null;
-  }
+  // REMOVED 2026-09-20: a block here used to route ANY unaddressed group
+  // message to the pending setup question while the organizer sent it, so
+  // "lol" in the group chat became the trip's destination. The guard it
+  // relied on, looksLikeDestinationAnswer, only rejects questions and
+  // corrections, because it was written assuming the wake keyword had
+  // already established that the message was an answer at all.
+  //
+  // Shared setup is answered with the keyword, the same as every other
+  // command, and every group setup prompt says so (SETUP_REPLY_IN_GROUP).
+  // The keyword path is the group_setup_answer call further down.
 
   // Groups: is the bot part of this conversation? (DMs always are.)
   let engagement: EngagementDecision | null = null;

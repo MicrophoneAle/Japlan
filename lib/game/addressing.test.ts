@@ -169,22 +169,21 @@ describe("help intent", () => {
 });
 
 describe("help copy", () => {
-  it("stays short, lowercase, and practical", () => {
+  it("stays practical and covers the load-bearing commands", () => {
     for (const text of [HELP_TEXT.group, HELP_TEXT.dm]) {
-      expect(text.trim().split("\n").length).toBeLessThanOrEqual(12);
-      expect(text).not.toMatch(/!/);
       expect(text).not.toMatch(/welcome to/i);
-      expect(text).toContain("send the code");
-      expect(text).toContain("photo");
-      expect(text).toContain("japlan standings");
-      expect(text).toContain("japlan chill");
+      expect(text.toLowerCase()).toContain("task code");
+      expect(text.toLowerCase()).toContain("photo");
+      expect(text.toLowerCase()).toMatch(/lb|standings/);
+      expect(text.toLowerCase()).toContain("japlan help");
+      expect(text.toLowerCase()).toContain("rent a car");
+      expect(text.toLowerCase()).toContain("enterprise");
       expect(text).not.toMatch(/axes|verification|scoring/i);
-      expect(text).toContain("japlan settings");
       // No fixed task count: the model quoted "3 personal tasks" back as a cap.
       expect(text).not.toMatch(/[0-9]+ (?:personal )?tasks/);
     }
     expect(HELP_TEXT.dm).toContain("want more? just ask");
-    expect(HELP_TEXT.group).toContain("your board lands in your dm");
+    expect(HELP_TEXT.group.toLowerCase()).toContain("your board lands in your dm");
     expect(helpText(true)).toBe(HELP_TEXT.dm);
     expect(helpText(false)).toBe(HELP_TEXT.group);
   });

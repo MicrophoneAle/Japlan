@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SURVEY_DONE_DM } from "@/lib/game/copy";
+import { QUESTIONS } from "@/lib/game/survey-questions";
 import { FakeSupabase } from "@/lib/test/fake-supabase";
 
 // A person gets a board the moment THEY are ready; someone still answering
@@ -147,9 +149,18 @@ describe("finishing the survey", () => {
     seed();
     await finish("mike");
     expect(trip().state).toBe("active");
-    expect(to(GROUP)).toEqual([expect.stringMatching(/^we're live/)]);
+    // The group hears that someone finished and who is left, never a word of
+    // what anyone answered, then that the trip is live.
+    expect(to(GROUP)).toHaveLength(2);
+    expect(to(GROUP)[0]).toMatch(/Mike finished/);
+    expect(to(GROUP)[0]).toMatch(/still waiting on: Sam/);
+    expect(to(GROUP)[1]).toMatch(/^we're live/);
+    // One DM carrying all three things: the close, the board, the sidequest
+    // question. One message, never two.
     expect(to(DM.mike)).toHaveLength(1);
-    expect(to(DM.mike)[0]).toMatch(/^done\. you're less mysterious than you think\.\n\nDay 1[\s\S]+\n\nbtw i'm turning on sidequests/);
+    expect(to(DM.mike)[0]).toContain(SURVEY_DONE_DM);
+    expect(to(DM.mike)[0]).toContain("Day 1");
+    expect(to(DM.mike)[0]).toMatch(/btw i'm turning on sidequests/);
     // Per person: Sam, still answering, gets nothing, and has no tasks.
     expect(to(DM.sam)).toEqual([]);
     expect(h.db.table("tasks").some((t) => t.participant_id === "p-sam")).toBe(false);
@@ -162,9 +173,17 @@ describe("finishing the survey", () => {
     h.sent.length = 0;
     await finish("sam");
     expect(to(DM.sam)).toHaveLength(1);
-    expect(to(DM.sam)[0]).toMatch(/^done\.[\s\S]+\n\nDay 1[\s\S]+\n\nbtw i'm turning on sidequests/);
+    expect(to(DM.sam)[0]).toContain(SURVEY_DONE_DM);
+    expect(to(DM.sam)[0]).toContain("Day 1");
+    expect(to(DM.sam)[0]).toMatch(/btw i'm turning on sidequests/);
+    // Nobody else gets Sam's board, and Mike hears nothing at all. The group
+    // gets the progress line only: who finished, who is left, no answers.
     expect(to(DM.mike)).toEqual([]);
-    expect(to(GROUP)).toEqual([]);
+    expect(to(GROUP)).toHaveLength(1);
+    expect(to(GROUP)[0]).toMatch(/Sam finished/);
+    expect(to(GROUP)[0]).toMatch(/preferences stay private/);
+    expect(to(GROUP)[0]).not.toContain("Day 1");
+    expect(to(GROUP)[0]).not.toContain("A1");
   });
 
   it("the morning cron sees the board exists and does not send it again", async () => {
@@ -183,7 +202,10 @@ describe("at board time, for people still answering", () => {
     seed({ state: "active", mike: "done" });
     at("2026-09-19T08:05:00");
     await runDailyBoards({});
-    expect(to(DM.sam)).toEqual(["you've got 4 free hours: cram in 3 things, or do one really good thing and vibe after?"]);
+    // Sam's next unanswered question, and nothing else: no board, no nudge
+    // about the nudge.
+    expect(to(DM.sam)).toHaveLength(1);
+    expect(to(DM.sam)[0]).toBe(QUESTIONS.ab_pace.prompt);
     await runDailyBoards({});
     expect(to(DM.sam)).toHaveLength(1);
     // Mike, finished, got a board.

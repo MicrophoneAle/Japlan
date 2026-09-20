@@ -24,6 +24,18 @@ export function setupCompleteLine(mode?: string | null): string {
   return intro;
 }
 
+// A link to the live trip dashboard (/live/[tripId]): standings, active
+// quests and proof, updating as the trip happens. Same "the recap: ..."
+// pattern as finalStandingsLine's Wrapped link.
+export function liveDashboardLine(url: string): string {
+  return `watch it live: ${url}`;
+}
+
+// liveUrlFor has no APP_URL / Vercel production URL to build from (local dev,
+// or a misconfigured deploy). Real, not a refusal: the dashboard exists, the
+// link just cannot be built right now.
+export const DASHBOARD_UNAVAILABLE_LINE = "no live link for this yet, my bad.";
+
 export const SURVEY_DONE_DM = "saved 🔒 your private preference survey is complete.";
 
 export function surveyReaskLine(options: string[]): string {
@@ -35,19 +47,30 @@ export const SETUP_QUESTIONS = {
   destination: "Where are you going? Send the city and country, for example “Kyoto, Japan.” I need the place to find local activities.",
   dates: "What dates will you be there? Try “Sep 20–27” or “next weekend.” I use this to plan each trip day.",
   play_mode:
-    "Choose how the boards work:\n1 · Individual — everyone gets their own tasks in a private board.\n2 · Teams — I pair people with similar task interests; anyone without a match gets solo tasks.\n3 · Full group — one shared board, with claims and group decisions in this chat.\nReply 1, 2, or 3.",
+    "Choose how the boards work:\n1 · Individual: everyone gets their own tasks in a private board.\n2 · Teams: I pair people with similar task interests; anyone without a match gets solo tasks.\n3 · Full group: one shared board, with claims and group decisions in this chat.\nReply 1, 2, or 3.",
   difficulty:
-    "Pick the task vibe:\n1 · Chill — easygoing and low-pressure.\n2 · Normal — a mix of relaxed and adventurous.\n3 · Unhinged — bold and silly, while still safe.\nReply 1, 2, or 3.",
+    "Pick the task vibe:\n1 · Chill: easygoing and low-pressure.\n2 · Normal: a mix of relaxed and adventurous.\n3 · Unhinged: bold and silly, while still safe.\nReply 1, 2, or 3.",
   stake:
-    "What should the last-place finisher do? Pick one:\nA · Wear a ridiculous shirt on the flight home.\nB · Give the winner a dramatic 20-second airport send-off.\nC · Buy the winner dessert, within their normal budget.\nD · Write your own dare — type out the idea.\nSay skip if you don't want a forfeit.",
+    "What should the last-place finisher do? Pick one:\nA · Wear a ridiculous shirt on the flight home.\nB · Give the winner a dramatic 20-second airport send-off.\nC · Buy the winner dessert, within their normal budget.\nD · Write your own dare: type out the idea.\nSay skip if you don't want a forfeit.",
 } as const;
 
-const SETUP_REQUIRED = new Set(["destination", "dates", "play_mode"]);
+// The questions a skip will not get past. One list: lib/handlers/setup.ts had
+// its own, which included play_mode while this one did not, so the play mode
+// question offered "(skip is fine)" and then refused the skip. Both sides of
+// the 2026-09-20 merge added play_mode here independently; it stays exported
+// so setup.ts reads this list instead of keeping a second copy.
+export const SETUP_REQUIRED = new Set(["destination", "dates", "play_mode"]);
+
+// A group's setup happens in the group chat, where everyone else is also
+// talking, so the answer has to be addressed to us. Without this line the
+// keyword gate is a trap: the organizer answers, nothing happens, and the
+// same question comes back. Solo setup is a DM and needs no keyword.
+export const SETUP_REPLY_IN_GROUP = "Reply here with “japlan” and your answer.";
 
 export function setupPrompt(
   id: keyof typeof SETUP_QUESTIONS,
   current: string | null,
-  opts: { first?: boolean; isSolo?: boolean } = {},
+  opts: { first?: boolean; isSolo?: boolean; inGroup?: boolean } = {},
 ): string {
   // Solo trips skip the play-style and loser-stake questions.
   const lead = opts.first
@@ -58,7 +81,8 @@ export function setupPrompt(
     : SETUP_REQUIRED.has(id)
       ? "\nI need this answer before I can start the trip."
       : "\nSay “skip” if you want to leave this unset.";
-  return `${lead}${SETUP_QUESTIONS[id]}${tail}`;
+  const addressed = opts.inGroup ? `\n${SETUP_REPLY_IN_GROUP}` : "";
+  return `${lead}${SETUP_QUESTIONS[id]}${tail}${addressed}`;
 }
 
 export function destinationSetLine(display: string, resolved: boolean): string {
@@ -105,18 +129,9 @@ export function setupFinishedLine(missing: ("destination" | "dates")[]): string 
   return `setup's paused rq.\nstill need ${what} before the game can start, i'll ask again next time you text.`;
 }
 
-// Linq gives a phone number when it has no display name, and a participant
-// keeps it until they answer the name question. Printing "+19057580877 is
-// setting the shared city" is worse than saying nothing specific, so a
-// phone-shaped name reads as "the organizer".
-export function personLabel(name: string | null | undefined): string {
-  const value = (name ?? "").trim();
-  if (!value) return "the organizer";
-  // +19057580877, 09057580877, (905) 758-0877: digits and punctuation only.
-  const digits = value.replace(/[^0-9]/g, "");
-  const looksLikePhone = digits.length >= 7 && /^[+()\-.\s0-9]+$/.test(value);
-  return looksLikePhone ? "the organizer" : value;
-}
+// Re-exported so the copy layer's existing callers keep one import. The guard
+// itself lives in lib/handle.ts, shared with the transport adapter.
+export { personLabel } from "@/lib/handle";
 
 // The answer did not look like a place, so nothing was written. Re-asks
 // rather than confirming: "got it: X" only ever appears when X came from
@@ -165,13 +180,13 @@ export function groupSetupCompleteLine(opts: {
 export function surveyLaunchGroupLine(sent: string[], failed: string[]): string {
   const lines = ["📩 private preference surveys are ready."];
   if (sent.length > 0) lines.push(`sent to: ${sent.join(", ")}.`);
-  if (failed.length > 0) lines.push(`couldn't DM: ${failed.join(", ")} — check that they can receive Japlan messages.`);
+  if (failed.length > 0) lines.push(`couldn't DM: ${failed.join(", ")} . check that they can receive Japlan messages.`);
   lines.push("reply in your own Japlan DM. i'll post only who's finished, not what anyone said.");
   return lines.join("\n");
 }
 
 export function surveyProgressGroupLine(name: string, waiting: string[]): string {
-  if (waiting.length === 0) return `✅ ${name} finished their private survey. everyone's in — say “japlan show” in your board chat whenever you want today's tasks.`;
+  if (waiting.length === 0) return `✅ ${name} finished their private survey. everyone's in. say “japlan show” in your board chat whenever you want today's tasks.`;
   return `✅ ${name} finished their private survey.\n⏳ still waiting on: ${waiting.join(", ")}. preferences stay private.`;
 }
 
@@ -208,7 +223,7 @@ export const GROUP_BOARD_CLEARED_LINE = "nothing left on today's shared board �
 export const PRIVATE_BOARD_CLAIM_IN_DM_LINE =
   "your board lives in your dm 📩 send its code to me there; i'll update the group leaderboard here.";
 export const SHARED_BOARD_CLAIM_IN_GROUP_LINE =
-  "📣 that's the shared group board — claim its code in this chat so everyone sees the update.";
+  "📣 that's the shared group board, so claim its code in this chat so everyone sees the update.";
 
 // REAL: the day is outside the trip.
 export function dayNotInTripLine(start: string, end: string): string {
@@ -245,7 +260,7 @@ export const BOARD_MAKE_FAILED_LINE = "couldn't make that board rn, that's on me
 
 // "japlan board time 7am"
 export function boardTimeSetLine(time: string): string {
-  return `got it — i'll use ${time} as the start of your trip day when planning tasks 🫡`;
+  return `got it, i'll use ${time} as the start of your trip day when planning tasks 🫡`;
 }
 
 export const BOARD_TIME_UNREADABLE_LINE = `couldn't read that time lol. try "japlan board time 7am" or "japlan board time 10:30".`;
@@ -392,6 +407,16 @@ function eventWhen(startsAt: string): string | null {
   return `${day} ${clock}`;
 }
 
+
+// A safety constraint was stored. Names it back, because an allergy told to
+// a bot that replies "saved" gives you no way to know it actually landed
+// somewhere that gates anything.
+export function constraintNotedLine(stored: string, boardToday: boolean): string {
+  const what = stored.trim().replace(/[.!]+$/, "");
+  return boardToday
+    ? `noted, ${what} - keeping it off your board. want me to redo today's?`
+    : `noted, ${what} - i'll keep it off your board.`;
+}
 
 // A link someone dropped resolved into a real place. ONE line, and only ever
 // on a hit: a link that resolves to nothing says nothing at all, because
@@ -589,7 +614,7 @@ export function sidequestClarificationLine(question: "sidequest_level" | "sidequ
     : "red lines are anything you want me to avoid in those bonus challenges, like strangers, public embarrassment, physical stuff, or spending money.\nsay “none” if you have no limits.";
 }
 
-export const ONBOARDING_ACK_LINE = "👍 all set — i saved your answers.";
+export const ONBOARDING_ACK_LINE = "👍 all set, i saved your answers.";
 
 export function peerLapsedLine(codes: string[]): string {
   const list = codes.join(", ");
@@ -686,15 +711,17 @@ export const HELP_TEXT = {
     See who finished; private answers stay private.
 15. japlan share locations
     Send optional Apple consent prompts during an active trip.
-16. japlan end trip
+16. japlan rent a car
+    Enterprise Rent-A-Car link for the trip city (you finish booking on their site).
+17. japlan end trip
     Confirm with “japlan end trip confirm” to close the trip.
-17. japlan new trip
+18. japlan new trip
     Start a fresh trip after the current one ends.
 
 🔒 YOUR PRIVATE INFO
-18. japlan my preferences
+19. japlan my preferences
     Sends your private summary to your dm. “japlan preferences” and “japlan settings” are aliases. Change answers in your dm in plain English.
-19. japlan help
+20. japlan help
     Show this guide again. “japlan chill” makes me quiet until someone mentions me.`,
   dm: `🧭 japlan quick guide · dm
 
@@ -725,7 +752,9 @@ export const HELP_TEXT = {
     Start optional Apple location sharing during an active trip.
 11. japlan stop location
     Stop Japlan using your location. Apple sharing may also need to be stopped in Messages.
-12. japlan help
+12. japlan rent a car
+    Enterprise Rent-A-Car link for your trip city. “japlan car rental” works too.
+13. japlan help
     Show this guide again. want more? just ask.
 
 🗳️ VOTES HAPPEN IN THE TRIP CHAT
@@ -787,6 +816,7 @@ tools:
 - avoid_category: the group does not want a kind of thing (temples, museums). code sends the reply.
 - get_my_profile: the sender's own survey summary. in a group, code sends it to their dm. only ever for the sender: asked about someone else, say that's between them and you.
 - search_web: real, live results for a restaurant, cafe, attraction, ticket, or booking site. query in their words plus the destination ("teriyaki restaurants osaka", "universal studios japan tickets"). name specific results from what it returns, with their links, not a generic category.
+- find_car_rental: enterprise rent-a-car for the trip city (or a city they named). code sends a real booking/search link; never invent a price or claim you reserved anything. for under-18 senders the tool refuses. prefer this over search_web when they ask to rent a car / enterprise.
 - react_to_message: tapback their message with an emoji instead of, or alongside, texting back. good for something funny or hype-worthy, not a default, and not on every message.
 - no_action: ordinary chat that needs no game action.
 
@@ -805,7 +835,7 @@ export function profileLine(profile: string | null): string {
   return `here's what i've learned about you so far:\n${profile}\nif something's off, tell me what you'd change.`;
 }
 
-export const PROFILE_IN_DM_LINE = "📩 check your dm — that's your private profile, you sneaky thing 😏";
+export const PROFILE_IN_DM_LINE = "📩 check your dm, that's your private profile, you sneaky thing 😏";
 
 // Asked what the bot knows, before finishing the questions: say so, and
 // offer the next one right here.

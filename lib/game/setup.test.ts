@@ -8,6 +8,7 @@ import {
   matchDifficulty,
   missingRequiredSetup,
   parseIsoRange,
+  setupOrderFor,
   setupReadyToActivate,
 } from "./setup";
 import { isValidTimeZone, zonePlausibleForLongitude } from "./time";
@@ -185,8 +186,14 @@ describe("final standings", () => {
 
 describe("setup prompts", () => {
   it("shows the current value on a re-run and never asks for a timezone", () => {
+    // The count in the lead has to match the questions actually asked, or the
+    // group is told four and gets five.
     expect(setupPrompt("destination", null, { first: true })).toBe(
-      "🧭 let's set up this group trip (5 quick questions).\nWhere are you going? Send the city and country, for example “Kyoto, Japan.” I need the place to find local activities.\nI need this answer before I can start the trip.",
+      `🧭 let's set up this group trip (${setupOrderFor().length} quick questions).\nWhere are you going? Send the city and country, for example “Kyoto, Japan.” I need the place to find local activities.\nI need this answer before I can start the trip.`,
+    );
+    // Solo drops the play-style and stake questions, and the count follows.
+    expect(setupPrompt("destination", null, { first: true, isSolo: true })).toContain(
+      `(${setupOrderFor({ isSolo: true }).length} quick questions)`,
     );
     expect(setupPrompt("destination", "tokyo, japan")).toContain("Saved: tokyo, japan. Say “skip” to keep it.");
     expect(setupPrompt("stake", null)).toContain("Say “skip” if you want to leave this unset.");

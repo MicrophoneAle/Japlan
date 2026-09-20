@@ -21,10 +21,14 @@ const h = vi.hoisted(() => ({
   reactions: [] as { messageId: string; reaction: unknown }[],
   calls: [] as { name: string; args: Record<string, unknown> }[],
   toolResponses: [] as unknown[],
+  declaredTools: [] as { name: string; parameters: object }[],
   reply: "ok",
   turnCalls: 0,
   relevance: vi.fn(),
   searchWeb: vi.fn(),
+  searchPlaces: vi.fn(async () => {
+    throw new Error("no credits");
+  }),
 }));
 
 vi.mock("@/lib/game/weather", async (importOriginal) => ({
@@ -34,9 +38,7 @@ vi.mock("@/lib/game/weather", async (importOriginal) => ({
 vi.mock("@/lib/places/foursquare", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/places/foursquare")>()),
   resolveNearArea: vi.fn(async () => null),
-  searchPlaces: vi.fn(async () => {
-    throw new Error("no credits");
-  }),
+  searchPlaces: h.searchPlaces,
 }));
 vi.mock("@/lib/db/client", () => ({ getServiceClient: () => h.db }));
 vi.mock("@/lib/linq/send", () => {
@@ -61,8 +63,17 @@ vi.mock("@/lib/handlers/web-search", () => ({ searchTheWeb: h.searchWeb }));
 vi.mock("@/lib/llm/gemini", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/llm/gemini")>();
   class FakeModel {
-    async completeTurn(opts: { contents: { parts: { functionResponse?: unknown }[] }[] }) {
+    async completeTurn(opts: {
+      contents: { parts: { functionResponse?: unknown }[] }[];
+      tools?: { name: string; parameters: object }[];
+    }) {
       h.turnCalls += 1;
+      if (opts.tools) {
+        h.declaredTools = opts.tools.map((t) => ({
+          name: t.name,
+          parameters: t.parameters,
+        }));
+      }
       const responses = opts.contents.flatMap((c) =>
         c.parts.flatMap((p) => (p.functionResponse ? [(p.functionResponse as { response: unknown }).response] : [])),
       );
@@ -87,6 +98,7 @@ vi.mock("@/lib/llm/gemini", async (importOriginal) => {
 import { dispatchLinqEvent } from "./dispatch";
 import { TOKYO_HAND_PROFILE } from "@/lib/game/tokyo-profile";
 import { CONVERSATION_FALLBACK } from "@/lib/game/copy";
+import { CONVERSATION_TOOL_DEFS } from "./conversation";
 
 let evt = 0;
 let clock = 0;
@@ -146,10 +158,12 @@ beforeEach(() => {
   h.reactions.length = 0;
   h.calls.length = 0;
   h.toolResponses.length = 0;
+  h.declaredTools.length = 0;
   h.reply = "ok";
   h.turnCalls = 0;
   h.relevance.mockReset().mockResolvedValue(null);
   h.searchWeb.mockReset();
+  h.searchPlaces.mockClear();
 });
 
 afterEach(() => {
@@ -222,5 +236,37 @@ describe("react_to_message", () => {
     expect(h.reactions).toHaveLength(1);
     expect(h.reactions[0].reaction).toEqual({ emoji: "💀" });
     expect(lastIn(GROUP)).toBe(h.reply);
+  });
+});
+
+describe("find_car_rental short-circuit", () => {
+  it("sends an enterprise link without calling the model", async () => {
+    seed();
+    await say("sam", "japlan rent a car");
+    expect(h.turnCalls).toBe(0);
+    const reply = lastIn(GROUP) ?? "";
+    expect(reply).toMatch(/enterprise/i);
+    expect(reply).toContain("https://www.enterprise.com/");
+    expect(h.searchPlaces).not.toHaveBeenCalled();
+  });
+});
+
+describe("runJaplanAgent chat tool surface", () => {
+  it("exposes the conversation tools to Gemini, including find_car_rental", async () => {
+    seed();
+    h.reply = "same tools as before";
+    await say("sam", "japlan hey");
+    expect(h.declaredTools.map((t) => t.name)).toEqual(
+      CONVERSATION_TOOL_DEFS.map((d) => d.name),
+    );
+    expect(h.declaredTools).toHaveLength(CONVERSATION_TOOL_DEFS.length);
+    // Schemas are the originals, not Zod rewrites of research tools.
+    for (let i = 0; i < CONVERSATION_TOOL_DEFS.length; i += 1) {
+      expect(h.declaredTools[i]?.parameters).toEqual(CONVERSATION_TOOL_DEFS[i]?.parameters);
+    }
+    expect(h.declaredTools.some((t) => t.name === "find_car_rental")).toBe(true);
+    expect(h.declaredTools.some((t) => t.name === "search_places")).toBe(false);
+    expect(h.declaredTools.some((t) => t.name === "research_live_place")).toBe(false);
+    expect(lastIn(GROUP)).toBe("same tools as before");
   });
 });

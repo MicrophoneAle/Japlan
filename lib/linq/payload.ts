@@ -1,3 +1,8 @@
+// The one handle guard lives in lib/handle.ts and also catches an Apple ID
+// email and "(905) 758-0877", which the copy of it here used to miss.
+import { looksLikeRawHandle } from "@/lib/handle";
+export { looksLikeRawHandle };
+
 // Field names confirmed from .captures/events.ndjson plus @linqapp/sdk
 // webhook_version 2026-02-03. participant.added and chat.created do not fire
 // when the bot is added to an iMessage group.
@@ -98,9 +103,6 @@ export function describeNonTextParts(parts: unknown): Record<string, unknown>[] 
     });
 }
 
-export function looksLikePhone(value: string): boolean {
-  return /^\+?\d[\d\s().-]{6,}$/.test(value.trim());
-}
 
 export function displayNameFromHandleObject(
   value: Record<string, unknown>,
@@ -115,7 +117,7 @@ export function displayNameFromHandleObject(
   ];
   for (const key of keys) {
     const raw = value[key];
-    if (typeof raw === "string" && raw.trim() && !looksLikePhone(raw)) {
+    if (typeof raw === "string" && raw.trim() && !looksLikeRawHandle(raw)) {
       return raw.trim();
     }
   }

@@ -27,7 +27,7 @@ function dateRange(trip: TripRow): string {
   const format = (date: string) => new Intl.DateTimeFormat("en", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" }).format(new Date(`${date}T00:00:00Z`));
   if (!trip.start_date) return format(trip.end_date!);
   if (!trip.end_date || trip.end_date === trip.start_date) return format(trip.start_date);
-  return `${format(trip.start_date)} — ${format(trip.end_date)}`;
+  return `${format(trip.start_date)} to ${format(trip.end_date)}`;
 }
 
 function scorePhoto(claim: ClaimRow, task: TaskRow): number {

@@ -431,10 +431,15 @@ describe("board and confirmation copy", () => {
       ],
     });
     expect(text).toContain("Day 1");
+    // A slot heading that counts what is under it, then a category, points
+    // and tier per task, with the code and title indented beneath.
     expect(text).toContain("✨ ANYTIME · 2 tasks");
     expect(text).toContain("✨ CHALLENGE · 7 pts · LIGHT\n   A1 · Wild Card: first");
     expect(text).toContain("✨ CHALLENGE · 10 pts · LIGHT\n   A2 · Wild Card: second");
-    expect(text).toContain("Michael 20 · Sarah 10");
+    // Standings are ranked, highest first, whatever order they arrived in.
+    expect(text).toContain("1. Michael · 20 pts");
+    expect(text).toContain("2. Sarah · 10 pts");
+    expect(text.indexOf("Michael")).toBeLessThan(text.indexOf("Sarah"));
     expect(text).not.toContain("⚓");
   });
 
@@ -445,7 +450,8 @@ describe("board and confirmation copy", () => {
       standings: [{ display_name: "Michael", score: 20 }],
     });
     expect(text).toContain("Day 1");
-    expect(text).toContain("Michael 20");
+    expect(text).toContain("Michael · 20 pts");
+    // The point of the group post: scores, never anyone's task codes.
     expect(text).not.toContain("A1");
   });
 
@@ -459,12 +465,15 @@ describe("board and confirmation copy", () => {
         { code: "A4", title: "fourth", base_points: 34 },
       ],
     });
-    // Older tasks without a period appear together in the anytime section.
+    // Older tasks have no time of day, so they all land under one heading
+    // rather than being dropped, and the tier comes from the points.
     expect(text).toContain("✨ ANYTIME · 4 tasks");
     expect(text).toContain("✨ CHALLENGE · 15 pts · LIGHT\n   A1 · Wild Card: first");
     expect(text).toContain("✨ CHALLENGE · 16 pts · MEDIUM\n   A2 · Wild Card: second");
     expect(text).toContain("✨ CHALLENGE · 25 pts · CHALLENGING\n   A3 · Wild Card: third");
     expect(text).toContain("✨ CHALLENGE · 34 pts · CHALLENGING\n   A4 · Wild Card: fourth");
+    // A personal board is one person's: no standings, nobody else's name.
+    expect(text).not.toContain("🏆");
     expect(text).not.toContain("Michael");
   });
 

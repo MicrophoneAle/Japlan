@@ -1,6 +1,6 @@
 // One-time setup: register "Japlan" + the logo as the Name & Photo for
 // LINQ_FROM_NUMBER (iMessage Name and Photo Sharing), so a chat that gets it
-// shared (chats.shareContactCard, wired into bootstrap — see
+// shared (chats.shareContactCard, wired into bootstrap; see
 // shareContactCardSafely in lib/linq/send.ts) shows a real contact instead of
 // a bare number. Run once: `npx tsx scripts/setup-contact-card.ts`.
 //

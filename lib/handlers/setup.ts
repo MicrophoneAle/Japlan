@@ -14,6 +14,7 @@ import {
   setupFinishedLine,
   setupNowAboutYouLine,
   setupPrompt,
+  SETUP_REQUIRED,
   STAKE_SET_LINE,
   groupSetupCompleteLine,
   organizerOnlySetupLine,
@@ -91,7 +92,10 @@ function currentValue(trip: TripRow, id: SetupQuestionId): string | null {
 }
 
 export function setupPromptFor(trip: TripRow, id: SetupQuestionId, first = false): string {
-  return setupPrompt(id, currentValue(trip, id), { first, isSolo: Boolean(trip.is_solo) });
+  const isSolo = Boolean(trip.is_solo);
+  // A group answers in the group chat, so every prompt carries the keyword
+  // instruction. Solo answers in a DM, where anything they send is for us.
+  return setupPrompt(id, currentValue(trip, id), { first, isSolo, inGroup: !isSolo });
 }
 
 async function saveTrip(tripId: string, patch: Record<string, unknown>): Promise<void> {
@@ -429,6 +433,18 @@ export async function applyTripSetting(
   return { ok: true, line: change.said };
 }
 
+// A skip on a required question is only refused when it would actually leave
+// the value unset. On a re-run the prompt says "skip keeps it" and it has to
+// mean it: a mid-trip "japlan setup" that will not let you past the questions
+// you already answered cannot be finished at all.
+function skipWouldLeaveItUnset(trip: TripRow, id: SetupQuestionId): boolean {
+  if (!SETUP_REQUIRED.has(id)) return false;
+  if (id === "destination") return !trip.destination?.trim();
+  if (id === "dates") return !trip.start_date || !trip.end_date;
+  if (id === "play_mode") return !trip.play_mode;
+  return false;
+}
+
 // One setup answer in, one DM out.
 export async function answerSetup(opts: {
   trip: TripRow;
@@ -458,7 +474,7 @@ export async function answerSetup(opts: {
     return setupAsideLine(asideReply(trip, id, intent, text), setupPromptFor(trip, id));
   }
 
-  if (isSetupSkip(text) && (id === "destination" || id === "dates" || id === "play_mode")) {
+  if (isSetupSkip(text) && skipWouldLeaveItUnset(trip, id)) {
     const reason = id === "play_mode" ? "choose how the trip should run" : `set the ${id}`;
     return `we need to ${reason} before i can send everyone's private survey.\n${setupPromptFor(trip, id)}`;
   }
@@ -539,14 +555,15 @@ export async function handleGroupSetupMessage(opts: {
   senderPhone: string | null;
   text: string;
   deps?: SetupDeps;
-  allowPlainOrganizerReply?: boolean;
 }): Promise<boolean> {
   const trip = await getTripByChatId(opts.chatId);
   if (!trip || trip.is_solo || !isSetupQuestion(trip.setup_state)) return false;
 
-  const hasWakeKeyword = wakeKeywordRe(defaultWakeKeyword()).test(opts.text);
-  if (!hasWakeKeyword && !opts.allowPlainOrganizerReply) return false;
-  const answer = hasWakeKeyword ? stripWakeKeyword(opts.text, defaultWakeKeyword()) : opts.text;
+  // The keyword is not optional here. An escape hatch for "answer naturally"
+  // is what turned ordinary group chatter into setup answers; see the note in
+  // dispatch.ts. Every group setup prompt asks for the keyword.
+  if (!wakeKeywordRe(defaultWakeKeyword()).test(opts.text)) return false;
+  const answer = stripWakeKeyword(opts.text, defaultWakeKeyword());
   if (!answer.trim()) return true;
   if (/^(?:help|commands?|menu|lb|leaders?|leaderboards?|standings?|scores?|rankings?|board|plans?|today|day\s+\d+|setup|settings|preferences|profile)\??$/i.test(answer)) {
     return false;

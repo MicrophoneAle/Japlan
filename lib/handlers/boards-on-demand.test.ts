@@ -284,7 +284,9 @@ describe("day planning", () => {
     const order = { morning: 0, afternoon: 1, evening: 2 } as Record<string, number>;
     const slots = rows.map((t) => order[t.slot]);
     expect(slots).toEqual([...slots].sort((a, b) => a - b));
-    expect(last(DM[MIKE])).toMatch(/\nmorning {4}A1 · /);
+    // The board shows the same shape it stored: a heading per time of day,
+    // the first task under the first one.
+    expect(last(DM[MIKE])).toMatch(/\n🌅 morning\nA1 · /);
   });
 
   it("stores a curveball as source curveball when one lands", async () => {

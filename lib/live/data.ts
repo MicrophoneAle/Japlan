@@ -1,5 +1,5 @@
 // The live trip dashboard's read model: one pure function that turns raw
-// rows into what the page renders. No network, no Supabase — lib/live/load.ts
+// rows into what the page renders. No network, no Supabase; lib/live/load.ts
 // owns I/O and calls into this. Mirrors lib/wrapped/data.ts's split, but for
 // a trip in progress rather than a finished one.
 //

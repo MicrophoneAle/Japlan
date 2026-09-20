@@ -19,6 +19,21 @@ export type SettingsOverviewSection = { title: string; lines: string[] };
 // stored value. Nothing here refuses: an unreadable value re-asks with the
 // options.
 
+// "none", "no restrictions": an answer that means nothing is stored. A new
+// constraint replaces it rather than appending to it, and saying it fresh
+// clears the list rather than joining it ("peanuts, none" would have kept
+// filtering peanuts forever).
+//
+// Anchored at BOTH ends on purpose. A leading-edge match also caught real
+// constraints: "no heights" starts with "no", so storing a second red line
+// would have quietly wiped the first one.
+const NO_CONSTRAINT_TEXT_RE =
+  /^(?:none|no|nope|nothing|n\/?a|na|all good|no (?:more )?(?:dietary |food )?restrictions?|nothing at all)(?:\s+(?:any\s?more|now))?[.!]?$/i;
+
+function meansNoConstraint(text: string): boolean {
+  return NO_CONSTRAINT_TEXT_RE.test(text.trim());
+}
+
 // What people call each setting, to its survey question.
 const SETTING_NAMES: [RegExp, QuestionId][] = [
   [/pace|speed|busy|tempo/, "pace"],
@@ -27,7 +42,15 @@ const SETTING_NAMES: [RegExp, QuestionId][] = [
   [/budget|money|spend/, "budget"],
   [/chaos|dares?|wild/, "chaos"],
   [/task count|tasks per day|how many tasks|more tasks|fewer tasks|number of tasks|tasks a day/, "tasks_per_day"],
-  [/diet|allerg|vegetarian|vegan|food restriction|eat/, "dietary_detail"],
+  // SAFETY: allergy language goes to hard_constraints, NOT dietary_detail.
+  // compatAnswers DERIVES dietary/dietary_detail/dietary_strictness from
+  // hard_constraints, so a write to dietary_detail is regenerated away on the
+  // next read and gates nothing. "actually i'm allergic to shellfish too"
+  // acknowledged them and still sent them to a fish market.
+  // Listed before the diet matcher so allergy wins the match.
+  [/allerg|anaphyla|epipen|coeliac|celiac|intoleran/, "hard_constraints"],
+  [/red ?line|no heights|scared of|phobia|won'?t do|wont do|off the table|hard no|hard limit/, "sidequest_red_lines"],
+  [/diet|vegetarian|vegan|food restriction|eat|gluten|halal|kosher|pescatarian/, "hard_constraints"],
   [/strict/, "dietary_strictness"],
   [/mobility|walking|stairs|physical|knee/, "mobility"],
   [/drink|alcohol/, "drinking"],
@@ -166,6 +189,33 @@ export function applySettingUpdate(opts: {
   }
   const lower = value.toLowerCase();
   let answers: SurveyAnswers | null = null;
+
+  // hard_constraints and sidequest_red_lines are free text that GATES task
+  // generation, so they APPEND by default rather than replace: "also allergic
+  // to shellfish" must not wipe the peanut allergy already stored. An explicit
+  // "set"/"remove" still does what it says.
+  if (id === "hard_constraints" || id === "sidequest_red_lines") {
+    const current = (answerValue(opts.answers, id) ?? "").trim();
+    const clean = value.replace(/^(?:also|and|actually|oh and|plus)\s+/i, "").trim();
+    if (!clean) return { ok: false, id, options: [] };
+    let next: string;
+    if (opts.mode === "remove") {
+      next = current
+        .split(/\s*[,;]\s*/)
+        .filter((part) => part && !part.toLowerCase().includes(clean.toLowerCase()))
+        .join(", ");
+    } else if (meansNoConstraint(clean)) {
+      // They are saying the constraint is gone, not adding "none" to it.
+      next = clean;
+    } else if (opts.mode === "set" || !current || meansNoConstraint(current)) {
+      next = clean;
+    } else if (current.toLowerCase().includes(clean.toLowerCase())) {
+      next = current;
+    } else {
+      next = `${current}, ${clean}`;
+    }
+    return { ok: true, id, answers: recordAnswer(opts.answers, id, next) ?? opts.answers, shown: next };
+  }
 
   if (id === "interest_picks") {
     const current = interestPicksOf(opts.answers);

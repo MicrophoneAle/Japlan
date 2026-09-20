@@ -16,7 +16,7 @@ import {
   displayNameFromChatJson,
   humansFromHandles,
   isBotHandle,
-  looksLikePhone,
+  looksLikeRawHandle,
   membersFromChatJson,
   type HandleLike,
 } from "@/lib/linq/payload";
@@ -27,12 +27,14 @@ import {
   setupReadyToActivate,
   type SetupFields,
 } from "@/lib/game/setup";
-import { setupCompleteLine, setupPrompt, surveyLaunchGroupLine } from "@/lib/game/copy";
+import { setupCompleteLine, setupPrompt, surveyLaunchGroupLine, liveDashboardLine } from "@/lib/game/copy";
 import { formTeamsForTrip, teamsAnnouncement } from "@/lib/handlers/teams";
+import { liveUrlFor } from "@/lib/urls";
 
 import { TRIP_COLS } from "@/lib/db/columns";
 import { LEG_COLS } from "./legs";
 import type { TripLeg } from "@/lib/game/legs";
+import { personLabel } from "@/lib/handle";
 
 // Until the group chat's own name is known.
 const UNNAMED_TRIP = "unnamed trip";
@@ -247,10 +249,10 @@ async function upsertHumans(
   const people = await listParticipants(tripId);
   for (const handle of humans) {
     const name = handle.display_name?.trim();
-    if (!name || looksLikePhone(name)) continue;
+    if (!name || looksLikeRawHandle(name)) continue;
     const person = people.find((row) => row.phone === handle.handle);
     if (!person) continue;
-    if (!looksLikePhone(person.display_name) && person.display_name !== handle.handle) {
+    if (!looksLikeRawHandle(person.display_name) && person.display_name !== handle.handle) {
       continue;
     }
     const { error: nameErr } = await getServiceClient()
@@ -363,7 +365,7 @@ async function joinLateParticipant(
 ): Promise<void> {
   if (isBotHandle(phone)) return;
   if (await findParticipantOnTrip(trip.id, phone)) return;
-  const name = displayName?.trim() && !looksLikePhone(displayName) ? displayName.trim() : phone;
+  const name = displayName?.trim() && !looksLikeRawHandle(displayName) ? displayName.trim() : phone;
   const { error } = await getServiceClient()
     .from("participants")
     .upsert([{ trip_id: trip.id, phone, display_name: name }], {
@@ -456,6 +458,9 @@ export async function maybeActivateTrip(
     const announcement = teamsAnnouncement(teams);
     if (announcement) line = `${line}\n\n${announcement}`;
   }
+
+  const liveUrl = liveUrlFor(trip.id);
+  if (liveUrl) line = `${line}\n\n${liveDashboardLine(liveUrl)}`;
 
   // Claim the transition before sending anything. Concurrent final survey
   // replies can both reach this function; only one may announce activation
@@ -638,9 +643,9 @@ export async function bootstrapGroupIfNeeded(
       linq_chat_id: trip.linq_chat_id,
       name: displayName || trip.name,
       state: trip.state,
-      organizerName: organizer.display_name,
+      organizerName: personLabel(organizer.display_name),
     };
-    const setup = setupPrompt(setupState, null, { first: true });
+    const setup = setupPrompt(setupState, null, { first: true, inGroup: true });
     const introPosts = [...buildIntroGroupMessages(publicTrip), setup];
     // At most once per chat, whatever state the trip is stuck in: claim the
     // intro atomically, and release the claim only if the send itself failed.
@@ -784,7 +789,7 @@ export async function persistSurveyProgress(opts: {
     survey_state: opts.awaiting,
     survey_json: opts.answers,
   };
-  if (first && !looksLikePhone(first)) {
+  if (first && !looksLikeRawHandle(first)) {
     patch.display_name = displayNameFromFirstName(first, first);
   }
   const { error } = await getServiceClient()

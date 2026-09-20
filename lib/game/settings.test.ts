@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { applySettingUpdate, settingIdFor, settingsSummary } from "./settings";
 import { selectForDay, usableWindow, type Plannable } from "./day-plan";
 import { CONVERSATION_SYSTEM_PROMPT, HELP_TEXT } from "./copy";
-import type { SurveyAnswers } from "./survey";
+import { answerValue, type SurveyAnswers } from "./survey";
+import { compatAnswers, prefsOf } from "./prefs";
 
 const v = (value: string) => ({ value });
 const set = (answers: SurveyAnswers, setting: string, value: string, mode?: "set" | "add" | "remove") =>
@@ -48,11 +49,21 @@ describe("everyone's own answers are editable, in plain words", () => {
     expect(set({ tasks_per_day: v("7") }, "tasks per day", "back to default")).toMatchObject({ ok: true, shown: "the pace default" });
   });
 
+  // Diet and allergy language goes to hard_constraints, which is where
+  // validation reads it from. dietary/dietary_detail are DERIVED from that by
+  // compatAnswers, so writing them directly was regenerated away on the next
+  // read: acknowledged, then silently ignored. See constraint-correction.test.
   it("diet: saying what it is sets it, none clears it", () => {
     const update = set({ dietary: v("none") }, "diet", "peanuts");
-    expect(update.ok && update.answers).toMatchObject({ dietary: v("has_restriction"), dietary_detail: v("peanuts") });
+    expect(update.ok && answerValue(update.answers, "hard_constraints")).toBe("peanuts");
+    // And reading it back the way the generator does produces the old fields.
+    const read = update.ok ? compatAnswers(update.answers, prefsOf(null, update.answers)) : {};
+    expect(read).toMatchObject({ dietary: v("has_restriction"), dietary_detail: v("peanuts") });
+
     const cleared = set(update.ok ? update.answers : {}, "diet", "none");
-    expect(cleared.ok && cleared.answers.dietary).toEqual(v("none"));
+    expect(cleared.ok && answerValue(cleared.answers, "hard_constraints")).toBe("none");
+    const clearedRead = cleared.ok ? compatAnswers(cleared.answers, prefsOf(null, cleared.answers)) : {};
+    expect(clearedRead.dietary).toEqual(v("none"));
   });
 
   it("re-asks with the options when a value cannot be read, never refuses", () => {

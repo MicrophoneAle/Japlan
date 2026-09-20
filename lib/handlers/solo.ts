@@ -12,7 +12,7 @@ import {
   maybeActivateTrip,
   persistSurveyProgress,
 } from "./bootstrap";
-import { looksLikePhone } from "@/lib/linq/payload";
+import { looksLikeRawHandle } from "@/lib/linq/payload";
 import { isSetupQuestion } from "@/lib/game/setup";
 import { needsSetupResume, resumeSetup, setupPromptFor } from "./setup";
 
@@ -93,8 +93,8 @@ async function ensureSoloParticipant(
   if (already) {
     if (
       name &&
-      !looksLikePhone(name) &&
-      (looksLikePhone(already.display_name) || already.display_name === phone)
+      !looksLikeRawHandle(name) &&
+      (looksLikeRawHandle(already.display_name) || already.display_name === phone)
     ) {
       const { error } = await getServiceClient()
         .from("participants")

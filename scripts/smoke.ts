@@ -177,7 +177,7 @@ async function runCheck(
 ): Promise<boolean> {
   try {
     const detail = await fn();
-    console.log(`PASS  ${name} — ${detail}`);
+    console.log(`PASS  ${name}: ${detail}`);
     return true;
   } catch (err) {
     console.log(`FAIL  ${name}`);

@@ -204,7 +204,10 @@ describe("solo trips skip group-only questions", () => {
   it("asks it in a group, and none of the old twenty questions", () => {
     const group = walk(false);
     expect(group).toContain("splitting");
-    for (const id of ["first_name", "dietary", "mobility", "chaos", "sociability", "social_travelled", "competitiveness"]) {
+    // first_name is not one of the retired twenty: v2 still opens with
+    // "what should i call you?".
+    expect(group).toContain("first_name");
+    for (const id of ["dietary", "mobility", "chaos", "sociability", "social_travelled", "competitiveness"]) {
       expect(group).not.toContain(id);
     }
   });
@@ -227,8 +230,8 @@ describe("survey and setup copy", () => {
     }
   });
 
-  it("mentions skip once, in the intro only", () => {
-    expect(SURVEY_INTRO).toMatch(/say skip whenever/);
+  it("explains skip once, in the intro, and never again per question", () => {
+    expect(SURVEY_INTRO).toMatch(/skip/i);
     for (const text of prompts) expect(text).not.toMatch(/skip/i);
   });
 
@@ -237,17 +240,22 @@ describe("survey and setup copy", () => {
       expect(text, text).not.toMatch(/!/);
       expect(text, text).not.toMatch(/\u2014/); // em dash
       expect(text, text).toBe(text.replace(/^[A-Z]/, (c) => c.toLowerCase())); // no capital start
-      expect(text.split("\n"), text).toHaveLength(1);
+      // The rule is one message, not one line: a question that lists its
+      // options needs line breaks, and it is still a single send.
     }
   });
 
-  it("shows choice labels people can type back", () => {
+  it("numbers every choice, so people can answer with what they see", () => {
     for (const id of QUESTION_ORDER) {
       const question = QUESTIONS[id];
       // Follow-ups take any words; only the main choices list options.
       if (question.kind !== "choice" || id.startsWith("fu_")) continue;
-      for (const choice of question.choices ?? []) {
-        expect(question.prompt, `${id}: ${choice.label}`).toContain(choice.label);
+      const choices = question.choices ?? [];
+      for (let i = 0; i < choices.length; i += 1) {
+        // "1 \u00b7 under $50": the number they type, starting its own line.
+        expect(question.prompt, `${id}: choice ${i + 1}`).toMatch(
+          new RegExp(`(^|\\n)${i + 1} \u00b7 `),
+        );
       }
     }
     // Internal ids never leak into what people read.

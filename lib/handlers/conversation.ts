@@ -7,12 +7,14 @@ import {
   CONVERSATION_MAX_TOOL_ITERS,
   foreignSurveySecrets,
   recordConversationalReply,
-  runToolLoop,
-  stripPointFields,
   surveySliceForConversation,
-  toolResultHasInventedPoints,
   finalizeConversationReply,
 } from "@/lib/game/conversation";
+import {
+  runJaplanAgent,
+  wrapConversationTool,
+  type AgentTool,
+} from "@/lib/agent";
 import {
   BOARD_IN_DM_LINE,
   PROFILE_IN_DM_LINE,
@@ -21,10 +23,18 @@ import {
   CONVERSATION_FALLBACK,
   CONVERSATION_PRIVACY_LINE,
   CONVERSATION_SYSTEM_PROMPT,
+  DASHBOARD_UNAVAILABLE_LINE,
   DISCARD_FALLBACK,
+  liveDashboardLine,
   standingsLine,
 } from "@/lib/game/copy";
-import { isStandingsRequest } from "@/lib/game/commands";
+import { isCarRentalRequest, isDashboardRequest, isStandingsRequest } from "@/lib/game/commands";
+import { isUnderAge } from "@/lib/game/preferences";
+import {
+  enterpriseRentalReply,
+  findEnterpriseRentals,
+} from "@/lib/handlers/enterprise-rentals";
+import { liveUrlFor } from "@/lib/urls";
 import {
   isOpenTask,
   pickLatePhotoTarget,
@@ -51,7 +61,7 @@ import { lookupOwnProfile } from "@/lib/handlers/profiles";
 import { otherPersonAskedAbout } from "@/lib/game/profile";
 import { searchTheWeb } from "@/lib/handlers/web-search";
 import { getOnDemandLocationContext } from "@/lib/handlers/live-location";
-import type { LLMProvider, ToolContent, ToolTurn } from "@/lib/llm";
+import type { LLMProvider, ToolContent } from "@/lib/llm";
 import { GeminiProvider } from "@/lib/llm/gemini";
 import { react, sendDM, sendText } from "@/lib/linq/send";
 import { recentMessages, TRANSCRIPT_LIMIT } from "@/lib/chat/transcript";
@@ -245,6 +255,20 @@ export const CONVERSATION_TOOL_DEFS = [
     },
   },
   {
+    name: "find_car_rental",
+    description:
+      "Find Enterprise Rent-A-Car for the trip city (or another city they named). Code sends a real booking/search link. Never invent prices or claim a reservation. city: optional override. pickup_date / return_date: optional yyyy-mm-dd from trip dates or what they said.",
+    parameters: {
+      type: "object",
+      properties: {
+        city: { type: "string" },
+        pickup_date: { type: "string" },
+        return_date: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: "no_action",
     description: "Talk without changing game state.",
     parameters: { type: "object", properties: {}, additionalProperties: false },
@@ -349,6 +373,15 @@ async function sendStandingsReply(miss: ClaimFallthrough): Promise<void> {
   await send(miss.chatId, standingsLine(rows));
 }
 
+// "japlan dashboard" / "live board": the link, nothing else. The live
+// dashboard only ever answers for an active trip (loadLiveTrip), which this
+// always is by the time anyone can ask.
+async function sendDashboardReply(miss: ClaimFallthrough): Promise<void> {
+  const send = miss.send ?? sendText;
+  const url = liveUrlFor(miss.trip.id);
+  await send(miss.chatId, url ? liveDashboardLine(url) : DASHBOARD_UNAVAILABLE_LINE);
+}
+
 export async function handleConversation(
   miss: ClaimFallthrough,
   deps: { provider?: LLMProvider } = {},
@@ -390,6 +423,16 @@ export async function handleConversation(
   }
   if (isStandingsRequest(miss.text)) {
     await sendStandingsReply(miss);
+    return;
+  }
+  // "japlan dashboard" / "live board": just the link, same short-circuit as
+  // the standings request above.
+  if (isDashboardRequest(miss.text)) {
+    await sendDashboardReply(miss);
+    return;
+  }
+  if (isCarRentalRequest(miss.text)) {
+    await executeConversationTool("find_car_rental", {}, miss);
     return;
   }
   // No hourly reply cap: it refused people who had addressed the bot, which
@@ -437,7 +480,6 @@ export async function handleConversation(
     });
   }
 
-  const toolText: string[] = [];
   const contents: ToolContent[] = [];
   for (const line of history) {
     contents.push({ role: line.role, parts: [{ text: line.text }] });
@@ -464,81 +506,39 @@ export async function handleConversation(
     ],
   });
 
-  const generate = async (input: {
-    iteration: number;
-    forceReply: boolean;
-  }): Promise<ToolTurn> => {
-    if (!provider.completeTurn) {
-      const text = await provider.complete({
-        system: CONVERSATION_SYSTEM_PROMPT,
-        messages: [{ role: "user", content: miss.text }],
-        tier: "fast",
-        thinkingBudget: 0,
-      });
-      return { text, functionCalls: [] };
-    }
-    return provider.completeTurn({
-      system: CONVERSATION_SYSTEM_PROMPT,
-      contents,
-      tools: CONVERSATION_TOOL_DEFS,
-      toolMode: input.forceReply ? "none" : "auto",
-      tier: "fast",
-      thinkingBudget: 0,
-    });
-  };
+  // Same Gemini agent loop as the itinerary lab, but with the ORIGINAL game
+  // tool set only. Research tools (search_places, search_events, …) stay on
+  // the lab path so chat tool-choice cannot regress.
+  const tools: AgentTool[] = CONVERSATION_TOOL_DEFS.map((def) =>
+    wrapConversationTool({
+      name: def.name,
+      description: def.description,
+      geminiParameters: def.parameters,
+      execute: (args) => executeConversationTool(def.name, args, miss),
+    }),
+  );
 
-  const loop = await runToolLoop({
+  const loop = await runJaplanAgent({
+    capability: "webhook",
+    system: CONVERSATION_SYSTEM_PROMPT,
+    contents,
+    tools,
     maxIterations: CONVERSATION_MAX_TOOL_ITERS,
-    generate: async (input) => {
-      const turn = await generate(input);
-      if (turn.functionCalls.length > 0) {
-        // Echo the model's calls exactly as made, signature included: Gemini
-        // rejects a replayed call without its thought_signature. Point fields
-        // are stripped where the args are executed, below, not in history.
-        contents.push({
-          role: "model",
-          parts: turn.functionCalls.map((call) => ({
-            functionCall: {
-              id: call.id,
-              name: call.name,
-              args: call.args ?? {},
-              ...(call.thoughtSignature ? { thoughtSignature: call.thoughtSignature } : {}),
-            },
-          })),
-        });
-      } else if (turn.text) {
-        contents.push({ role: "model", parts: [{ text: turn.text }] });
-      }
-      return {
-        text: turn.text,
-        calls: turn.functionCalls.map((call) => ({
-          id: call.id,
-          name: call.name,
-          args: stripPointFields(call.args ?? {}),
-        })),
-      };
-    },
-    execute: async (call) => {
-      const result = await executeConversationTool(call.name, call.args, miss);
-      toolText.push(JSON.stringify(result.result));
-      if (toolResultHasInventedPoints(result.result)) {
-        throw new Error("conversation tool returned an invented point value");
-      }
-      contents.push({
-        role: "user",
-        parts: [
-          {
-            functionResponse: {
-              id: call.id,
-              name: call.name,
-              response: result.result,
-            },
-          },
-        ],
-      });
-      return result;
-    },
+    provider,
+    trip: miss.trip,
+    miss,
+    photo: null,
+    tier: "fast",
   });
+
+  const toolText: string[] = [];
+  for (const entry of contents) {
+    for (const part of entry.parts) {
+      if ("functionResponse" in part) {
+        toolText.push(JSON.stringify(part.functionResponse.response));
+      }
+    }
+  }
 
   // Record tool names for tracing, but never their arguments (which can
   // contain private settings) or message/profile contents.
@@ -546,6 +546,8 @@ export async function handleConversation(
     console.info("[japlan.conversation] tools", {
       chatId: miss.chatId,
       tools: loop.toolNames,
+      via: "runJaplanAgent",
+      browserbaseInvoked: loop.browserbaseInvoked,
     });
   }
 
@@ -723,6 +725,7 @@ async function executeConversationTool(
       replyChatId: miss.chatId,
       send: miss.send,
       provider: miss.provider,
+      sourceMessageId: typeof miss.data.id === "string" ? miss.data.id : null,
     });
     return { result: { ok: true, code: task.code }, sent: true };
   }
@@ -861,6 +864,36 @@ async function executeConversationTool(
       return { result: { ok: false, reason: outcome.reason }, sent: false };
     }
     return { result: { ok: true, results: outcome.results }, sent: false };
+  }
+  if (name === "find_car_rental") {
+    const city =
+      stringArg(args.city) ??
+      miss.trip.destination ??
+      null;
+    const pickup =
+      stringArg(args.pickup_date) ?? miss.trip.start_date ?? null;
+    const ret = stringArg(args.return_date) ?? miss.trip.end_date ?? null;
+    const underAge = isUnderAge(
+      (miss.claimant.survey_json ?? {}) as SurveyAnswers,
+    );
+    const outcome = await findEnterpriseRentals({
+      city,
+      pickupDate: pickup,
+      returnDate: ret,
+      underAge,
+    });
+    const reply = enterpriseRentalReply(outcome);
+    await (miss.send ?? sendText)(miss.chatId, reply);
+    return {
+      result: {
+        ok: outcome.ok,
+        reason: outcome.ok ? undefined : outcome.reason,
+        booking_url: outcome.bookingUrl,
+        links: outcome.ok ? outcome.links : [],
+        notes: outcome.notes,
+      },
+      sent: true,
+    };
   }
   if (name === "react_to_message") {
     const emoji = typeof args.emoji === "string" ? args.emoji.trim() : "";

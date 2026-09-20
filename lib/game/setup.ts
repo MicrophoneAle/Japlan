@@ -309,6 +309,18 @@ export function setupMessageIntent(text: string): SetupIntent {
 const NOT_A_PLACE_RE =
   /\b(?:did you|do you|where did|what did|why did|how did|get that|come from|made up|invent|you said|i said|that's not|thats not)\b/i;
 
+// Chat filler, acknowledgements and reactions. None of these is a place, and
+// every one of them is something people say in a group chat while a setup
+// question is pending. Before the keyword gate was restored these all read as
+// destinations: "lol" resolved and got written to the trip.
+//
+// Matched against the WHOLE answer, so a real place that merely contains one
+// of these words still passes; only a bare interjection is refused.
+// Deliberately conservative: cities that read like ordinary words (Nice,
+// Bath, Reading, Mobile, Why, Boring, Hell) are NOT listed here.
+const FILLER_ANSWER_RE =
+  /^(?:lol|lmao|lmfao|rofl|ha(?:ha)+|hehe|heh|omg|omfg|wtf|idk|idc|ikr|tbh|ngl|fr|fr fr|bruh|bro|dude|yo|hmm+|huh|eh|ah|oh|ok|okay|k|kk|yes|yeah|yep|yup|ya|mhm|nah|nope|no|sure|cool|great|awesome|perfect|amazing|done|ready|bet|word|facts|same|true|agreed|thanks|thank you|ty|thx|please|pls|wait|what|sorry|oops|my bad|gotcha|got it|right|alright|aight|sounds good|sounds great|sounds fun|works for me|let'?s go|i'?m in|same here|for sure|why not|whatever|anything|not sure|dunno|no idea)$/i;
+
 export function looksLikeDestinationAnswer(text: string): boolean {
   const t = text.trim().replace(/\s+/g, " ");
   if (t.length < 2) return false;
@@ -317,6 +329,8 @@ export function looksLikeDestinationAnswer(text: string): boolean {
   if (!/[a-z]/i.test(t)) return false;
   if (setupMessageIntent(t) !== "answer") return false;
   if (NOT_A_PLACE_RE.test(t)) return false;
+  // Trailing punctuation is noise: "lol!!" is still lol.
+  if (FILLER_ANSWER_RE.test(t.replace(/[.!?,]+$/, "").trim())) return false;
   // More than about six words stops being a destination and starts being a
   // sentence about one.
   if (t.split(" ").length > 6) return false;
