@@ -53,14 +53,13 @@ function textParts(text: string) {
 
 // Simulated typing time before a text goes out, so replies land like someone
 // actually typed them instead of arriving the instant the model finishes. A
-// short line lands around 2.5s, a full paragraph around 6.5s; jitter keeps
-// two replies of the same length from always taking the exact same beat.
-// Trimmed slightly (2026-10-02) from the original constants: still varies
-// with length and jitter, just a touch snappier end to end.
+// short line lands around 2.5s; jitter keeps two replies of the same length
+// from always taking the exact same beat. Ceiling capped at 5s (2026-10-02)
+// so even a long reply never feels like it's stalling.
 const TYPING_BASE_MS = 1250;
 const TYPING_MS_PER_CHAR = 24;
 const TYPING_MIN_MS = 1000;
-const TYPING_MAX_MS = 8000;
+const TYPING_MAX_MS = 5000;
 
 function typingDelayMs(text: string): number {
   const raw = TYPING_BASE_MS + text.length * TYPING_MS_PER_CHAR;
